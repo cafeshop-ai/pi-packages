@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101827">
+  <meta name="description" content="Pi Cafe Space live session client">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <title>Pi Cafe Space</title>
+</head>
+<body>
+  <main class="shell">
+    <section id="login-view" class="panel login-panel">
+      <div class="brand-mark">π</div>
+      <h1>Pi Cafe Space</h1>
+      <p class="muted">连接到电脑上正在运行的 Pi 会话</p>
+      <form id="login-form" class="stack">
+        <label>
+          房间
+          <input id="room-input" name="room" value="main" autocomplete="off" maxlength="64" required>
+        </label>
+        <label>
+          客户端 Token
+          <input id="token-input" name="token" type="password" autocomplete="current-password" maxlength="4096" required>
+        </label>
+        <button type="submit" class="primary">连接</button>
+      </form>
+      <p id="login-error" class="error-text" hidden></p>
+      <p class="hint">Token 优先保存在当前浏览器标签页的 sessionStorage；如果浏览器禁止 storage，则只保留在当前页面内存，不会写入 URL。</p>
+    </section>
+
+    <section id="app-view" hidden>
+      <header class="topbar">
+        <div>
+          <div class="title-row"><span class="brand-small">π</span><h1>Pi Cafe Space</h1></div>
+          <div id="connection-label" class="status-line">未连接</div>
+        </div>
+        <div class="topbar-actions">
+          <button id="files-button" class="ghost" type="button">文件</button>
+          <button id="logout-button" class="ghost" type="button">断开</button>
+        </div>
+      </header>
+
+      <section class="meta-grid panel">
+        <div class="host-picker"><span class="meta-label">Pi 实例</span><select id="host-select" aria-label="选择 Pi 实例"><option value="">等待 Pi 实例…</option></select></div>
+        <div><span class="meta-label">Host</span><strong id="host-status">离线</strong></div>
+        <div><span class="meta-label">模型</span><strong id="model-status">—</strong></div>
+        <div><span class="meta-label">思考</span>
+          <select id="thinking-select" aria-label="思考等级">
+            <option value="off">off</option><option value="minimal">minimal</option>
+            <option value="low">low</option><option value="medium">medium</option>
+            <option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option>
+          </select>
+        </div>
+        <div><span class="meta-label">状态</span><strong id="phase-status">—</strong></div>
+      </section>
+
+      <section id="notice-area" class="notice-area" aria-live="polite"></section>
+      <section class="workspace">
+        <div class="conversation-column">
+          <section id="transcript" class="transcript panel" aria-live="polite"></section>
+
+          <form id="prompt-form" class="composer panel">
+            <textarea id="prompt-input" rows="3" maxlength="65536" placeholder="给 Pi 发送消息…" required></textarea>
+            <div class="composer-actions">
+              <select id="delivery-select" aria-label="消息交付方式">
+                <option value="auto">自动</option>
+                <option value="steer">Steer（当前工具阶段后）</option>
+                <option value="followUp">Follow-up（当前运行结束后）</option>
+              </select>
+              <button id="abort-button" class="danger secondary" type="button">Abort</button>
+              <button class="primary" type="submit">发送</button>
+            </div>
+          </form>
+        </div>
+
+        <aside id="files-panel" class="files-panel panel">
+          <div class="files-header">
+            <div>
+              <div class="section-title">项目文件</div>
+              <strong id="files-path">.</strong>
+            </div>
+            <div class="files-actions">
+              <button id="files-back" class="ghost" type="button">上级</button>
+              <button id="files-close" class="ghost mobile-only" type="button">关闭</button>
+            </div>
+          </div>
+          <div id="file-list" class="file-list"></div>
+          <pre id="file-viewer" class="file-viewer" hidden></pre>
+          <div class="history-divider"></div>
+          <div class="files-header history-heading">
+            <div class="section-title">历史会话</div>
+            <button id="history-refresh" class="ghost" type="button">刷新</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+          <section id="history-detail" class="history-detail" hidden>
+            <div class="files-header">
+              <strong id="history-detail-title">历史会话</strong>
+              <button id="history-detail-close" class="ghost" type="button">关闭</button>
+            </div>
+            <div id="history-detail-messages" class="history-detail-messages"></div>
+          </section>
+        </aside>
+      </section>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

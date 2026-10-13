@@ -1,0 +1,69 @@
+@import "tailwindcss" source("../");
+@import "tw-animate-css";
+
+@custom-variant dark (&:is([data-theme='dark'] *));
+
+/* One palette: shadcn semantic tokens resolve to the existing Café workspace. */
+:root, [data-theme] {
+  --background: var(--cafe-page);
+  --foreground: var(--cafe-ink);
+  --card: var(--cafe-surface);
+  --card-foreground: var(--cafe-ink);
+  --popover: var(--cafe-surface);
+  --popover-foreground: var(--cafe-ink);
+  --primary: var(--cafe-action);
+  --primary-foreground: var(--cafe-action-ink);
+  --secondary: var(--cafe-surface-secondary);
+  --secondary-foreground: var(--cafe-ink);
+  --muted: var(--cafe-surface-secondary);
+  --muted-foreground: var(--cafe-muted);
+  --accent: var(--cafe-surface-secondary);
+  --accent-foreground: var(--cafe-ink);
+  --destructive: var(--cafe-danger);
+  --border: var(--cafe-line);
+  --input: var(--cafe-control-line);
+  --ring: var(--cafe-accent);
+  --radius: var(--cafe-radius-control);
+}
+
+@theme inline {
+  --font-sans: var(--cafe-sans);
+  --font-mono: var(--cafe-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-scrim: var(--cafe-scrim);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * { @apply border-border; }
+  button:not(:disabled), [role='combobox']:not(:disabled) { cursor: pointer; }
+}
+
+/* External replacement for Base UI Select's optional injected scrollbar CSS. */
+.base-ui-disable-scrollbar { scrollbar-width: none; }
+.base-ui-disable-scrollbar::-webkit-scrollbar { display: none; }
+
+[data-slot='button'][aria-busy] { position: relative; }
+[data-slot='button'][aria-busy='true'] { cursor: wait; opacity: 1; }
+[data-slot='button'][aria-busy='true'] .button-content { visibility: hidden; }
+[data-slot='button'][aria-busy='true'] .button-loading { display: flex; }

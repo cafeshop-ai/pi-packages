@@ -1,0 +1,21 @@
+.drawer { scrollbar-width: thin; }
+.drawer.room[data-side] { width: min(440px,calc(100vw - 24px)); max-width: 440px; padding: 22px; }
+.roomHeader { margin-bottom: 12px; padding-bottom: 0; }
+@media (max-width:767px) { .drawer.room[data-side] { width: calc(100vw - 12px); max-width: none; padding: 16px 16px max(20px,env(safe-area-inset-bottom)); } }
+@media (max-width: 767px) {
+  .drawer[data-side] { top: var(--cafe-viewport-top,0px); bottom: auto; height: var(--cafe-viewport-height,100dvh); max-height: var(--cafe-viewport-height,100dvh); width: calc(100vw - 16px); padding: 16px 16px max(20px,env(safe-area-inset-bottom)); }
+  .drawer button { min-height: 44px; }
+  .drawer input, .drawer textarea { font-size: 16px; }
+  .drawer.compact[data-side] { top: calc(var(--cafe-viewport-top,0px) + var(--cafe-viewport-height,100dvh) / 2); height: auto; max-height: calc(var(--cafe-viewport-height,100dvh) - 24px); width: calc(100vw - 24px); }
+}
+.compact[data-side] {
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+  max-width: 420px;
+  height: auto;
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--cafe-line);
+  border-radius: var(--cafe-radius-panel);
+  transition-property: opacity;
+}

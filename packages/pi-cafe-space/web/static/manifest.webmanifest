@@ -1,0 +1,16 @@
+{
+  "name": "Pi Cafe Space",
+  "short_name": "Pi Cafe Space",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1511",
+  "theme_color": "#1a1511",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

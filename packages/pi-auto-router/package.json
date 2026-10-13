@@ -1,0 +1,28 @@
+{
+  "name": "pi-auto-router",
+  "version": "0.2.0",
+  "description": "Configurable classifier-powered model router for Pi with optional image input",
+  "license": "MIT",
+  "author": "cafecodework",
+  "type": "module",
+  "files": [
+    "src",
+    "test",
+    "README.md",
+    "LICENSE",
+    "tsconfig.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/router.test.mjs",
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=1.1.0",
+    "@earendil-works/pi-coding-agent": ">=1.1.0"
+  }
+}

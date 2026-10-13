@@ -1,0 +1,28 @@
+{
+  "scripts": {
+    "build": "node scripts/build-source.mjs",
+    "prepack": "npm run build",
+    "check": "node scripts/source-verify.mjs check",
+    "test": "node scripts/source-verify.mjs test",
+    "relay": "node scripts/run-relay.mjs",
+    "remote:setup": "node scripts/remote/setup.mjs",
+    "remote:run": "node scripts/remote/run.mjs",
+    "room:setup": "node scripts/remote/room-setup.mjs",
+    "room:run": "node scripts/remote/room-run.mjs",
+    "room:install": "node scripts/remote/install-client.mjs",
+    "room:server": "node scripts/remote/configure-server.mjs",
+    "room:doctor": "node scripts/remote/doctor.mjs",
+    "room:bootstrap": "node scripts/remote/room-bootstrap.mjs",
+    "relay:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-relay.ps1",
+    "relay:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-relay.ps1",
+    "pi:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pi.ps1"
+  },
+  "runtimeDependencies": ["ws"],
+  "sourceBuildPins": {
+    "typescript": "5.9.3",
+    "@types/node": "22.20.1",
+    "@assistant-ui/core": "0.3.17",
+    "assistant-cloud": "0.1.43"
+  },
+  "files": ["dist", "scripts", "README.md", "INSTALL.md", "AI_INSTALL.md", "LICENSE", "THIRD-PARTY-NOTICES.txt"]
+}

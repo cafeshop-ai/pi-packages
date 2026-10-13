@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Pi Cafe Space">
+  <rect width="192" height="192" rx="40" fill="#101827"/>
+  <circle cx="96" cy="96" r="66" fill="#f4b860"/>
+  <path d="M55 62h82v18h-9v50h-18V80H82v50H64V80h-9z" fill="#101827"/>
+  <circle cx="73" cy="49" r="8" fill="#f4b860"/>
+  <circle cx="119" cy="49" r="8" fill="#f4b860"/>
+</svg>

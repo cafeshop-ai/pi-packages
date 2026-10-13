@@ -1,0 +1,28 @@
+@use './tokens';
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 280px; background: var(--cafe-page); color: var(--cafe-ink); font: 400 14px/1.6 var(--cafe-sans); -webkit-font-smoothing: antialiased; }
+/* Controls are styled by components/ui, not broad element selectors. */
+/* Native links/summary keep a focus fallback; shadcn utilities own their ring. */
+@layer base {
+  :focus-visible { outline: 2px solid var(--cafe-accent); outline-offset: 3px; }
+}
+/* Forced colors suppress box-shadow rings: retain the native focus indicator. */
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid Highlight; }
+}
+a { color: var(--cafe-accent); text-underline-offset: 4px; }
+svg { flex: 0 0 auto; vertical-align: middle; }
+code, pre { font-family: var(--cafe-mono); }
+::selection { background: var(--cafe-accent); color: var(--cafe-page); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.button-content { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.button-loading { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; }
+.cafe-steam { width: 48px; height: 22px; }
+.cafe-steam path { stroke-dasharray: .62 .38; animation: cafe-steam 2.4s linear infinite; }
+.cafe-steam path:nth-child(2) { animation-delay: -.8s; }
+.cafe-steam path:nth-child(3) { animation-delay: -1.6s; }
+@keyframes cafe-steam { 0% { stroke-dashoffset: 1; opacity: .5; } 50% { opacity: 1; } 100% { stroke-dashoffset: 0; opacity: .5; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .cafe-steam path { stroke-dasharray: none; opacity: 1; }
+}

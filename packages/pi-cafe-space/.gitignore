@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.refactor/
+/relay/internal/webui/assets/
+/relay/internal/webui/.pi-cafe-assets-*/
+.runtime/
+.runtime-go/
+*.log
+.tmp-*
+.relay.pid
+.env*
+!.env.example
+.DS_Store
+Thumbs.db

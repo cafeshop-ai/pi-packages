@@ -1,0 +1,27 @@
+.panel { display: grid; gap: 16px; min-width: 0; color: var(--cafe-ink); }
+.eyebrow { margin: 0; font-size: 11px; letter-spacing: .12em; color: var(--cafe-muted); }
+.setting { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--cafe-line); border-radius: var(--cafe-radius-panel); background: var(--cafe-surface-secondary); }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
+.toggle > span { display: grid; gap: 6px; }
+.toggle strong { font-size: 15px; font-weight: 550; }
+.toggle small { color: var(--cafe-muted); font-size: 11px; }
+.toggle input { width: 24px; height: 24px; accent-color: var(--cafe-action); flex: 0 0 auto; }
+.panel p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.setting > p, .footnote { color: var(--cafe-muted); }
+.confirm { display: grid; gap: 12px; border-top: 1px solid var(--cafe-line); padding-top: 14px; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 12px; }
+.actions button, .request > button { min-height: 44px; min-width: 76px; }
+.section { display: grid; gap: 12px; }
+.section h3 { display: flex; justify-content: space-between; margin: 0; font-size: 14px; font-weight: 550; }
+.section h3 span { color: var(--cafe-accent); font-family: var(--cafe-mono); }
+.request { padding: 14px; border: 1px solid var(--cafe-line); border-radius: 10px; min-width: 0; }
+.request header { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.request strong, .request b { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.request small { display: block; font-size: 11px; line-height: 1.7; color: var(--cafe-muted); margin-top: 4px; }
+.request > button { margin-top: 10px; }
+.empty { color: var(--cafe-muted); padding-block: 8px; }
+.panel .error { color: var(--cafe-danger); }
+.panel .footnote { font-size: 11px; }
+.rules { border-top: 1px solid var(--cafe-line); padding-top: 8px; color: var(--cafe-muted); }
+.rules summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-size: 12px; }
+.rules p { padding-bottom: 8px; }

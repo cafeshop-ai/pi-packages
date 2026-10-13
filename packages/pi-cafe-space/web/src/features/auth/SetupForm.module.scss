@@ -1,0 +1,53 @@
+/* Match the existing workspace, not a separate marketing theme. */
+.stage { padding: clamp(20px, 5vh, 48px) 20px; }
+.language { margin-left: auto; }
+.card {
+  width: min(100%, 440px);
+  min-width: 0;
+  margin: auto;
+  padding: 28px;
+  border: 1px solid var(--cafe-line);
+  border-radius: var(--cafe-radius-panel);
+  background: var(--cafe-surface);
+  box-shadow: var(--cafe-shadow);
+  text-align: left;
+  font-family: var(--cafe-sans);
+}
+.eyebrow { margin: 0 0 10px; color: var(--cafe-accent); font-size: 10px; font-weight: 600; letter-spacing: .12em; }
+.title { margin: 0 0 8px; font: 400 24px/1.4 var(--cafe-serif); letter-spacing: -.025em; }
+.form { display: grid; min-width: 0; gap: 20px; text-align: left; }
+.intro { margin: 0; color: var(--cafe-muted); font-size: 13px; line-height: 1.65; }
+.fields { display: grid; gap: 18px; min-width: 0; }
+.field { display: grid; gap: 8px; min-width: 0; }
+.labelRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; }
+.field label { display: block; margin: 0; text-align: left; font-size: 13px; font-weight: 500; line-height: 1.5; }
+.labelRow .generate { width: auto; min-height: 28px; padding: 3px 0 3px 6px; gap: 5px; border-radius: 4px; color: var(--cafe-muted); font-size: 12px; font-weight: 400; }
+.labelRow .generate:hover { color: var(--cafe-accent); background: transparent; }
+.labelRow .generate svg { width: 14px; height: 14px; }
+.inputWrap { position: relative; min-width: 0; }
+.field .input {
+  width: 100%; height: 40px; min-width: 0; padding: 8px 12px;
+  border-radius: var(--cafe-radius-control);
+  background: var(--cafe-page);
+  color: var(--cafe-ink);
+  font: 13px/1.5 var(--cafe-mono);
+}
+.inputWrap .input { padding-right: 58px; }
+.inputWrap .visibility { position: absolute; right: 4px; top: 4px; width: auto; min-height: 32px; height: 32px; padding: 4px 8px; color: var(--cafe-muted); font-size: 12px; font-weight: 400; }
+.note { display: flex; align-items: flex-start; gap: 8px; padding-top: 2px; color: var(--cafe-muted); }
+.note > svg { width: 14px; height: 17px; flex: 0 0 auto; margin-top: 1px; }
+.note p { margin: 0; font-size: 12px; line-height: 1.65; }
+.note p + p { margin-top: 4px; }
+.footer { padding-top: 16px; border-top: 1px solid var(--cafe-line); }
+.footer .submit { width: 100%; min-height: 40px; font-size: 13px; }
+.error { display: grid; gap: 8px; }
+.error p { margin: 0; color: var(--cafe-danger); font-size: 12px; line-height: 1.6; }
+.error button { width: fit-content; min-height: 32px; padding: 4px 8px; font-size: 12px; }
+@media (max-width: 480px) {
+  .stage { padding: 20px 16px; }
+  .card { padding: 24px 20px; }
+  .title { font-size: 22px; }
+  .field .input { height: 44px; font-size: 16px; }
+  .inputWrap .visibility { top: 6px; }
+  .footer .submit { min-height: 44px; }
+}

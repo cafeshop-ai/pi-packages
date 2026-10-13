@@ -1,0 +1,40 @@
+{
+  "name": "@cafecodework/pi-openai-search",
+  "version": "0.1.0",
+  "description": "OpenAI web search that automatically follows the current Pi session connection",
+  "license": "MIT",
+  "author": "cafecodework",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "web-search",
+    "codex"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test:live": "node --experimental-strip-types test/live.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "undici": "^7.30.0"
+  }
+}

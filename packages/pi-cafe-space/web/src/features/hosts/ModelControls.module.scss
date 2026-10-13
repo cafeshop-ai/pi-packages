@@ -1,0 +1,10 @@
+.controls { margin: 24px 8px 8px; padding-top: 16px; border-top: 1px solid var(--cafe-line); font-size: 12px; }
+.controls summary { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--cafe-muted); padding: 6px 0; list-style: none; }
+.controls summary::-webkit-details-marker { display: none; }
+.controls summary::after { content: '+'; margin-left: auto; }
+.controls[open] summary::after { content: '−'; }
+.controls summary svg { width: 16px; height: 16px; }
+.controls form { margin-top: 16px; }
+.controls input { min-width: 0; max-width: 100%; width: 100%; }
+.controls p { overflow-wrap: anywhere; color: var(--cafe-muted); padding: 12px; background: var(--cafe-page); border-radius: var(--cafe-radius-control); line-height: 1.8; }
+.controls form button { width: 100%; }

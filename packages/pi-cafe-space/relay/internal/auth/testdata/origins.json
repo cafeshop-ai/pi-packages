@@ -1,0 +1,178 @@
+[
+  {
+    "input": "http://localhost",
+    "expected": "http://localhost"
+  },
+  {
+    "input": " HTTP://LOCALHOST:80/ ",
+    "expected": "http://localhost"
+  },
+  {
+    "input": "https://example.test:443",
+    "expected": "https://example.test"
+  },
+  {
+    "input": "http:example.test",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http:/example.test",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http:\\example.test",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://127.1",
+    "expected": "http://127.0.0.1"
+  },
+  {
+    "input": "http://0x7f000001",
+    "expected": "http://127.0.0.1"
+  },
+  {
+    "input": "http://0177.0.0.1",
+    "expected": "http://127.0.0.1"
+  },
+  {
+    "input": "http://4294967295",
+    "expected": "http://255.255.255.255"
+  },
+  {
+    "input": "http://4294967296",
+    "expected": null
+  },
+  {
+    "input": "http://example.123",
+    "expected": null
+  },
+  {
+    "input": "http://08",
+    "expected": null
+  },
+  {
+    "input": "http://[0:0:0:0:0:0:0:1]",
+    "expected": "http://[::1]"
+  },
+  {
+    "input": "http://[::ffff:127.0.0.1]",
+    "expected": "http://[::ffff:7f00:1]"
+  },
+  {
+    "input": "http://foo_bar.test",
+    "expected": "http://foo_bar.test"
+  },
+  {
+    "input": "https://例子.测试",
+    "expected": "https://xn--fsqu00a.xn--0zwm56d"
+  },
+  {
+    "input": "https://xn--fsqu00a.xn--0zwm56d",
+    "expected": "https://xn--fsqu00a.xn--0zwm56d"
+  },
+  {
+    "input": "http://%65xample.test",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test/.",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test/..",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test/%2e",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test/x/..",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test/a/../",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test:",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test:00080",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "http://example.test:0",
+    "expected": "http://example.test:0"
+  },
+  {
+    "input": "http://example.test:65536",
+    "expected": null
+  },
+  {
+    "input": "http://example.test?",
+    "expected": null
+  },
+  {
+    "input": "http://example.test#",
+    "expected": null
+  },
+  {
+    "input": "http://user:pass@example.test",
+    "expected": null
+  },
+  {
+    "input": "http://example.test/path",
+    "expected": null
+  },
+  {
+    "input": "null",
+    "expected": null
+  },
+  {
+    "input": "",
+    "expected": null
+  },
+  {
+    "input": "//example.test",
+    "expected": null
+  },
+  {
+    "input": "file:///tmp",
+    "expected": null
+  },
+  {
+    "input": "http://a\nb.test",
+    "expected": "http://ab.test"
+  },
+  {
+    "input": "http://-foo.test",
+    "expected": "http://-foo.test"
+  },
+  {
+    "input": "http://foo-.test",
+    "expected": "http://foo-.test"
+  },
+  {
+    "input": "http://a..b",
+    "expected": "http://a..b"
+  },
+  {
+    "input": "http://[::1%25eth0]",
+    "expected": null
+  },
+  {
+    "input": "http://example.test/%2F",
+    "expected": null
+  },
+  {
+    "input": "http://example.test/./",
+    "expected": "http://example.test"
+  },
+  {
+    "input": "﻿http://example.test ",
+    "expected": "http://example.test"
+  }
+]

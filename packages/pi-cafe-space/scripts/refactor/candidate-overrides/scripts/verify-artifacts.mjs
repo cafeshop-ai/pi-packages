@@ -1,0 +1,12 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { relayBinary } from './relay-path.mjs';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const binary = await relayBinary(root);
+const result = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 5000 });
+if (result.error || result.status !== 0) throw Error('Relay executable verification failed');
+const identity = JSON.parse(result.stdout); const metadata = JSON.parse(await readFile(new URL('../dist/relay/build.json', import.meta.url), 'utf8'));
+if (identity.webDigest !== metadata.webDigest || identity.version !== metadata.version) throw Error('Embedded Web identity mismatch');
+await readFile(new URL('../dist/extension/index.js', import.meta.url));
+console.log('PASS: prebuilt candidate identity, platform, checksum and extension entry');

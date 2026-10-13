@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "outDir": ".refactor/ts", "sourceMap": false, "declaration": false },
+  "exclude": ["src/**/*.test.ts"]
+}

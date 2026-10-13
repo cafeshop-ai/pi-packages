@@ -1,0 +1,52 @@
+/* Café workspace tokens, adapted from cafe-design@926e11c4.
+   Semantic status colors and workspace dimensions are product additions.
+   Components consume tokens, never individual palette swatches. */
+:root, [data-theme='dark'] {
+  color-scheme: dark;
+  --cafe-page: #1a1511;
+  --cafe-surface: #221a15;
+  --cafe-surface-secondary: #2a211a;
+  --cafe-ink: #faf7f4;
+  --cafe-muted: #b8ada1;
+  --cafe-line: #41382e;
+  --cafe-control-line: #8b7967;
+  --cafe-accent: #e1b88f;
+  --cafe-action: #8a5a2f;
+  --cafe-action-end: #6d4726;
+  --cafe-action-ink: #ffffff;
+  --cafe-success: #a2c8aa;
+  --cafe-danger: #f2aaa0;
+  --cafe-warning: #e5bf80;
+  --cafe-shadow: 0 2px 8px #0003, 0 16px 40px -12px #0006;
+  --cafe-scrim: #100c09a6;
+  --cafe-serif: Georgia, 'Noto Serif CJK SC', 'Songti SC', SimSun, serif;
+  --cafe-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cafe-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --cafe-ease: cubic-bezier(.22, 1, .36, 1);
+  --cafe-radius-control: 8px;
+  --cafe-radius-panel: 14px;
+  --cafe-space-1: 4px;
+  --cafe-space-2: 8px;
+  --cafe-space-3: 12px;
+  --cafe-space-4: 16px;
+  --cafe-space-5: 24px;
+  --cafe-space-6: 32px;
+  --cafe-sidebar-width: 240px;
+  --cafe-files-width: 300px;
+  --cafe-transcript-width: 52rem;
+}
+[data-theme='light'] {
+  color-scheme: light;
+  --cafe-page: #faf7f4;
+  --cafe-surface: #ffffff;
+  --cafe-surface-secondary: #f7f3ef;
+  --cafe-ink: #1f1a15;
+  --cafe-muted: #6d645b;
+  --cafe-line: #d1c7bc;
+  --cafe-control-line: #95816d;
+  --cafe-accent: #6d4726;
+  --cafe-success: #386a43;
+  --cafe-danger: #a53529;
+  --cafe-warning: #825510;
+  --cafe-shadow: 0 2px 8px #23180b0a, 0 16px 40px -12px #23180b24;
+}

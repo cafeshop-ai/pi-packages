@@ -1,0 +1,16 @@
+{
+  "name": "@cafecodework/pi-context",
+  "version": "0.1.0",
+  "description": "A Pi extension that displays context-window usage and message composition",
+  "license": "MIT",
+  "author": "cafecodework",
+  "files": ["src", "assets", "README.md", "LICENSE", "tsconfig.json"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

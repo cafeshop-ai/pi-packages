@@ -1,0 +1,26 @@
+{
+  "qrcode-generator@2.0.4": {
+    "license": "MIT",
+    "attribution": "Copyright (c) 2009 Kazuhiko Arase (upstream dist/qrcode.js header)",
+    "repository": "https://github.com/kazuhikoarase/qrcode-generator",
+    "gitHead": "83b7e8fe3fddd3b0368dbafd6ce56995bd25e3c8"
+  },
+  "@earendil-works/pi-tui@0.84.4": {
+    "license": "MIT",
+    "attribution": "Mario Zechner (npm author field)",
+    "repository": "https://github.com/earendil-works/pi/tree/b79e4cc834970cca69daebffab7df1da7d1e52c4/packages/tui",
+    "gitHead": "b79e4cc834970cca69daebffab7df1da7d1e52c4"
+  },
+  "react-remove-scroll-bar@2.3.8": {
+    "license": "MIT",
+    "attribution": "Anton Korzunov <thekashey@gmail.com> (npm author field)",
+    "repository": "https://github.com/theKashey/react-remove-scroll-bar",
+    "gitHead": "b3b1287aad81def2e2ae707274b74531b61ddbaf"
+  },
+  "use-composed-ref@1.4.0": {
+    "license": "MIT",
+    "attribution": "Andarist/use-composed-ref (npm repository field; no copyright notice supplied)",
+    "repository": "https://github.com/Andarist/use-composed-ref",
+    "gitHead": "ea2c9d969f2f90a349f4c99338b806423824cea2"
+  }
+}

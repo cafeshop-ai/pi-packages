@@ -1,0 +1,20 @@
+import { expect, it } from 'vitest';
+import { createRelayStorage } from './storage';
+it('keeps legacy session keys and falls back when access or writes throw', () => {
+    const broken = createRelayStorage(() => { throw new DOMException('blocked', 'SecurityError'); });
+    broken.set('token', 'secret');
+    expect(broken.get('token')).toBe('secret');
+    broken.remove('token');
+    expect(broken.get('token')).toBeNull();
+    const map = new Map<string, string>();
+    const storage = createRelayStorage(() => ({ getItem: k => map.get(k) ?? null, setItem: (k, v) => { map.set(k, v); }, removeItem: k => { map.delete(k); } }));
+    storage.set('room', 'main');
+    expect(map.get('pi-collab-room')).toBe('main');
+    expect(storage.peerId()).toBe(storage.peerId());
+    expect(() => storage.set('token', 'x'.repeat(4097))).toThrow();
+    const quota = createRelayStorage(() => ({ getItem: () => 'old', setItem: () => { throw Error('quota'); }, removeItem: () => { throw Error('blocked'); } }));
+    quota.set('token', 'new');
+    expect(quota.get('token')).toBe('new');
+    quota.remove('token');
+    expect(quota.get('token')).toBeNull();
+});

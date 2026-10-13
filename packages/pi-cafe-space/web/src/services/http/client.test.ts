@@ -1,0 +1,20 @@
+import { expect, it, vi } from 'vitest';
+const { get, create } = vi.hoisted(() => { const get = vi.fn(); return { get, create: vi.fn((..._args: unknown[]) => ({ get })) }; });
+vi.mock('axios', () => ({ default: { create: (...args: unknown[]) => create(...args) } }));
+import { createHttpClient } from './client';
+it('requests only bounded same-origin endpoints without credentials and forwards cancellation', async () => {
+    const client = createHttpClient();
+    const abort = new AbortController();
+    get.mockResolvedValueOnce({ data: '{"protocolVersion":1,"wsPath":"/ws","defaultRoom":"main","token":"ignored"}' });
+    expect(await client.config(abort.signal)).toEqual({ protocolVersion: 1, wsPath: '/ws', defaultRoom: 'main' });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ timeout: 5000, adapter: 'xhr', withCredentials: false }));
+    expect(get).toHaveBeenCalledWith('/api/config', { signal: abort.signal });
+    get.mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'));
+    abort.abort();
+    await expect(client.health(abort.signal)).rejects.toThrow('Aborted');
+    get.mockResolvedValueOnce({ data: '{"protocolVersion":1,"wsPath":"https://evil.test","defaultRoom":"main"}' });
+    await expect(client.config()).rejects.toThrow('Invalid relay config');
+    get.mockResolvedValueOnce({ data: 'x'.repeat(4097) });
+    await expect(client.health()).rejects.toThrow('Invalid relay HTTP response');
+    expect(JSON.stringify(create.mock.calls)).not.toMatch(/Authorization|secret|token/);
+});

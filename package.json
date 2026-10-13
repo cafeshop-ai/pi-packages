@@ -1,0 +1,31 @@
+{
+  "name": "cafecodework-pi-packages",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pi coding agent packages by cafecodework",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.base.json",
+    "pi-cafe-space:build": "npm run build --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:pack": "npm run pack --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:start": "npm run start --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:check": "npm run check --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:test": "npm run test --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:relay:start": "npm run relay:start --workspace=@cafecodework/pi-cafe-space",
+    "pi-cafe-space:relay:stop": "npm run relay:stop --workspace=@cafecodework/pi-cafe-space",
+    "pi-subagent:test": "npm run test --workspace=@cafecodework/pi-subagent",
+    "pi-auto-router:test": "npm run test --workspace=pi-auto-router",
+    "pi-auto-router:check": "npm run check --workspace=pi-auto-router"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.3.25",
+    "typescript": "^5.0.0"
+  }
+}

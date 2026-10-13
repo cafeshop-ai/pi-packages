@@ -1,0 +1,22 @@
+{
+  "name": "@cafecodework/pi-subagent",
+  "version": "0.2.0",
+  "description": "A lightweight Pi extension for delegating isolated tasks to subprocess agents",
+  "license": "MIT",
+  "author": "cafecodework",
+  "files": ["src/index.ts", "src/agents.ts", "src/invocation.ts", "README.md", "LICENSE", "tsconfig.json"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "test": "vitest run src"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,27 @@
+.choice { display:grid;gap:16px;min-width:0; }
+.eyebrow { margin:0 0 8px;font-size:11px;letter-spacing:.12em;color:var(--cafe-muted); }
+.choice h3 { margin:0;font-size:20px;line-height:1.4;font-weight:550;color:var(--cafe-ink); }
+.choice .primary { width:100%;min-height:72px;padding:16px;justify-content:flex-start;gap:13px;white-space:normal;text-align:left;border-radius:14px; }
+.primary > span:nth-child(2) { display:grid;gap:5px;flex:1;min-width:0;overflow-wrap:anywhere; }
+.primary small { font-size:11px;font-weight:400;opacity:.8;line-height:1.5; }
+.primary svg { flex-shrink:0; }
+.mark { width:30px;height:30px;display:grid;place-items:center;border:1px solid currentColor;border-radius:50%;font-family:var(--cafe-serif,Georgia,serif);font-size:21px;flex-shrink:0; }
+.choice .guest { display:flex;flex-direction:column;align-items:flex-start;gap:5px;padding:14px 16px;min-height:64px;border:1px solid var(--cafe-line);border-radius:14px;white-space:normal;text-align:left; }
+.guest small { font-size:11px;color:var(--cafe-muted);font-weight:400; }
+.note { display:flex;align-items:flex-start;gap:8px;margin:3px 0 0;font-size:12px;line-height:1.75;color:var(--cafe-muted); }
+.note svg { width:15px;min-width:15px;margin-top:3px; }
+.error { font-size:12px;line-height:1.7;color:var(--cafe-danger);margin:0; }
+.chip { display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;padding:12px 14px;border:1px solid var(--cafe-line);border-radius:12px;background:var(--cafe-surface-secondary);margin:0 0 18px; }
+.chip > div { display:grid;gap:5px;min-width:0; }
+.chip strong { font-size:14px;font-weight:550;overflow-wrap:anywhere; }
+.chip small { color:var(--cafe-muted);font-size:11px;line-height:1.5; }
+.chip button { font-size:12px;flex-shrink:0;min-height:40px; }
+.identityButton { max-width:100%;display:flex;align-items:center;gap:8px;overflow-wrap:anywhere;white-space:normal; }
+.identityButton small { color:var(--cafe-muted);font-size:10px;flex-shrink:0; }
+.menu { display:grid;gap:14px; }
+.menu > p { font-size:13px;line-height:1.8;color:var(--cafe-muted);margin:0 0 10px; }
+.menu button { min-height:44px; }
+.callback { width:min(100%,420px);padding:26px;display:grid;gap:18px; }
+.callback h2 { margin:0;font-size:21px; }
+.callback p { line-height:1.8; }
+@media(max-width:767px){.choice{gap:14px}.choice .primary{min-height:76px}.choice h3{font-size:19px}.chip{padding:11px 12px}.identityButton{font-size:13px}}

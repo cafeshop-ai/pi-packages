@@ -1,0 +1,4 @@
+{
+  "from": "import { ensureLocalRelay } from \"./local-relay.js\";",
+  "to": "import { ensureLocalRelay } from \"./local-relay-go.js\";"
+}

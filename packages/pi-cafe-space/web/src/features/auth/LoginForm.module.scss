@@ -1,0 +1,8 @@
+.form { display: grid; gap: 18px; }
+.form label { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.form input { width: 100%; }
+.form button { width: 100%; min-height: 44px; }
+.form .help { margin: -8px 0 0; color: var(--cafe-muted); font-size: 12px; line-height: 1.7; }
+.room { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin: 2px 0; padding: 12px 0; border-block: 1px solid var(--cafe-line); font-size: 12px; color: var(--cafe-muted); }
+.room strong { color: var(--cafe-accent); font: 400 12px/1.6 var(--cafe-mono); overflow-wrap: anywhere; min-width: 0; }
+.form [role='alert'] { margin: 0; color: var(--cafe-danger); font-size: 13px; }

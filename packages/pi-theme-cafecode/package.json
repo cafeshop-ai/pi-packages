@@ -1,0 +1,21 @@
+{
+  "name": "@cafecodework/pi-theme-cafecode",
+  "version": "0.1.0",
+  "description": "A CaféCode visual theme and UI extension for Pi maintained by cafecodework",
+  "keywords": ["pi-package", "pi-extension", "theme", "tui"],
+  "license": "MIT",
+  "author": "cafecodework",
+  "files": ["extension", "theme", "README.md", "LICENSE"],
+  "dependencies": {
+    "diff": "^9.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": ["./extension/index.ts"],
+    "themes": ["./theme"]
+  },
+  "type": "module"
+}
