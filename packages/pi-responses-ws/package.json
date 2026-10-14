@@ -1,0 +1,49 @@
+{
+  "name": "@cafeshop-ai/pi-responses-ws",
+  "version": "0.1.0",
+  "description": "Session-scoped WebSocket transport for openai-responses providers in Pi",
+  "license": "MIT",
+  "author": "cafecodework",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cafeshop-ai/pi-packages.git",
+    "directory": "packages/pi-responses-ws"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "openai": "7.19.0",
+    "ws": "8.21.3",
+    "https-proxy-agent": "7.0.6",
+    "undici": "8.10.2"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}
