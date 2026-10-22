@@ -99,6 +99,8 @@ test('listen mode: a reply quoting the nonce with the exact replyTo is one room 
   let stop = listen(roomId, me, true);
   const exact = await blindAsync(['respond', '--home', h, '--scenario', 'idle', '--wait-seconds', '20']); await stop();
   assert.equal(exact.code, 0); assert.equal(exact.json().responded, true); assert.match(exact.json().label, /^本次响应测试成功，耗时/); assert.match(exact.json().hostAutoWake, /^未验证/);
+  // A run that crashed after sending its test leaves no local record; the next run must not reuse its id.
+  await api({ op: 'send', roomId, id: 'blind-respond-2', to: me.memberId, text: '【响应测试】收到请直接在房间回复验证码 ABCDEFGHJKMNPQRSTUVW，回复时把 replyTo 设为这条消息，无需做其他事情。' }, owner(h).token);
   // A busy agent can answer after a whole long poll has passed without news.
   stop = listen(roomId, me, true, () => sleep(27_000));
   const late = await blindAsync(['respond', '--home', h, '--scenario', 'busy', '--wait-seconds', '60']); await stop();
@@ -108,7 +110,7 @@ test('listen mode: a reply quoting the nonce with the exact replyTo is one room 
   const sloppy = await blindAsync(['respond', '--home', h, '--scenario', 'quiet', '--wait-seconds', '4']); await stop();
   assert.equal(sloppy.code, 1); assert.equal(sloppy.json().label, '尚未确认响应，原因未知');
   const verdict = blind(['judge', '--home', h]); const checks = Object.fromEntries(verdict.json().checks.map(c => [c.check, c]));
-  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /3 次响应测试中 2 次/);
+  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /4 次响应测试中 2 次/);
   assert.equal(checks.roomNoIntervention.ok, true, 'the tests themselves are not intervention');
   assert(verdict.json().notCovered.some(n => n.startsWith('自动响应（宿主唤醒）：未验证')));
   const log = readFileSync(join(h, 'respond.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));

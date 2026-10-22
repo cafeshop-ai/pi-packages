@@ -151,7 +151,8 @@ async function respond({ home, waitSeconds, scenario, host, transcript, graceSec
   const nonce = Array.from(randomBytes(20), b => alphabet[b % alphabet.length]).join('');
   const log = join(home, 'respond.jsonl'); const n = (existsSync(log) ? readPrivate(log) : '').split('\n').filter(Boolean).length + 1;
   const runId = randomUUID(); const started = performance.now(); const before = host ? snapshot(transcript) : undefined;
-  const probe = await call(origin, { op: 'send', roomId: run.roomId, id: `blind-respond-${n}`, to: agent.id, text: `【响应测试】收到请直接在房间回复验证码 ${nonce}，回复时把 replyTo 设为这条消息，无需做其他事情。` }, run.token);
+  // The id comes from this run, not the local log: a run that crashed after sending leaves no record but still owns its id.
+  const probe = await call(origin, { op: 'send', roomId: run.roomId, id: `blind-respond-${runId}`, to: agent.id, text: `【响应测试】收到请直接在房间回复验证码 ${nonce}，回复时把 replyTo 设为这条消息，无需做其他事情。` }, run.token);
   let answer, after = probe.seq; const deadline = Date.now() + waitSeconds * 1000;
   while (!answer && Date.now() < deadline) {
     const page = await call(origin, { op: 'read', roomId: run.roomId, after, wait: Math.max(1, Math.min(25, Math.floor((deadline - Date.now()) / 1000))) }, run.token);
