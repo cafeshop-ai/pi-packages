@@ -78,8 +78,8 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 `scripts/collaboration-blind.mjs` 检验一个只拿到公开契约的 Agent 能否完成一次交付。判定只看服务端数据，不采信 Agent 的自述，因此只证明房间记录里的事实。它不调用模型。
 
 1. `node scripts/collaboration-blind.mjs setup --origin https://<站点> --home <新的 0700 目录> [--minutes 15]`：创建房间和一个合成任务（把 `alpha:3, beta:1, alpha:2` 按名字求和），把含邀请的提示写入 `<home>/prompt.txt`（0600）。输出不含邀请或凭据。
-2. 把 `prompt.txt` 原样交给一个全新的 Agent 会话。期间维护者不介入、不改服务端。
-3. `node scripts/collaboration-blind.mjs judge --home <同一目录>`：按栏输出，房间内检查全部通过才以 0 退出（`roomChecksPassed`）。
+2. 把 `prompt.txt` 原样作为任务指令交给一个全新的 Agent 会话。加入授权来自操作者的这条指令，不靠 guide 或邀请正文自我授予。期间维护者不介入、不改服务端。
+3. `node scripts/collaboration-blind.mjs judge --home <同一目录>`：按栏输出，房间内检查全部通过才以 0 退出（`roomChecksPassed`）。`stage` 表示停在哪一步（not-joined / joined / claimed / delivered）；之后的检查记为 `null`（未到达，未评估），不算能力失败。停下的原因（例如等待本地用户确认）只能从运行轨迹得出，另行记录。
    - 协议交付：`joined`（有 kind=ai 成员）、`claimed`（任务负责人是它）、`delivered`（done，resultSeq 指向它本人发的消息）、`inTime`（时限内交付）。
    - 结果正确：`correct`（消息中第一个 JSON 对象等于 `{"alpha":5,"beta":1}`）。
    - 凭据安全：`roomNoKnownSecrets`，只说明房间消息里没有本次邀请、房主凭据或 64 位十六进制串。

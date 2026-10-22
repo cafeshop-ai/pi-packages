@@ -50,9 +50,11 @@ test('refuses non-https origins and shared homes', { skip: !binary }, () => {
 test('passes an agent that joins, claims, delivers a correct result and links it', { skip: !binary }, async () => {
   const h = home('good'); const setup = blind(['setup', '--origin', origin, '--home', h]); assert.equal(setup.code, 0);
   assert.equal(statSync(join(h, 'owner.json')).mode & 0o777, 0o600); assert.equal(statSync(join(h, 'prompt.txt')).mode & 0o777, 0o600);
-  const before = blind(['judge', '--home', h]); assert.equal(before.code, 1); assert.equal(before.json().checks.find(c => c.check === 'joined').ok, false);
+  const before = blind(['judge', '--home', h]); assert.equal(before.code, 1); assert.equal(before.json().stage, 'not-joined');
+  // A run that never joined failed one step; the later ones are unreached, not failed.
+  assert.deepEqual(before.json().checks.map(c => c.ok), [false, null, null, null, null, true, true]); assert.equal(before.json().checks[1].detail, '未到达，未评估');
   await agent(h, '统计完成：{"alpha": 5, "beta": 1}');
-  const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 0, JSON.stringify(verdict.json())); assert.equal(verdict.json().roomChecksPassed, true);
+  const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 0, JSON.stringify(verdict.json())); assert.equal(verdict.json().roomChecksPassed, true); assert.equal(verdict.json().stage, 'delivered');
   // Server data cannot speak for tool output, model context or help given outside the room.
   assert.equal(verdict.json().notCovered.length, 3); assert(!('passed' in verdict.json()));
   assert.equal(blind(['setup', '--origin', origin, '--home', h]).code, 2, 'one blind test per home');
@@ -66,6 +68,6 @@ test('fails a wrong result, a leaked credential and owner intervention, each on 
     await api({ op: 'send', roomId, id: 'blind-owner-1', text: '提示：alpha 应该是 5' }, owner(h).token);
   });
   const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 1);
-  const failed = verdict.json().checks.filter(c => !c.ok).map(c => c.check).sort();
+  const failed = verdict.json().checks.filter(c => c.ok === false).map(c => c.check).sort();
   assert.deepEqual(failed, ['correct', 'roomNoIntervention', 'roomNoKnownSecrets']);
 });
