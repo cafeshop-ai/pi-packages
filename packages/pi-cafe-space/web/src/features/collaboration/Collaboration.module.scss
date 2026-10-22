@@ -17,5 +17,8 @@
 .invitation { border-bottom: 1px solid var(--cafe-line); padding: 20px; display: grid; gap: 12px; p { color: var(--cafe-muted); font-size: 13px; } }
 .error, .confirm { padding: 16px; border: 1px solid var(--cafe-control-line); border-radius: 8px; overflow-wrap: anywhere; }
 .error { color: var(--cafe-danger); }
+.paused { margin: 16px 20px 0; padding: 10px 14px; border: 1px solid var(--cafe-warning); border-radius: 8px; color: var(--cafe-warning); font-size: 13px; }
+.delivery { display: block; margin-top: 4px; }
+.connector { &::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--cafe-muted); vertical-align: middle; } &[data-tone=online]::before { background: var(--cafe-success); } &[data-tone=paused]::before { background: var(--cafe-warning); } &[data-tone=offline]::before { background: var(--cafe-danger); } }
 .confirm { display: flex; flex-wrap: wrap; gap: 8px; p { flex-basis: 100%; font-size: 13px; } }
 @media (max-width: 760px) { .page { padding: 0 12px 12px; } .header { min-height: 60px; } .brand { font-size: 20px; flex-wrap: wrap; gap: 4px; } .columns { grid-template-columns: minmax(0, 1fr); } .members { border-left: 0; border-top: 1px solid var(--cafe-line); } .card { padding: 20px; margin: 24px auto; } .messages { padding: 14px; height: 46dvh; } .composer { padding: 14px; } .roomHeader { padding: 20px 0; } }

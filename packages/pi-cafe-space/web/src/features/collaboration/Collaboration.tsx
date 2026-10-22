@@ -3,10 +3,31 @@ import { Link, useLocation, useNavigate } from 'react-router';
 import { Button, Input, Label, Textarea } from '../../components/ui/Controls';
 import { UiProvider } from '../../components/ui/UiProvider';
 import { ChoiceSelect } from '../../components/ui/ChoiceSelect';
-import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type Membership, type Message, type Snapshot } from './api';
+import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type Member, type Membership, type Message, type Presence, type Snapshot } from './api';
 import styles from './Collaboration.module.scss';
 
 const messageError = (error: unknown) => error instanceof Error ? error.message : '连接失败，请重试。';
+// Connectors heartbeat at least every 30s while idle; allow for one missed beat.
+const onlineWindow = 90_000;
+const ago = (ms: number) => ms < 90 * 60_000 ? `${Math.max(1, Math.round(ms / 60_000))} 分钟` : `${Math.round(ms / 3_600_000)} 小时`;
+/** Presence is the connector's own report: absent means unknown, never failure. */
+export function connectorState(presence: Presence | undefined, now: number): { label: string; tone: 'online' | 'paused' | 'offline' | 'unknown' } {
+  if (!presence) return { label: '连接器未上报', tone: 'unknown' };
+  const age = now - Date.parse(presence.heartbeatAt);
+  if (!(age < onlineWindow)) return { label: `连接器离线 · ${ago(age)}前上报`, tone: 'offline' };
+  return presence.paused ? { label: '连接器在线 · 已暂停', tone: 'paused' } : { label: '连接器在线', tone: 'online' };
+}
+/** Delivery of a message addressed to an AI; null when nothing honest can be said. */
+export function deliveryOf(message: Message, members: Member[], messages: Message[], presence: Record<string, Presence> = {}): string | null {
+  const target = members.find(m => m.id === message.to);
+  if (!target || target.kind !== 'ai') return null;
+  if (messages.some(m => m.memberId === target.id && m.replyTo === message.seq)) return `${target.name} 已回复`;
+  const report = presence[target.id];
+  if (!report) return null;
+  if (report.delivered >= message.seq) return '连接器上报：已送入对方会话';
+  if (report.fetched >= message.seq) return '连接器上报：已取到';
+  return '等待对方连接器';
+}
 export function Collaboration() {
   const location = useLocation();
   const match = /^\/collab\/([a-f0-9]{32})$/.exec(location.pathname);
@@ -54,7 +75,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const navigate = useNavigate(); const [snapshot, setSnapshot] = useState<Snapshot | null>(null); const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState(''); const [connected, setConnected] = useState(false); const [terminal, setTerminal] = useState(false); const [busy, setBusy] = useState(false);
   const [text, setText] = useState(''); const [to, setTo] = useState(''); const [reply, setReply] = useState(0); const [link, setLink] = useState(''); const [copied, setCopied] = useState(false);
-  const [confirm, setConfirm] = useState<{ op: string; memberId?: string; label: string } | null>(null);
+  const [confirm, setConfirm] = useState<{ op: string; fields?: Record<string, unknown>; label: string } | null>(null);
   const cursor = useRef(0); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
   const bottom = useRef<HTMLDivElement>(null); const follow = useRef(true);
   useEffect(() => {
@@ -84,9 +105,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       if (op === 'revoke') { setLink(''); setCopied(false); }
       if (op === 'close' || op === 'leave') { onForget(); navigate('/collab'); }
       if (op === 'remove') setSnapshot(old => old ? { ...old, members: old.members.map(m => m.id === fields.memberId ? { ...m, removed: true } : m) } : old);
+      if (op === 'pause') setSnapshot(old => old ? { ...old, aiPaused: fields.paused === true } : old);
     } catch (e) { setError(messageError(e)); } finally { setBusy(false); setConfirm(null); }
   };
   const own = snapshot?.members.find(m => m.id === auth.memberId);
+  const now = Date.now();
   const nameOf = (memberId: string) => snapshot?.members.find(m => m.id === memberId)?.name ?? memberId.slice(0, 8);
   return <section className={styles.workspace}>
     <header className={styles.roomHeader}><div><p className={styles.eyebrow}>COLLABORATION · 实验版</p><h1>{snapshot?.title ?? '正在读取房间…'}</h1><p role="status">{terminal ? '房间或成员已不可用' : connected ? '消息连接正常 · 每 5 秒同步' : '正在连接或重连'}{snapshot && ` · ${new Date(snapshot.expires).toLocaleString()} 到期`}</p></div>
@@ -95,13 +118,15 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     <div className={styles.columns}><div className={styles.discussion}>
       {error && <div className={styles.error} role="alert">{error}<Button variant="quiet" onClick={() => setError('')}>收起提示</Button></div>}
       {terminal && <p><Button onClick={() => { onForget(); navigate('/collab'); }}>清除此浏览器凭据并返回</Button></p>}
+      {snapshot?.aiPaused && !terminal && <p className={styles.paused} role="status">房主已暂停 AI 发言：AI 可以继续读取，但不应发帖。</p>}
       {link && <section className={styles.invitation} aria-label="分享邀请"><h2>持链接直接加入</h2><p>新成员可查看全部历史。转发前确认接收人；不要公开发布。</p><Input aria-label="邀请链接" readOnly value={link} /><Button onClick={() => { setCopied(false); void navigator.clipboard?.writeText(link).then(() => setCopied(true)).catch(() => setCopied(false)); }}>{copied ? '邀请已复制' : '复制邀请链接'}</Button><AiInvitation link={link} /><Button variant="quiet" onClick={() => setLink('')}>收起邀请</Button></section>}
       <div className={styles.messages} role="log" aria-label="房间消息" aria-live="polite" onScroll={event => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; }}>
         {snapshot && messages.length === 0 && <p className={styles.empty}>还没有消息。发一个问题，或邀请同事和 AI 一起讨论。</p>}
         {messages.map(message => <article key={message.seq} className={styles.message} data-own={message.memberId === auth.memberId}>
           <header><strong>{nameOf(message.memberId)}</strong><span>{snapshot?.members.find(m => m.id === message.memberId)?.kind === 'ai' ? 'AI · 自声明' : '成员'} · #{message.memberId.slice(0, 6)}</span><time dateTime={message.at}>{new Date(message.at).toLocaleTimeString()}</time></header>
           {(message.to || message.replyTo) && <small>{message.to ? `@${nameOf(message.to)} · 所有成员可见` : ''}{message.replyTo ? ` 回复 #${message.replyTo}` : ''}</small>}
-          <p>{message.text}</p><Button variant="quiet" disabled={terminal} onClick={() => { setReply(message.seq); setTo(message.memberId); }}>回复 #{message.seq}</Button>
+          <p>{message.text}</p>{(() => { const delivery = snapshot && deliveryOf(message, snapshot.members, messages, snapshot.presence); return delivery && <small className={styles.delivery} title="连接器自报的进度，不代表模型已读；未授权成员的消息可能被跳过。">{delivery}</small>; })()}
+          <Button variant="quiet" disabled={terminal} onClick={() => { setReply(message.seq); setTo(message.memberId); }}>回复 #{message.seq}</Button>
         </article>)}<div ref={bottom} />
       </div>
       <form className={styles.composer} onSubmit={event => { event.preventDefault(); if (busy || terminal || !text.trim()) return; void (async () => {
@@ -118,10 +143,13 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         <div className={styles.actions}><small>仅分享你有权共享的内容；回车换行。</small><Button variant="primary" type="submit" disabled={terminal || !snapshot || !text.trim()} loading={busy}>发送</Button></div>
       </form>
     </div><aside className={styles.members} aria-label="房间成员"><h2>成员 · {snapshot?.members.filter(m => !m.removed).length ?? 0}</h2><p>名称和 AI 类型由成员自行填写，不表示账号认证或在线执行。</p>
-      <ul>{snapshot?.members.filter(m => !m.removed).map(m => <li key={m.id}><div><strong>{m.name}</strong><small>#{m.id.slice(0, 6)} · {m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{m.id === auth.memberId ? ' · 你' : ''}</small></div>{own?.owner && !m.owner && <Button variant="quiet" disabled={busy || terminal} onClick={() => setConfirm({ op: 'remove', memberId: m.id, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。` })}>移除</Button>}</li>)}</ul>
-      <details className={styles.details}><summary>隐私与实验限制</summary><p>讨论以明文保存在云端，不是端到端加密。新成员可看全部历史。不自动同步电脑会话、文件和工具权限。房间 7 天到期，最多 64 个成员登记及 500 条消息。离线 AI 不会被唤醒。浏览器清除数据会丢失成员凭据；房主凭据没有匿名找回入口。</p></details>
-      {own?.owner ? <><Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'revoke', label: '撤销全部已发邀请？现有成员仍能访问，新成员需要新邀请。' })}>撤销全部邀请</Button><Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'close', label: '关闭房间？所有成员将无法继续访问，此操作不能撤销。' })}>关闭房间</Button></> : <Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'leave', label: '退出房间并清除此浏览器的成员凭据？' })}>退出房间</Button>}
-      {confirm && <section className={styles.confirm} aria-label="确认操作"><p>{confirm.label}</p><Button variant="primary" loading={busy} onClick={() => void act(confirm.op, confirm.memberId ? { memberId: confirm.memberId } : {})}>确认</Button><Button disabled={busy} onClick={() => setConfirm(null)}>取消</Button></section>}
+      <ul>{snapshot?.members.filter(m => !m.removed).map(m => { const state = m.kind === 'ai' ? connectorState(snapshot.presence?.[m.id], now) : null; const report = snapshot.presence?.[m.id]; return <li key={m.id}><div><strong>{m.name}</strong><small>#{m.id.slice(0, 6)} · {m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{m.id === auth.memberId ? ' · 你' : ''}</small>
+        {state && <small className={styles.connector} data-tone={state.tone} title="由该 AI 的连接器自行上报，仅供参考。">{state.label}</small>}
+        {state && report && <small>已取到 #{report.fetched} · 已送入会话 #{report.delivered}</small>}</div>
+        {own?.owner && !m.owner && <Button variant="quiet" disabled={busy || terminal} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。` })}>移除</Button>}</li>; })}</ul>
+      <details className={styles.details}><summary>隐私与实验限制</summary><p>讨论以明文保存在云端，不是端到端加密。新成员可看全部历史。不自动同步电脑会话、文件和工具权限。房间 7 天到期，最多 64 个成员登记及 500 条消息。离线 AI 不会被唤醒。AI 的连接与送达状态由其连接器自行上报，不代表模型已读。浏览器清除数据会丢失成员凭据；房主凭据没有匿名找回入口。</p></details>
+      {own?.owner ? <><Button disabled={busy || terminal || !snapshot} onClick={() => setConfirm(snapshot?.aiPaused ? { op: 'pause', fields: { paused: false }, label: '恢复 AI 发言？各 AI 会在下一次读取时看到。' } : { op: 'pause', fields: { paused: true }, label: '暂停所有 AI 发言？AI 仍可读取，但按协议不应再发帖；这不撤销任何成员。' })}>{snapshot?.aiPaused ? '恢复 AI 发言' : '暂停所有 AI 发言'}</Button><Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'revoke', label: '撤销全部已发邀请？现有成员仍能访问，新成员需要新邀请。' })}>撤销全部邀请</Button><Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'close', label: '关闭房间？所有成员将无法继续访问，此操作不能撤销。' })}>关闭房间</Button></> : <Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'leave', label: '退出房间并清除此浏览器的成员凭据？' })}>退出房间</Button>}
+      {confirm && <section className={styles.confirm} aria-label="确认操作"><p>{confirm.label}</p><Button variant="primary" loading={busy} onClick={() => void act(confirm.op, confirm.fields ?? {})}>确认</Button><Button disabled={busy} onClick={() => setConfirm(null)}>取消</Button></section>}
     </aside></div>
   </section>;
 }

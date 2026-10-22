@@ -42,7 +42,15 @@ try {
   let snapshot = await api({ op: 'read', roomId: owner.roomId }, colleague.token);
   assert.equal(snapshot.messages.length, 2); assert.equal(snapshot.members.length, 3); assert(!JSON.stringify(snapshot).includes(owner.token)); checks.push('three independent HTTP members, forwarded invitation, addressed reply and idempotent delivery');
   await api({ op: 'read', roomId: owner.roomId }, undefined, 401); await api({ op: 'status' }, undefined, 403, 'https://untrusted.example'); checks.push('anonymous reads and cross-origin writes denied');
-  await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 2); checks.push('restart retains membership and message history');
+  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause']);
+  const waiting = api({ op: 'read', roomId: owner.roomId, after: 2, wait: 10 }, ai.token); await sleep(300); const woke = Date.now();
+  await api({ op: 'send', roomId: owner.roomId, id: 'smoke-wake-1', text: '唤醒等待中的 AI。' }, colleague.token);
+  const woken = await waiting; assert.equal(woken.messages.length, 1); assert(Date.now() - woke < 3000, 'long poll was not woken promptly');
+  await api({ op: 'ack', roomId: owner.roomId, fetched: woken.cursor, delivered: woken.cursor }, ai.token);
+  assert.equal((await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId].delivered, 3);
+  await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token, 403); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
+  checks.push('long-poll wait woken by a new message, connector ack presence, owner-only AI pause');
+  await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 3); assert.equal(snapshot.aiPaused, true); assert.deepEqual(snapshot.presence, {}); checks.push('restart retains membership, message history and AI pause; presence restarts empty');
   if (values.browser) {
     const { chromium } = await import('playwright-core'); browser = await chromium.launch({ executablePath: resolve(values.browser), headless: true });
     const context = await browser.newContext(); const page = await context.newPage(); const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));

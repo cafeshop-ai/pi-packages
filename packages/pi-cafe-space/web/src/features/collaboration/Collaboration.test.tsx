@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { fireEvent, render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { Collaboration } from './Collaboration';
+import { Collaboration, connectorState, deliveryOf } from './Collaboration';
 import { App } from '../../app/App';
 import { aiInstructions, collaboration, saveMembership } from './api';
 const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64), invite = 'd'.repeat(64);
@@ -70,8 +70,40 @@ it('routes collaboration without initializing or controlling an office Pi', asyn
   window.location.hash = '#/collab'; const createOwner = vi.fn(() => { throw Error('must not create office owner'); });
   render(<App createOwner={createOwner} />); expect(await screen.findByRole('heading', { name: '一起讨论，不限工具。' })).toBeInTheDocument(); expect(createOwner).not.toHaveBeenCalled();
 });
+it('shows AI connector reports honestly: online, offline or unknown, never failure', async () => {
+  const ai = 'e'.repeat(32), other = 'f'.repeat(32), fresh = new Date().toISOString();
+  saveMembership(auth);
+  fetcher.mockImplementation(async () => response({ ...snapshot, members: [...snapshot.members, { id: other, name: '离线的 AI', kind: 'ai' }, { id: '9'.repeat(32), name: '未接入的 AI', kind: 'ai' }],
+    presence: { [ai]: { fetched: 2, delivered: 1, heartbeatAt: fresh }, [other]: { fetched: 1, delivered: 1, heartbeatAt: '2020-01-01T00:00:00Z' } } }));
+  mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' });
+  expect(screen.getByText('连接器在线')).toBeInTheDocument(); expect(screen.getByText('已取到 #2 · 已送入会话 #1')).toBeInTheDocument();
+  expect(screen.getByText(/^连接器离线/)).toBeInTheDocument(); expect(screen.getByText('连接器未上报')).toBeInTheDocument();
+  expect(connectorState({ fetched: 0, delivered: 0, paused: true, heartbeatAt: fresh }, Date.now()).tone).toBe('paused');
+});
+it('derives delivery of addressed messages from replies and connector reports only', () => {
+  const ai = { id: 'e'.repeat(32), name: '同事的 AI', kind: 'ai' as const, owner: false }, human = { id: memberId, name: '创建者', kind: 'human' as const, owner: true };
+  const ask = { seq: 3, id: 'ask-ai', memberId, text: '请核对', to: ai.id, at: '2030-01-01T00:00:00Z' };
+  const answer = { seq: 4, id: 'ai-answer', memberId: ai.id, text: '已核对', replyTo: 3, to: memberId, at: '2030-01-01T00:00:01Z' };
+  const at = '2030-01-01T00:00:00Z';
+  expect(deliveryOf(ask, [human, ai], [ask, answer])).toBe('同事的 AI 已回复');
+  expect(deliveryOf(ask, [human, ai], [ask])).toBeNull();
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: at } })).toBe('连接器上报：已送入对方会话');
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: at } })).toBe('连接器上报：已取到');
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 2, delivered: 2, heartbeatAt: at } })).toBe('等待对方连接器');
+  expect(deliveryOf({ ...ask, to: memberId }, [human, ai], [ask])).toBeNull();
+});
+it('lets the owner pause AI posting only after confirmation and shows the pause to everyone', async () => {
+  saveMembership(auth); mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' });
+  fireEvent.click(screen.getByRole('button', { name: '暂停所有 AI 发言' }));
+  expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'pause')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: '确认' }));
+  expect(await screen.findByText('房主已暂停 AI 发言：AI 可以继续读取，但不应发帖。')).toBeInTheDocument();
+  const pause = (fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, v]) => JSON.parse(v.body as string)).find(v => v.op === 'pause');
+  expect(pause).toMatchObject({ roomId, paused: true }); expect(screen.getByRole('button', { name: '恢复 AI 发言' })).toBeInTheDocument();
+});
 it('fails closed when the feature is unavailable and describes user-authorized AI operation', async () => {
   fetcher.mockResolvedValue(response({}, 404)); mount(); await screen.findByRole('alert'); expect(screen.getByRole('button', { name: '创建协作房间' })).toBeDisabled();
   const guide = aiInstructions('https://example.test/#/collab/example'); expect(guide).toContain('监听时长以我的授权为准'); expect(guide).not.toContain('最多 3 次回复'); expect(guide).toContain('不具备双向联网能力');
+  expect(guide).toContain('wait 长轮询'); expect(guide).toContain('ack'); expect(guide).toContain('仅被点名不算授权'); expect(guide).toContain('房主暂停 AI 发言时只读不发');
   await expect(collaboration({ op: 'read' })).rejects.toThrow();
 });
