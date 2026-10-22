@@ -127,8 +127,8 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
     const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log, '--host-grace-seconds', '5']); await stop(); return r.json(); };
   const wake = (m, nonce) => line({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><event>[msg #${m.seq}] ${nonce}</event></task-notification>` });
   // How the queued event reaches the model: as the start of a new turn, or attached to the running one.
-  const newTurn = nonce => line({ type: 'user', origin: { kind: 'task-notification' }, message: { content: `<task-notification>${nonce}</task-notification>` } });
-  const inTurn = nonce => line({ type: 'attachment', attachment: { type: 'queued_command', prompt: `<task-notification>${nonce}</task-notification>` } });
+  const newTurn = (nonce, extra = {}) => line({ type: 'user', origin: { kind: 'task-notification' }, message: { content: `<task-notification>${nonce}</task-notification>` }, ...extra });
+  const inTurn = nonce => { line({ type: 'queue-operation', operation: 'remove', content: `<task-notification>${nonce}</task-notification>` }); line({ type: 'attachment', attachment: { type: 'queued_command', prompt: `<task-notification>${nonce}</task-notification>` } }); };
   const ok = await run('idle', async (m, nonce) => { wake(m, nonce); newTurn(nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }); });
   assert.match(ok.hostAutoWake, /^宿主日志显示：监听事件带来该 nonce → 新的模型回合/); assert.equal(ok.hostEvidence.delivery, 'new-turn'); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
   // Arriving while the model runs and joining that turn is handled inside a turn, not a new wake-up.
@@ -141,11 +141,11 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
   assert.match(late.hostAutoWake, /^宿主日志显示/);
   // Pi's counterexamples: an input of unknown origin, a line that does not parse, and a person's
   // input stamped inside the window but written after the chain already looked complete.
-  const shell = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', message: { content: '<bash-input> curl …</bash-input>' } }); line({ type: 'assistant', message: { content: [] } }); });
+  const shell = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce); line({ type: 'user', message: { content: '<bash-input> curl …</bash-input>' } }); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(shell.hostAutoWake, '未验证：期间有 1 个无法确认来源的输入条目');
   const garbled = await run('busy', async (m, nonce) => { wake(m, nonce); appendFileSync(log, '{"type":"user","origin":\n'); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(garbled.hostAutoWake, '未验证：日志有 1 行无法解析');
-  const afterwards = await run('busy', async (m, nonce) => { const when = new Date().toISOString(); wake(m, nonce); line({ type: 'assistant', message: { content: [] } });
+  const afterwards = await run('busy', async (m, nonce) => { const when = new Date().toISOString(); wake(m, nonce); newTurn(nonce); line({ type: 'assistant', message: { content: [] } });
     setTimeout(() => line({ type: 'user', origin: { kind: 'human' }, timestamp: when, message: { content: '我来回' } }), 2500); });
   assert.equal(afterwards.hostAutoWake, '未验证：期间有 1 次人工输入');
   const undated = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); line({ type: 'user', origin: { kind: 'human' }, timestamp: 'not-a-date', message: { content: '我' } }); });
@@ -153,10 +153,19 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
   const unfinished = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); appendFileSync(log, '{"type":"user","origin":{"kind":"human"}'); });
   assert.equal(unfinished.hostAutoWake, '未验证：日志末尾有未写完的记录'); assert.equal(unfinished.hostEvidence.incompleteTail, true);
   appendFileSync(log, '}\n');
-  const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
+  // Pi's chain counterexamples: the turn must follow this delivery, and every time must exist and be in order.
+  const deliveredLate = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); setTimeout(() => newTurn(nonce), 1500); });
+  assert.equal(deliveredLate.hostAutoWake, '未验证：送达之后没有模型回合');
+  const staleTurn = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); newTurn(nonce); });
+  assert.equal(staleTurn.hostAutoWake, '未验证：送达之后没有模型回合');
+  const timeless = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce, { timestamp: undefined }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(timeless.hostAutoWake, '未验证：送达记录没有有效时间');
+  const backwards = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce, { timestamp: '2020-01-01T00:00:00Z' }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(backwards.hostAutoWake, '未验证：时间顺序不是 事件 ≤ 送达 ≤ 模型回合 ≤ 回复');
+  const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(prompted.hostAutoWake, '未验证：期间有 1 次人工输入');
   const typed = await run('quiet', async (m, nonce) => { line({ type: 'user', origin: { kind: 'human' }, message: { content: `回复 ${nonce}` } }); line({ type: 'assistant', message: { content: [] } }); });
-  assert.equal(typed.hostAutoWake, '未验证：nonce 首次出现于 human，不是宿主事件');
+  assert.equal(typed.hostAutoWake, '未验证：nonce 首次出现于 human，不是宿主入队事件');
   const rewritten = await run('restart', async (m, nonce) => { writeFileSync(log, readFileSync(log, 'utf8').replace('开始监听', '改写过的'), { mode: 0o600 }); wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(rewritten.hostAutoWake, '未验证：窗口前的日志被改动');
   assert.equal(blind(['respond', '--home', h, '--host', 'claude-code', '--transcript', 'relative.jsonl']).code, 2);

@@ -117,17 +117,23 @@ const hosts = {
   // tool_result blocks. origin.kind human is a person; any other user entry (a `!` shell input, a
   // hook or peer message) is unknown.
   'claude-code': (entries, nonce, windowEnd) => {
-    const first = entries.find(e => JSON.stringify(e).includes(nonce));
-    const event = first && (first.type === 'queue-operation' || first.type === 'attachment' || first.origin?.kind === 'task-notification') ? first : undefined;
-    const inputs = entries.filter(e => e.type === 'user' && (!e.timestamp || !windowEnd || Date.parse(e.timestamp) <= Date.parse(windowEnd)));
+    const carries = e => JSON.stringify(e).includes(nonce); const time = e => Date.parse(e?.timestamp);
+    const first = entries.find(carries);
+    const event = first?.type === 'queue-operation' && first.operation === 'enqueue' ? first : undefined;
+    // The delivery record decides the chain: a task-notification entry opening a new turn, or the
+    // queue removal that hands the event to the running turn (with its queued_command attachment).
+    const opened = entries.findIndex(e => e.type === 'user' && e.origin?.kind === 'task-notification' && carries(e));
+    const removed = entries.findIndex(e => e.type === 'queue-operation' && e.operation === 'remove' && carries(e));
+    const attached = entries.findIndex(e => e.type === 'attachment' && e.attachment?.type === 'queued_command' && carries(e));
+    const delivery = opened >= 0 && removed < 0 && attached < 0 ? 'new-turn' : opened < 0 && removed >= 0 && attached >= 0 ? 'in-turn' : 'unknown';
+    const at = delivery === 'new-turn' ? opened : delivery === 'in-turn' ? Math.max(removed, attached) : -1;
+    const deliveredAt = delivery === 'new-turn' ? entries[opened].timestamp : delivery === 'in-turn' ? entries[removed].timestamp : undefined;
+    // The model turn that handles it comes after the delivery record, in the log and in time.
+    const turn = at >= 0 && !Number.isNaN(Date.parse(deliveredAt)) ? entries.slice(at + 1).find(e => e.type === 'assistant' && time(e) >= Date.parse(deliveredAt)) : undefined;
+    const inputs = entries.filter(e => e.type === 'user' && (!e.timestamp || !windowEnd || time(e) <= Date.parse(windowEnd)));
     const toolResult = e => Array.isArray(e.message?.content) && e.message.content.length > 0 && e.message.content.every(c => c?.type === 'tool_result');
-    const carries = e => JSON.stringify(e).includes(nonce);
-    const newTurn = entries.some(e => e.type === 'user' && e.origin?.kind === 'task-notification' && carries(e));
-    const inTurn = entries.some(e => e.type === 'attachment' && e.attachment?.type === 'queued_command' && carries(e));
-    return { event: event && { at: event.timestamp, kind: event.type === 'user' ? 'task-notification' : event.type },
-      delivery: newTurn && !inTurn ? 'new-turn' : inTurn && !newTurn ? 'in-turn' : 'unknown',
-      firstNonceIn: first ? (first.origin?.kind ?? first.type) : 'absent',
-      turn: event && entries.find(e => e.type === 'assistant' && Date.parse(e.timestamp) >= Date.parse(event.timestamp))?.timestamp,
+    return { event: event && { at: event.timestamp, kind: 'queue-operation' }, firstNonceIn: first ? (first.origin?.kind ?? first.operation ?? first.type) : 'absent',
+      delivery, deliveredAt, turn: turn?.timestamp,
       humanInputs: inputs.filter(e => e.origin?.kind === 'human').length,
       unknownInputs: inputs.filter(e => e.origin?.kind !== 'human' && e.origin?.kind !== 'task-notification' && !toolResult(e)).length };
   },
@@ -143,9 +149,10 @@ function hostEvidence(host, path, before, nonce, answer) {
   // Ordering and the window rest on timestamps: one that does not parse cannot be placed, so it is never silently dropped.
   const badTimes = entries.filter(e => e.timestamp !== undefined && Number.isNaN(Date.parse(e.timestamp))).length + (answer && Number.isNaN(Date.parse(answer.at)) ? 1 : 0);
   const found = hosts[host](entries, nonce, answer?.at);
-  const reason = !unchanged ? '窗口前的日志被改动' : broken ? `日志有 ${broken} 行无法解析` : incompleteTail ? '日志末尾有未写完的记录' : badTimes ? `有 ${badTimes} 个时间无法解析的条目` : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件`
-    : !found.turn ? '没有找到之后的模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : found.unknownInputs ? `期间有 ${found.unknownInputs} 个无法确认来源的输入条目`
-    : Date.parse(found.turn) > Date.parse(answer.at) ? '回复早于模型回合' : found.delivery === 'unknown' ? '无法确定监听事件以何种方式送达模型' : '';
+  const reason = !unchanged ? '窗口前的日志被改动' : broken ? `日志有 ${broken} 行无法解析` : incompleteTail ? '日志末尾有未写完的记录' : badTimes ? `有 ${badTimes} 个时间无法解析的条目` : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主入队事件`
+    : found.delivery === 'unknown' ? '无法确定监听事件以何种方式送达模型' : Number.isNaN(Date.parse(found.deliveredAt)) ? '送达记录没有有效时间'
+    : !found.turn ? '送达之后没有模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : found.unknownInputs ? `期间有 ${found.unknownInputs} 个无法确认来源的输入条目`
+    : !(Date.parse(found.event.at) <= Date.parse(found.deliveredAt) && Date.parse(found.deliveredAt) <= Date.parse(found.turn) && Date.parse(found.turn) <= Date.parse(answer.at)) ? '时间顺序不是 事件 ≤ 送达 ≤ 模型回合 ≤ 回复' : '';
   return { host, appendOnly: unchanged, brokenLines: broken, incompleteTail, badTimes, observedUntil: new Date().toISOString(), ...found,
     verdict: reason ? `未验证：${reason}` : found.delivery === 'new-turn' ? '宿主日志显示：监听事件带来该 nonce → 新的模型回合 → 房间回复，观察窗口内人工或未知输入 0 次'
       : '宿主日志显示：监听事件在运行中的回合内送达 → 同一回合处理 → 房间回复（回合内处理，不是新的唤醒），观察窗口内人工或未知输入 0 次' };
