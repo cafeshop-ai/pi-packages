@@ -37,7 +37,8 @@ export function deliveryOf(message: Message, members: Member[], messages: Messag
   if (report.fetched >= message.seq) return { state: 'fetched', label: `${target.name} 的连接器已取到` };
   return { state: 'waiting', label: `等待 ${target.name} 的连接器` };
 }
-/** AIs whose connector delivered the latest message addressed to them and that have not answered since. */
+/** AIs whose connector delivered the latest message addressed to them and that have not answered since.
+ * Delivery proves the connector handed the message on, not that the host woke up, so the UI says "waiting". */
 export function thinkingOf(members: Member[], messages: Message[], presence: Record<string, Presence> = {}, now = Date.now()): Member[] {
   return members.filter(m => {
     if (m.kind !== 'ai' || m.removed || connectorState(presence[m.id], now).tone !== 'online') return false;
@@ -329,7 +330,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                 </article>
               </div>;
             })}
-            {thinking.length > 0 && <div className={styles.thinking} role="status"><Steam /><span>{thinking.map(m => m.name).join('、')} 正在处理…</span></div>}
+            {thinking.length > 0 && <div className={styles.thinking} role="status"><Steam /><span>已送达 {thinking.map(m => m.name).join('、')} · 等待回复</span></div>}
             <div ref={bottom} />
           </div>
         </div>

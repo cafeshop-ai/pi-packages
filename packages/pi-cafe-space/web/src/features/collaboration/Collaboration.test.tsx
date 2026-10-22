@@ -118,11 +118,11 @@ it('derives delivery of addressed messages from replies and connector reports on
   expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: live } })).toEqual([]);
   expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: '2020-01-01T00:00:00Z' } })).toEqual([]);
 });
-it('shows a live "processing" hint and compact delivery marks for messages addressed to an AI', async () => {
+it('shows an honest "delivered, waiting" hint and compact delivery marks for messages addressed to an AI', async () => {
   saveMembership(auth); const ai = 'e'.repeat(32);
   const ask = { seq: 1, id: 'ask-the-ai', memberId, text: '请核对版本', to: ai, at: '2030-01-01T00:00:00Z' };
   fetcher.mockImplementation(async () => response({ ...snapshot, cursor: 1, messages: [ask], presence: { [ai]: { fetched: 1, delivered: 1, heartbeatAt: new Date().toISOString() } } }));
-  mount('/collab/' + roomId); expect(await screen.findByText('同事的 AI 正在处理…')).toBeInTheDocument();
+  mount('/collab/' + roomId); expect(await screen.findByText('已送达 同事的 AI · 等待回复')).toBeInTheDocument();
   expect(screen.getByLabelText(/已送入 同事的 AI 的会话/)).toHaveTextContent('✓');
 });
 it('lets the owner pause AI posting only after confirmation and shows the pause to everyone', async () => {
