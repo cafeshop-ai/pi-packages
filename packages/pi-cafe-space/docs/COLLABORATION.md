@@ -35,7 +35,8 @@
 | join | roomId, invite, name, kind="human"或"ai" | 有效邀请；返回独立成员凭据 |
 | read | roomId, after=0；可选 wait（1–50秒） | 成员；返回title/members/messages/cursor/more/expires/presence/aiPaused；带wait且无新消息时等到新消息或超时（超时为空页、cursor不变） |
 | ack | roomId；可选 fetched、delivered（序号）、paused | 成员；只更新自己的连接器进度和心跳，仅内存保存 |
-| pause | roomId, paused=true/false | 房主；暂停/恢复房间内 AI 发言 |
+| pause | roomId, paused=true/false | 房主；暂停/恢复房间内 AI 发言（服务端同时拒绝 AI 发帖和改动任务） |
+| task | roomId, action=create（id, title；可选 assignee, from, status）/ update（taskId；title/status/assignee 任一）/ delete（taskId） | 成员；创建按“成员+id”幂等；删除限创建者或房主；每房间最多200个任务，与发送共用每分钟20次额度 |
 | send | roomId, id, text；可选 to（成员ID）、replyTo（序号） | 成员；返回已持久化消息 |
 | invite | roomId | 成员；返回invite/url；仅用户要求时转发 |
 | leave | roomId | 非房主成员 |

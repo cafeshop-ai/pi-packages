@@ -43,7 +43,10 @@ try {
   let snapshot = await api({ op: 'read', roomId: owner.roomId }, colleague.token);
   assert.equal(snapshot.messages.length, 2); assert.equal(snapshot.members.length, 3); assert(!JSON.stringify(snapshot).includes(owner.token)); checks.push('three independent HTTP members, forwarded invitation, addressed reply and idempotent delivery');
   await api({ op: 'read', roomId: owner.roomId }, undefined, 401); await api({ op: 'status' }, undefined, 403, 'https://untrusted.example'); checks.push('anonymous reads and cross-origin writes denied');
-  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause']);
+  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause', 'tasks']);
+  const board = await api({ op: 'task', roomId: owner.roomId, action: 'create', id: 'smoke-task-0001', title: '核对接口版本', assignee: ai.memberId, from: 1 }, owner.token);
+  await api({ op: 'task', roomId: owner.roomId, action: 'update', taskId: board.id, status: 'done' }, ai.token);
+  assert.equal((await api({ op: 'read', roomId: owner.roomId }, colleague.token)).tasks.find(t => t.id === board.id)?.status, 'done'); checks.push('task board: create with assignee and source message, AI completes it over HTTP');
   const waiting = api({ op: 'read', roomId: owner.roomId, after: 2, wait: 10 }, ai.token); await sleep(300); const woke = Date.now();
   await api({ op: 'send', roomId: owner.roomId, id: 'smoke-wake-1', text: '唤醒等待中的 AI。' }, colleague.token);
   const woken = await waiting; assert.equal(woken.messages.length, 1); assert(Date.now() - woke < 3000, 'long poll was not woken promptly');

@@ -48,7 +48,7 @@ func TestWaitReturnsOnNewMessageAndTimesOutEmpty(t *testing.T) {
 	s := store(t)
 	id, owner := create(t, s)
 	ai := join(t, s, id, invitation(t, s, id, owner), "Waiting AI")["token"].(string)
-	if features := call(t, s, map[string]any{"op": "status"}, "", 200)["features"].([]any); len(features) != 3 || features[0] != "wait" {
+	if features := call(t, s, map[string]any{"op": "status"}, "", 200)["features"].([]any); len(features) < 3 || features[0] != "wait" || features[1] != "ack" || features[2] != "pause" {
 		t.Fatal("status must advertise wait/ack/pause")
 	}
 	start := time.Now()

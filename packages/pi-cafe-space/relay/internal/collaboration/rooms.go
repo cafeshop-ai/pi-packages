@@ -71,7 +71,26 @@ type Room struct {
 	Members  []Member  `json:"members"`
 	Invites  []string  `json:"invites"`
 	Messages []Message `json:"messages"`
+	Tasks    []Task    `json:"tasks,omitempty"`
+	NextTask int       `json:"nextTask,omitempty"`
 }
+
+// Task is a shared to-do on the room's board. Key (creator ID + client ID) makes
+// creation idempotent and is never returned to clients.
+type Task struct {
+	ID        int       `json:"id"`
+	Key       string    `json:"key,omitempty"`
+	Title     string    `json:"title"`
+	Status    string    `json:"status"`
+	Assignee  string    `json:"assignee,omitempty"`
+	CreatedBy string    `json:"createdBy"`
+	From      int       `json:"from,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+const maxTasks = 200
+
+func validStatus(s string) bool { return s == "todo" || s == "doing" || s == "done" }
 
 // Presence is what a member's connector last reported with ack. It is memory-only:
 // polling must not rewrite room files, and after a restart connectors report again.
@@ -83,22 +102,27 @@ type Presence struct {
 	Heartbeat time.Time `json:"heartbeatAt"`
 }
 type request struct {
-	Op        string `json:"op"`
-	RoomID    string `json:"roomId,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Invite    string `json:"invite,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Text      string `json:"text,omitempty"`
-	To        string `json:"to,omitempty"`
-	ReplyTo   int    `json:"replyTo,omitempty"`
-	After     int    `json:"after,omitempty"`
-	MemberID  string `json:"memberId,omitempty"`
-	Wait      int    `json:"wait,omitempty"`
-	Fetched   *int   `json:"fetched,omitempty"`
-	Delivered *int   `json:"delivered,omitempty"`
-	Paused    *bool  `json:"paused,omitempty"`
+	Op        string  `json:"op"`
+	RoomID    string  `json:"roomId,omitempty"`
+	Title     string  `json:"title,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Kind      string  `json:"kind,omitempty"`
+	Invite    string  `json:"invite,omitempty"`
+	ID        string  `json:"id,omitempty"`
+	Text      string  `json:"text,omitempty"`
+	To        string  `json:"to,omitempty"`
+	ReplyTo   int     `json:"replyTo,omitempty"`
+	After     int     `json:"after,omitempty"`
+	MemberID  string  `json:"memberId,omitempty"`
+	Wait      int     `json:"wait,omitempty"`
+	Fetched   *int    `json:"fetched,omitempty"`
+	Delivered *int    `json:"delivered,omitempty"`
+	Paused    *bool   `json:"paused,omitempty"`
+	Action    string  `json:"action,omitempty"`
+	TaskID    int     `json:"taskId,omitempty"`
+	Status    string  `json:"status,omitempty"`
+	Assignee  *string `json:"assignee,omitempty"`
+	From      int     `json:"from,omitempty"`
 }
 
 const maxWait = 50
@@ -183,7 +207,27 @@ func validRoom(room *Room) bool {
 		}
 		ids[key] = true
 	}
+	if len(room.Tasks) > maxTasks || room.NextTask < 0 {
+		return false
+	}
+	taskIDs, taskKeys := map[int]bool{}, map[string]bool{}
+	for _, task := range room.Tasks {
+		if task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
+			return false
+		}
+		taskIDs[task.ID], taskKeys[task.Key] = true, true
+	}
 	return true
+}
+
+// tasksView hides the creators' idempotency keys.
+func tasksView(tasks []Task) []Task {
+	view := make([]Task, len(tasks))
+	for i, task := range tasks {
+		task.Key = ""
+		view[i] = task
+	}
+	return view
 }
 
 // New requires an explicit durable directory. Corrupt state fails closed.
@@ -523,7 +567,7 @@ func writeError(w http.ResponseWriter, err error) {
 }
 func (s *Store) apply(q request, token, address string) (any, error) {
 	if q.Op == "status" {
-		return map[string]any{"enabled": true, "maxMessages": 500, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause"}, "maxWait": maxWait}, nil
+		return map[string]any{"enabled": true, "maxMessages": 500, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks"}, "maxWait": maxWait}, nil
 	}
 	if q.Op == "create" {
 		if !validText(q.Title, 80, false) || !validText(q.Name, 48, false) || q.Kind != "human" {
@@ -575,6 +619,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	room.Members = append([]Member{}, original.Members...)
 	room.Invites = append([]string{}, original.Invites...)
 	room.Messages = append([]Message{}, original.Messages...)
+	room.Tasks = append([]Task{}, original.Tasks...)
 	if room.Closed {
 		return nil, fail(410, "ROOM_CLOSED")
 	}
@@ -640,7 +685,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if end > len(room.Messages) {
 			end = len(room.Messages)
 		}
-		return map[string]any{"roomId": room.ID, "title": room.Title, "expires": room.Expires, "members": members, "messages": room.Messages[q.After:end], "cursor": end, "more": end < len(room.Messages), "memberId": actor.ID, "presence": s.presenceView(&room), "aiPaused": room.AIPaused}, nil
+		return map[string]any{"roomId": room.ID, "title": room.Title, "expires": room.Expires, "members": members, "messages": room.Messages[q.After:end], "cursor": end, "more": end < len(room.Messages), "memberId": actor.ID, "presence": s.presenceView(&room), "aiPaused": room.AIPaused, "tasks": tasksView(room.Tasks)}, nil
 	case "ack":
 		// A connector reports its own progress and heartbeat; memory-only, so it never rewrites
 		// the room file. Lower values are kept monotonic, impossible ones are rejected.
@@ -703,6 +748,19 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			return nil, err
 		}
 		return msg, nil
+	case "task":
+		task, err := s.task(&room, actor, q)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.save(&room); err != nil {
+			return nil, err
+		}
+		if task == nil {
+			return map[string]bool{"ok": true}, nil
+		}
+		task.Key = ""
+		return task, nil
 	case "invite":
 		if len(room.Invites) >= 128 {
 			return nil, fail(409, "INVITE_LIMIT")
@@ -766,6 +824,100 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	}
 	return map[string]bool{"ok": true}, nil
 }
+
+// task applies one board change to room (a private copy) and returns the resulting
+// task, or nil after a deletion. Board writes share the member's send budget.
+func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
+	if room.AIPaused && actor.Kind == "ai" {
+		return nil, fail(409, "AI_PAUSED")
+	}
+	assignee := ""
+	if q.Assignee != nil {
+		assignee = *q.Assignee
+		if assignee != "" {
+			ok := false
+			for _, m := range room.Members {
+				if m.ID == assignee && !m.Removed {
+					ok = true
+				}
+			}
+			if !ok {
+				return nil, fail(400, "INVALID_ASSIGNEE")
+			}
+		}
+	}
+	if q.Status != "" && !validStatus(q.Status) {
+		return nil, fail(400, "INVALID_TASK")
+	}
+	switch q.Action {
+	case "create":
+		if !messagePattern.MatchString(q.ID) || !validText(q.Title, 200, false) || q.From < 0 || q.From > len(room.Messages) || q.TaskID != 0 {
+			return nil, fail(400, "INVALID_TASK")
+		}
+		key := actor.ID + ":" + q.ID
+		for i := range room.Tasks {
+			if room.Tasks[i].Key == key {
+				if room.Tasks[i].Title != q.Title || room.Tasks[i].From != q.From {
+					return nil, fail(409, "ID_CONFLICT")
+				}
+				task := room.Tasks[i]
+				return &task, nil
+			}
+		}
+		if len(room.Tasks) >= maxTasks {
+			return nil, fail(409, "TASK_LIMIT")
+		}
+		if !s.rate("send:"+room.ID+actor.ID, 20) {
+			return nil, fail(429, "RATE_LIMIT")
+		}
+		status := q.Status
+		if status == "" {
+			status = "todo"
+		}
+		room.NextTask++
+		task := Task{ID: room.NextTask, Key: key, Title: q.Title, Status: status, Assignee: assignee, CreatedBy: actor.ID, From: q.From, UpdatedAt: s.now()}
+		room.Tasks = append(room.Tasks, task)
+		return &task, nil
+	case "update", "delete":
+		index := -1
+		for i := range room.Tasks {
+			if room.Tasks[i].ID == q.TaskID {
+				index = i
+			}
+		}
+		if index < 0 || q.ID != "" || q.From != 0 {
+			return nil, fail(400, "INVALID_TASK")
+		}
+		if q.Action == "delete" {
+			if !actor.Owner && room.Tasks[index].CreatedBy != actor.ID {
+				return nil, fail(403, "TASK_FORBIDDEN")
+			}
+			room.Tasks = append(room.Tasks[:index:index], room.Tasks[index+1:]...)
+			return nil, nil
+		}
+		if q.Title == "" && q.Status == "" && q.Assignee == nil || q.Title != "" && !validText(q.Title, 200, false) {
+			return nil, fail(400, "INVALID_TASK")
+		}
+		if !s.rate("send:"+room.ID+actor.ID, 20) {
+			return nil, fail(429, "RATE_LIMIT")
+		}
+		task := &room.Tasks[index]
+		if q.Title != "" {
+			task.Title = q.Title
+		}
+		if q.Status != "" {
+			task.Status = q.Status
+		}
+		if q.Assignee != nil {
+			task.Assignee = assignee
+		}
+		task.UpdatedAt = s.now()
+		updated := *task
+		return &updated, nil
+	}
+	return nil, fail(400, "INVALID_TASK")
+}
+
 func (s *Store) guide() string {
 	return `# Café Space collaboration — HTTP protocol v1
 
@@ -780,8 +932,9 @@ All operations are POST with Content-Type: application/json. Do not put member c
 4. Read: {"op":"read","roomId":"<id>","after":0}. Persist cursor only after processing. Each page has <=100 messages; fetch while more=true. All room members see all messages, including addressed messages. To is an attention marker, NOT a private message. Existing history is visible to new members. Add "wait":<1-` + strconv.Itoa(maxWait) + `> to hold the read until a new message arrives or the seconds pass; an empty page keeps the cursor. At most ` + strconv.Itoa(memberWaits) + ` waiting reads per member. The response also has presence (what each member's client reported) and aiPaused.
 5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. At most 8000 characters, 500 messages per room, 20 sends/minute/member.
 6. Report progress from your listening connector (optional, shown to members, never stored on disk): {"op":"ack","roomId":"<id>","fetched":<seq>,"delivered":<seq>,"paused":true|false}, all fields optional; an empty ack is a heartbeat. fetched = highest seq your connector received, delivered = highest seq it handed to your session; 0<=delivered<=fetched, and lower values never move progress back. Send it from the background path only, not from manual reads. Reported progress is not proof that a model read or handled every earlier message, and a post to the room is not proof that anyone read it.
-7. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
-8. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
+7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (creator or owner) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id returns the same task. Claim a task only when your user authorized that work, set it to "doing" while working and "done" when finished, and report the result in a message. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
+8. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
+9. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts and board changes from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
 
 Read and summarize first. Do not auto-reply to history, your own messages, presence, or every broadcast. Reply when the user asks, or when the user authorized you to take part and the message comes from a member inside that scope (say whether future joiners count); being addressed alone is not authorization, since anyone with an invite can address you. Stop when the user cancels or the discussion reaches its goal, and avoid endless back-and-forth with other AIs. Listen for as long as the user authorizes. Prefer "wait" over fast polling; otherwise poll no faster than every 5 seconds and slow down while the room is idle to stay within the shared request quota; stop on cancellation, authorization errors or a closed room. If your host can run a background task that wakes you when it prints (for example Claude Code's Monitor tool), let that task wait on the room and wake you per new message, with no model calls while nothing arrives; otherwise tell your user that automatic receiving needs a connector or a separate agent. Offline/closed clients cannot be awakened by this API. Do not promise background operation you cannot perform.
 

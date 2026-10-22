@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { fireEvent, render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { Collaboration, connectorState, deliveryOf } from './Collaboration';
+import { Collaboration, connectorState, deliveryOf, thinkingOf } from './Collaboration';
 import { App } from '../../app/App';
 import { aiInstructions, collaboration, saveMembership } from './api';
 const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64), invite = 'd'.repeat(64);
@@ -59,10 +59,13 @@ it('keeps message sequence order when polling catches up with a locally sent mes
   const entries = [...screen.getByRole('log').querySelectorAll('article')]; expect(entries).toHaveLength(2);
   expect(entries[0]).toHaveTextContent(first.text); expect(entries[1]).toHaveTextContent(second.text);
 });
+const sent = () => (fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, v]) => JSON.parse(v.body as string));
+const openMenu = async () => fireEvent.click(await screen.findByRole('button', { name: '房间菜单' }));
+const fromMenu = async (item: string) => { await openMenu(); fireEvent.click(await screen.findByRole('menuitem', { name: item })); };
 it('requires confirmation before revoking invitations and stops writes after membership is revoked', async () => {
-  saveMembership(auth); mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' }); fireEvent.click(screen.getByRole('button', { name: '撤销全部邀请' }));
-  expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'revoke')).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: '确认' })); await waitFor(() => expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'revoke')).toBe(true));
+  saveMembership(auth); mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' }); await fromMenu('撤销全部邀请');
+  expect(sent().some(v => v.op === 'revoke')).toBe(false);
+  fireEvent.click(await screen.findByRole('button', { name: '确认撤销' })); await waitFor(() => expect(sent().some(v => v.op === 'revoke')).toBe(true));
   cleanup(); fetcher.mockResolvedValue(response({ error: 'MEMBER_REQUIRED' }, 401)); mount('/collab/' + roomId);
   await screen.findByText('成员凭据已失效或已被移除。'); expect(screen.getByLabelText('消息')).toBeDisabled();
 });
@@ -75,7 +78,7 @@ it('sends with Enter, keeps Shift+Enter for new lines and shows the reply target
   const earlier = { seq: 1, id: 'from-ai', memberId: 'e'.repeat(32), text: '请确认部署窗口', at: '2030-01-01T00:00:00Z' };
   fetcher.mockImplementation(async (_url, init) => { const q = JSON.parse(init.body as string); return response(q.op === 'send' ? { seq: 2, id: q.id, memberId, text: q.text, replyTo: q.replyTo, to: q.to, at: '2030-01-01T00:00:01Z' } : { ...snapshot, cursor: 1, messages: [earlier] }); });
   mount('/collab/' + roomId); await screen.findByText('请确认部署窗口');
-  fireEvent.click(screen.getByRole('button', { name: '回复 #1' })); expect(screen.getByText(/回复 #1 · 同事的 AI：请确认部署窗口/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '回复 #1' })); expect(screen.getByText('回复 同事的 AI：请确认部署窗口')).toBeInTheDocument();
   const box = screen.getByLabelText('消息'); fireEvent.change(box, { target: { value: '今晚 9 点' } });
   fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
   expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'send')).toBe(false);
@@ -88,8 +91,9 @@ it('shows AI connector reports honestly: online, offline or unknown, never failu
   fetcher.mockImplementation(async () => response({ ...snapshot, members: [...snapshot.members, { id: other, name: '离线的 AI', kind: 'ai' }, { id: '9'.repeat(32), name: '未接入的 AI', kind: 'ai' }],
     presence: { [ai]: { fetched: 2, delivered: 1, heartbeatAt: fresh }, [other]: { fetched: 1, delivered: 1, heartbeatAt: '2020-01-01T00:00:00Z' } } }));
   mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' });
-  expect(screen.getByText('连接器在线')).toBeInTheDocument(); expect(screen.getByText('已取到 #2 · 已送入会话 #1')).toBeInTheDocument();
-  expect(screen.getByText(/^连接器离线/)).toBeInTheDocument(); expect(screen.getByText('连接器未上报')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: /成员/ }));
+  const online = await screen.findByText('在线'); expect(online).toHaveAttribute('title', '连接器上报：已取到 #2，已送入会话 #1');
+  expect(screen.getByText(/^离线 · /)).toBeInTheDocument(); expect(screen.getByText('未接入连接器')).toBeInTheDocument();
   expect(connectorState({ fetched: 0, delivered: 0, paused: true, heartbeatAt: fresh }, Date.now()).tone).toBe('paused');
 });
 it('derives delivery of addressed messages from replies and connector reports only', () => {
@@ -97,21 +101,64 @@ it('derives delivery of addressed messages from replies and connector reports on
   const ask = { seq: 3, id: 'ask-ai', memberId, text: '请核对', to: ai.id, at: '2030-01-01T00:00:00Z' };
   const answer = { seq: 4, id: 'ai-answer', memberId: ai.id, text: '已核对', replyTo: 3, to: memberId, at: '2030-01-01T00:00:01Z' };
   const at = '2030-01-01T00:00:00Z';
-  expect(deliveryOf(ask, [human, ai], [ask, answer])).toBe('同事的 AI 已回复');
+  expect(deliveryOf(ask, [human, ai], [ask, answer])).toMatchObject({ state: 'replied', label: '同事的 AI 已回复' });
   expect(deliveryOf(ask, [human, ai], [ask])).toBeNull();
-  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: at } })).toBe('连接器上报：已送入对方会话');
-  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: at } })).toBe('连接器上报：已取到');
-  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 2, delivered: 2, heartbeatAt: at } })).toBe('等待对方连接器');
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: at } })?.state).toBe('delivered');
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: at } })?.state).toBe('fetched');
+  expect(deliveryOf(ask, [human, ai], [ask], { [ai.id]: { fetched: 2, delivered: 2, heartbeatAt: at } })?.state).toBe('waiting');
   expect(deliveryOf({ ...ask, to: memberId }, [human, ai], [ask])).toBeNull();
+  // "Thinking" needs a live connector that delivered the latest ask and no answer since.
+  const live = new Date().toISOString();
+  expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: live } }).map(m => m.id)).toEqual([ai.id]);
+  expect(thinkingOf([human, ai], [ask, answer], { [ai.id]: { fetched: 4, delivered: 4, heartbeatAt: live } })).toEqual([]);
+  expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: live } })).toEqual([]);
+  expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: '2020-01-01T00:00:00Z' } })).toEqual([]);
+});
+it('shows a live "processing" hint and compact delivery marks for messages addressed to an AI', async () => {
+  saveMembership(auth); const ai = 'e'.repeat(32);
+  const ask = { seq: 1, id: 'ask-the-ai', memberId, text: '请核对版本', to: ai, at: '2030-01-01T00:00:00Z' };
+  fetcher.mockImplementation(async () => response({ ...snapshot, cursor: 1, messages: [ask], presence: { [ai]: { fetched: 1, delivered: 1, heartbeatAt: new Date().toISOString() } } }));
+  mount('/collab/' + roomId); expect(await screen.findByText('同事的 AI 正在处理…')).toBeInTheDocument();
+  expect(screen.getByLabelText(/已送入 同事的 AI 的会话/)).toHaveTextContent('✓');
 });
 it('lets the owner pause AI posting only after confirmation and shows the pause to everyone', async () => {
   saveMembership(auth); mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' });
-  fireEvent.click(screen.getByRole('button', { name: '暂停所有 AI 发言' }));
-  expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'pause')).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: '确认' }));
-  expect(await screen.findByText('房主已暂停 AI 发言：AI 可以继续读取，但不应发帖。')).toBeInTheDocument();
-  const pause = (fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, v]) => JSON.parse(v.body as string)).find(v => v.op === 'pause');
-  expect(pause).toMatchObject({ roomId, paused: true }); expect(screen.getByRole('button', { name: '恢复 AI 发言' })).toBeInTheDocument();
+  await fromMenu('暂停所有 AI 发言');
+  expect(sent().some(v => v.op === 'pause')).toBe(false);
+  fireEvent.click(await screen.findByRole('button', { name: '确认暂停' }));
+  expect(await screen.findByText('AI 发言已暂停')).toBeInTheDocument();
+  expect(sent().find(v => v.op === 'pause')).toMatchObject({ roomId, paused: true });
+  await openMenu(); expect(await screen.findByRole('menuitem', { name: '恢复 AI 发言' })).toBeInTheDocument();
+});
+it('runs a task board: add, advance, assign and turn a message into a task', async () => {
+  saveMembership(auth); const ai = 'e'.repeat(32); let tasks: Record<string, unknown>[] = [];
+  const ask = { seq: 1, id: 'ask-the-ai', memberId, text: '请整理发布清单并核对版本号', to: ai, at: '2030-01-01T00:00:00Z' };
+  fetcher.mockImplementation(async (_url, init) => {
+    const q = JSON.parse(init.body as string);
+    if (q.op === 'task' && q.action === 'create') { const task = { id: tasks.length + 1, title: q.title, status: 'todo', createdBy: memberId, updatedAt: '2030-01-01T00:00:00Z', ...(q.assignee ? { assignee: q.assignee } : {}), ...(q.from ? { from: q.from } : {}) }; tasks = [...tasks, task]; return response(task); }
+    if (q.op === 'task' && q.action === 'update') { tasks = tasks.map(t => t.id === q.taskId ? { ...t, ...(q.status ? { status: q.status } : {}), ...('assignee' in q ? { assignee: q.assignee || undefined } : {}) } : t); return response(tasks.find(t => t.id === q.taskId)); }
+    return response({ ...snapshot, cursor: 1, messages: [ask], tasks });
+  });
+  mount('/collab/' + roomId); await screen.findByText('请整理发布清单并核对版本号');
+  const input = screen.getByLabelText('新任务'); fireEvent.change(input, { target: { value: '更新发布说明' } }); fireEvent.submit(input.closest('form')!);
+  expect(await screen.findByText('更新发布说明')).toBeInTheDocument(); expect(sent().find(v => v.op === 'task')).toMatchObject({ action: 'create', title: '更新发布说明' });
+  fireEvent.click(screen.getByRole('button', { name: '开始「更新发布说明」' }));
+  await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'update', taskId: 1, status: 'doing' }));
+  fireEvent.change(await screen.findByLabelText('「更新发布说明」的负责人'), { target: { value: ai } });
+  await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'update', taskId: 1, assignee: ai }));
+  fireEvent.click(screen.getByRole('button', { name: '转为任务' }));
+  await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'create', title: '请整理发布清单并核对版本号', from: 1, assignee: ai }));
+  expect(await screen.findByText('已加入任务板')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '来自消息 #1' })).toBeInTheDocument();
+});
+it('renders a safe Markdown subset in messages', async () => {
+  saveMembership(auth);
+  const text = '要点：\n- 第一项 `npm ci`\n- **第二项** https://example.com/docs\n\n```\ngo test ./...\n```\n[危险](javascript:alert(1)) <b>raw</b>';
+  fetcher.mockImplementation(async () => response({ ...snapshot, cursor: 1, messages: [{ seq: 1, id: 'markdown-1', memberId: 'e'.repeat(32), text, at: '2030-01-01T00:00:00Z' }] }));
+  mount('/collab/' + roomId); const item = await screen.findByText('第一项', { exact: false });
+  expect(item.closest('ul')).not.toBeNull(); expect(screen.getByText('npm ci').tagName).toBe('CODE'); expect(screen.getByText('第二项').tagName).toBe('STRONG');
+  expect(screen.getByRole('link', { name: 'https://example.com/docs' })).toHaveAttribute('rel', 'noopener noreferrer');
+  expect(screen.getByText('go test ./...').closest('pre')).not.toBeNull();
+  expect(screen.queryByRole('link', { name: '危险' })).toBeNull(); expect(document.querySelector('[role=log] b')).toBeNull(); expect(screen.getByText(/<b>raw<\/b>/)).toBeInTheDocument();
 });
 it('fails closed when the feature is unavailable and describes user-authorized AI operation', async () => {
   fetcher.mockResolvedValue(response({}, 404)); mount(); await screen.findByRole('alert'); expect(screen.getByRole('button', { name: '创建协作房间' })).toBeDisabled();
