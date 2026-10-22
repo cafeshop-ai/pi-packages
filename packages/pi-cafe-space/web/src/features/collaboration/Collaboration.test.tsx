@@ -129,9 +129,12 @@ it('lets a human test an AI from the member list and shows the answer as one lin
   await waitFor(() => expect(sent().find(v => v.op === 'send')).toMatchObject({ to: ai })); const code = /验证码 ([A-Z0-9]{4})/.exec(sent().find(v => v.op === 'send')!.text)![1];
   expect(await screen.findByText('正在等待响应测试的回复')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '再测一次' })).toBeDisabled();
   expect(screen.getByText(/向 同事的 AI 发起响应测试/)).toBeInTheDocument(); expect(screen.queryByText(/收到请直接在房间回复/)).toBeNull();
-  messages = [...messages, { seq: 2, id: 'ai-answer-1', memberId: ai, text: code, replyTo: 1, at: new Date(Date.parse(messages[0]!.at as string) + 4000).toISOString() }];
+  const start = Date.parse(messages[0]!.at as string);
+  messages = [...messages, { seq: 2, id: 'ai-answer-1', memberId: ai, text: code, replyTo: 1, at: new Date(start + 4000).toISOString() }, { seq: 3, id: 'ai-follow-1', memberId: ai, text: '另外我开始核对清单了', at: new Date(start + 6000).toISOString() }];
   expect(await screen.findByText('本次响应测试成功，耗时 4 秒', {}, { timeout: 8000 })).toBeInTheDocument();
   expect(screen.getByText(/同事的 AI 已回复响应测试 · 耗时 4 秒/)).toBeInTheDocument();
+  // A collapsed line breaks the run, so the next message from the same AI still names its author.
+  expect(document.querySelector('#msg-3 header strong')?.textContent).toBe('同事的 AI');
 }, 15_000);
 it('derives delivery of addressed messages from replies and connector reports only', () => {
   const ai = { id: 'e'.repeat(32), name: '同事的 AI', kind: 'ai' as const, owner: false }, human = { id: memberId, name: '创建者', kind: 'human' as const, owner: true };

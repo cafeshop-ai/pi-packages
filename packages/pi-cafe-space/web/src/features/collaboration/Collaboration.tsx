@@ -242,6 +242,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
   const thinking = thinkingOf(members, messages, presence, now);
   const probes = probesOf(messages, members, now);
+  // Tests and bare answers to them collapse into one line each; an answer with more to say stays a message.
+  const compact = (message: Message) => !!probeOf(message, members) || probes.answers.has(message.seq) && message.text.trim().length <= 16;
   const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
   const openSide = (next: 'tasks' | 'people') => { setTab(next); if (narrow()) setSideOpen(true); };
   const openInvite = () => { setInviteOpen(true); if (!link) void act('invite'); };
@@ -335,12 +337,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             {messages.map((message, index) => {
               const previous = messages[index - 1]; const author = memberOf(message.memberId); const mine = message.memberId === auth.memberId;
               const newDay = !previous || day(previous.at) !== day(message.at);
-              const continued = !newDay && previous?.memberId === message.memberId && Date.parse(message.at) - Date.parse(previous.at) < 5 * 60_000 && !message.replyTo;
+              const continued = !newDay && previous?.memberId === message.memberId && Date.parse(message.at) - Date.parse(previous.at) < 5 * 60_000 && !message.replyTo && !compact(previous);
               const quoted = message.replyTo ? messages.find(m => m.seq === message.replyTo) : undefined;
               const delivery = snapshot && deliveryOf(message, members, messages, presence);
-              // Tests and bare answers to them collapse into one line each; an answer with more to say stays a message.
               const tested = probes.answers.get(message.seq);
-              if (probeOf(message, members) || tested && message.text.trim().length <= 16) return <div key={message.seq}>
+              if (compact(message)) return <div key={message.seq}>
                 {newDay && <p className={styles.dayDivider}><span>{day(message.at)}</span></p>}
                 <p id={`msg-${message.seq}`} className={styles.probeLine} data-state={tested ? 'ok' : undefined}>{tested ? <><Icon name="check" />{nameOf(message.memberId)} 已回复响应测试 · 耗时 {tested.took}</> : <>{nameOf(message.memberId)} 向 {nameOf(message.to ?? '')} 发起响应测试</>}<time dateTime={message.at}>{clock(message.at)}</time></p>
               </div>;
