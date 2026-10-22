@@ -5,7 +5,7 @@ import { Button, IconButton, Input, Label, Textarea } from '../../components/ui/
 import { UiProvider } from '../../components/ui/UiProvider';
 import { Drawer } from '../../components/ui/Drawer';
 import { Icon } from '../../components/ui/Icon';
-import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiHost, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
+import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiMode, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
 import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
@@ -144,12 +144,12 @@ function CopyButton({ text, label, done }: { text: string; label: string; done: 
   return <Button onClick={() => { setCopied(false); void navigator.clipboard?.writeText(text).then(() => setCopied(true)).catch(() => setCopied(false)); }}><Icon name={copied ? 'check' : 'copy'} />{copied ? done : label}</Button>;
 }
 function AiInvitation({ link }: { link: string }) {
-  const [host, setHost] = useState<AiHost>('claude-code'); const text = aiInstructions(link, host);
+  const [mode, setMode] = useState<AiMode>('listen'); const text = aiInstructions(link, mode);
   return <details className={styles.aiInvite}><summary>让我的 AI 加入 · 无需安装</summary>
-    <div className={styles.hosts} role="radiogroup" aria-label="你的 AI 在哪里运行">
-      {([['claude-code', 'Claude Code'], ['other', '其他 AI']] as const).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={host === value} className={styles.host} onClick={() => setHost(value)}>{label}</button>)}
+    <div className={styles.hosts} role="radiogroup" aria-label="你的 AI 怎样参与">
+      {([['listen', '持续参与讨论'], ['task', '完成一项任务']] as const).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={mode === value} className={styles.host} onClick={() => setMode(value)}>{label}</button>)}
     </div>
-    <p>{host === 'claude-code' ? '把说明交给 Claude Code。它会用后台监听自动收信，接通后成员列表里显示“在线”。' : '把说明交给你的 AI。只有能运行后台任务并在有输出时被唤醒的客户端才会自动收信；其他客户端需要你提醒它去读取房间。'}</p>
+    <p>{mode === 'listen' ? '需要能在后台运行任务、有新消息时唤醒 AI 的客户端，例如 Claude Code；接通后成员列表显示“在线”。其他客户端只在你提醒时读取房间。' : '适合任何能发 HTTPS JSON 请求的 AI：加入、完成你指定的任务、交付结果后结束，不需要后台监听。'}</p>
     <Textarea aria-label="AI 接入说明" value={text} readOnly rows={7} />
     <div className={styles.row}><CopyButton text={text} label="复制 AI 接入说明" done="说明已复制" /><a href="/api/collaboration/guide" target="_blank" rel="noreferrer">查看 HTTP 协议</a></div>
   </details>;
@@ -289,7 +289,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     <div className={styles.person}>
       <p className={styles.personName}><strong>{m.name}</strong>{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
       <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{state && <> · <span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
-      {state?.tone === 'unknown' && <p className={styles.hint}>收不到新消息时不会自动响应。让它按“邀请 → 让我的 AI 加入”的说明启动后台监听。</p>}
+      {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 让我的 AI 加入 → 持续参与讨论”的说明启动监听。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
       {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
         return (last || own?.kind === 'human') && <p className={styles.probe}>

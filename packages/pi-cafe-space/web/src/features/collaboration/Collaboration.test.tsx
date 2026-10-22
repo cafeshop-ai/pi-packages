@@ -31,9 +31,9 @@ it('creates a standalone room and generates a transferable human/AI invitation w
   expect((await screen.findByLabelText('邀请链接') as HTMLInputElement).value).toContain(invite);
   fireEvent.click(screen.getByText('让我的 AI 加入 · 无需安装')); const instructions = screen.getByLabelText('AI 接入说明') as HTMLTextAreaElement;
   expect(instructions.value).toContain('/api/collaboration/guide'); expect(instructions.value).not.toContain(token); expect(instructions.value).toContain(invite);
-  expect(instructions.value).toContain('Monitor 工具在后台运行一个监听脚本');
-  fireEvent.click(screen.getByRole('radio', { name: '其他 AI' }));
-  const generic = (screen.getByLabelText('AI 接入说明') as HTMLTextAreaElement).value; expect(generic).not.toContain('Monitor 工具在后台运行一个监听脚本'); expect(generic).toContain(invite);
+  expect(instructions.value).toContain('wait 长轮询'); expect(instructions.value).not.toMatch(/你在 Claude Code 中/);
+  fireEvent.click(screen.getByRole('radio', { name: '完成一项任务' }));
+  const task = (screen.getByLabelText('AI 接入说明') as HTMLTextAreaElement).value; expect(task).not.toContain('wait 长轮询'); expect(task).toContain('resultSeq'); expect(task).toContain(invite); expect(task).toContain('/api/collaboration/guide');
   expect(JSON.parse(localStorage.getItem('cafe-collaboration-v1:' + roomId)!)).toEqual(auth);
 });
 it('joins only after explicit confirmation and sends no cookie or invitation on reads', async () => {
@@ -98,7 +98,7 @@ it('shows AI connector reports honestly: online, offline or unknown, never failu
   fireEvent.click(screen.getByRole('tab', { name: /成员/ }));
   const online = await screen.findByText('在线'); expect(online).toHaveAttribute('title', '连接器上报：已取到 #2，已送入会话 #1');
   expect(screen.getByText(/^离线 · /)).toBeInTheDocument(); expect(screen.getByText('未接入连接器')).toBeInTheDocument();
-  expect(screen.getByText(/启动后台监听/)).toBeInTheDocument(); expect(screen.getByText(/后台监听已停止/)).toBeInTheDocument();
+  expect(screen.getByText(/没有上报后台监听/)).toBeInTheDocument(); expect(screen.getByText(/后台监听已停止/)).toBeInTheDocument();
   expect(connectorState({ fetched: 0, delivered: 0, paused: true, heartbeatAt: fresh }, Date.now()).tone).toBe('paused');
 });
 it('derives response tests from room history: one round trip, honest silence, room-wide limits', () => {
