@@ -70,8 +70,8 @@ it('routes collaboration without initializing or controlling an office Pi', asyn
   window.location.hash = '#/collab'; const createOwner = vi.fn(() => { throw Error('must not create office owner'); });
   render(<App createOwner={createOwner} />); expect(await screen.findByRole('heading', { name: '一起讨论，不限工具。' })).toBeInTheDocument(); expect(createOwner).not.toHaveBeenCalled();
 });
-it('fails closed when the feature is unavailable and describes bounded AI operation', async () => {
+it('fails closed when the feature is unavailable and describes user-authorized AI operation', async () => {
   fetcher.mockResolvedValue(response({}, 404)); mount(); await screen.findByRole('alert'); expect(screen.getByRole('button', { name: '创建协作房间' })).toBeDisabled();
-  const guide = aiInstructions('https://example.test/#/collab/example'); expect(guide).toContain('每轮最多 3 次回复'); expect(guide).toContain('不具备双向联网能力');
+  const guide = aiInstructions('https://example.test/#/collab/example'); expect(guide).toContain('监听时长以我的授权为准'); expect(guide).not.toContain('最多 3 次回复'); expect(guide).toContain('不具备双向联网能力');
   await expect(collaboration({ op: 'read' })).rejects.toThrow();
 });
