@@ -53,7 +53,7 @@
 .avatarSpacer { width: 34px; flex: none; }
 
 // Room
-.room { height: calc(100dvh - var(--collab-header)); display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.room { height: calc(100dvh - var(--collab-header)); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 .toolbar { padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; border-bottom: 1px solid var(--cafe-line); }
 .titleBlock { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 12px;
   h1 { min-width: 0; font: 600 17px/1.35 var(--cafe-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
