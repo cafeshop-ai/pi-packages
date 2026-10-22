@@ -203,3 +203,36 @@ func TestTaskCreateRetryIsRecognisedAfterLaterEdits(t *testing.T) {
 		t.Fatalf("legacy retry must match the current title: %v", same)
 	}
 }
+
+func TestTaskCreateRetryAfterTheOriginalAssigneeLeft(t *testing.T) {
+	for _, gone := range []string{"leave", "remove"} {
+		s := store(t)
+		id, owner := create(t, s)
+		invite := invitation(t, s, id, owner)
+		first, second := join(t, s, id, invite, "First AI"), join(t, s, id, invite, "Second AI")
+		a, b := first["memberId"].(string), second["memberId"].(string)
+		original := map[string]any{"op": "task", "roomId": id, "action": "create", "id": "assigned-replay", "title": "Original title", "assignee": a}
+		created := call(t, s, original, owner, 200)
+		call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": created["id"], "title": "Renamed", "assignee": b}, owner, 200)
+		if gone == "leave" {
+			call(t, s, map[string]any{"op": "leave", "roomId": id}, first["token"].(string), 200)
+		} else {
+			call(t, s, map[string]any{"op": "remove", "roomId": id, "memberId": a}, owner, 200)
+		}
+		// Confirming an existing create reassigns nothing, so the departed assignee does not block it.
+		again := call(t, s, original, owner, 200)
+		if again["id"] != created["id"] || again["title"] != "Renamed" || again["assignee"] != b {
+			t.Fatalf("%s: a retry must return the task as it is now: %v", gone, again)
+		}
+		// Setting a departed member as assignee, in a new task or an update, is still refused.
+		call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "assigned-fresh", "title": "New", "assignee": a}, owner, 400)
+		call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": created["id"], "assignee": a}, owner, 400)
+		// A creator whose membership is gone cannot replay its own create either.
+		if gone == "leave" {
+			mine := map[string]any{"op": "task", "roomId": id, "action": "create", "id": "own-before-leave", "title": "Mine"}
+			call(t, s, mine, second["token"].(string), 200)
+			call(t, s, map[string]any{"op": "leave", "roomId": id}, second["token"].(string), 200)
+			call(t, s, mine, second["token"].(string), 401)
+		}
+	}
+}

@@ -910,17 +910,19 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 	assignee := ""
 	if q.Assignee != nil {
 		assignee = *q.Assignee
-		if assignee != "" {
-			ok := false
-			for _, m := range room.Members {
-				if m.ID == assignee && !m.Removed {
-					ok = true
-				}
-			}
-			if !ok {
-				return nil, fail(400, "INVALID_ASSIGNEE")
+	}
+	// The assignee must be a current member only when it is being set now: a retried create that
+	// matches an existing task assigns nothing, even if the original assignee has since left.
+	activeAssignee := func() error {
+		if assignee == "" {
+			return nil
+		}
+		for _, m := range room.Members {
+			if m.ID == assignee && !m.Removed {
+				return nil
 			}
 		}
+		return fail(400, "INVALID_ASSIGNEE")
 	}
 	if q.Status != "" && !validStatus(q.Status) {
 		return nil, fail(400, "INVALID_TASK")
@@ -949,6 +951,9 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 				return &task, nil
 			}
 		}
+		if err := activeAssignee(); err != nil {
+			return nil, err
+		}
 		if len(room.Tasks) >= maxTasks {
 			return nil, fail(409, "TASK_LIMIT")
 		}
@@ -964,6 +969,9 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 		room.Tasks = append(room.Tasks, task)
 		return &task, nil
 	case "update", "delete":
+		if err := activeAssignee(); err != nil {
+			return nil, err
+		}
 		index := -1
 		for i := range room.Tasks {
 			if room.Tasks[i].ID == q.TaskID {
