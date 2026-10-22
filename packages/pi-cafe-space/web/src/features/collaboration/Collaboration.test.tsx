@@ -152,7 +152,21 @@ it('runs a task board: add, advance, assign and turn a message into a task', asy
   await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'update', taskId: 1, assignee: ai }));
   fireEvent.click(screen.getByRole('button', { name: '转为任务' }));
   await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'create', title: '请整理发布清单并核对版本号', from: 1, assignee: ai }));
-  expect(await screen.findByText('已加入任务板')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '来自消息 #1' })).toBeInTheDocument();
+  expect(await screen.findByText('已加入任务板')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '来自 #1' })).toBeInTheDocument();
+});
+it('lets an ordinary member claim unassigned tasks but not move or reassign work owned by others', async () => {
+  const boss = 'f'.repeat(32), ai = 'e'.repeat(32);
+  saveMembership(auth);
+  const members = [{ id: boss, name: '房主', kind: 'human', owner: true }, { id: memberId, name: '我', kind: 'human' }, { id: ai, name: '同事的 AI', kind: 'ai' }];
+  const result = { seq: 1, id: 'ai-result-01', memberId: ai, text: '清单已整理', at: '2030-01-01T00:00:00Z' };
+  const tasks = [{ id: 1, title: '整理清单', status: 'done', assignee: ai, createdBy: boss, result: 1, resultBy: ai, updatedAt: '2030-01-01T00:00:00Z' }, { id: 2, title: '核对版本', status: 'todo', createdBy: boss, updatedAt: '2030-01-01T00:00:00Z' }];
+  fetcher.mockImplementation(async (_url, init) => { const q = JSON.parse(init.body as string); return response(q.op === 'task' ? { ...tasks[1], assignee: memberId, status: 'doing' } : { ...snapshot, members, cursor: 1, messages: [result], tasks }); });
+  mount('/collab/' + roomId); await screen.findByText('核对版本');
+  expect(screen.getByRole('button', { name: '重新打开「整理清单」' })).toBeDisabled(); expect(screen.queryByLabelText('「整理清单」的负责人')).toBeNull();
+  expect(screen.getByRole('button', { name: '结果 #1 · 同事的 AI' })).toBeInTheDocument();
+  const choices = [...(screen.getByLabelText('「核对版本」的负责人') as HTMLSelectElement).options].map(o => o.textContent); expect(choices).toEqual(['未指派', '我']);
+  fireEvent.click(screen.getByRole('button', { name: '认领「核对版本」' }));
+  await waitFor(() => expect(sent().find(v => v.op === 'task')).toMatchObject({ action: 'update', taskId: 2, assignee: memberId, status: 'doing', onlyIfUnassigned: true }));
 });
 it('renders a safe Markdown subset in messages', async () => {
   saveMembership(auth);

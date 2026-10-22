@@ -70,21 +70,30 @@ type Room struct {
 	AIPaused bool      `json:"aiPaused,omitempty"`
 	Members  []Member  `json:"members"`
 	Invites  []string  `json:"invites"`
-	Messages []Message `json:"messages"`
-	Tasks    []Task    `json:"tasks,omitempty"`
-	NextTask int       `json:"nextTask,omitempty"`
+	// InvitedBy maps an invite hash to the member who created it; invites from
+	// before this field existed simply have no inviter to preview.
+	InvitedBy map[string]string `json:"invitedBy,omitempty"`
+	Messages  []Message         `json:"messages"`
+	Tasks     []Task            `json:"tasks,omitempty"`
+	NextTask  int               `json:"nextTask,omitempty"`
 }
 
 // Task is a shared to-do on the room's board. Key (creator ID + client ID) makes
 // creation idempotent and is never returned to clients.
 type Task struct {
-	ID        int       `json:"id"`
-	Key       string    `json:"key,omitempty"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`
-	Assignee  string    `json:"assignee,omitempty"`
-	CreatedBy string    `json:"createdBy"`
-	From      int       `json:"from,omitempty"`
+	ID        int    `json:"id"`
+	Key       string `json:"key,omitempty"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Assignee  string `json:"assignee,omitempty"`
+	CreatedBy string `json:"createdBy"`
+	From      int    `json:"from,omitempty"`
+	// Result is the seq of a message by whoever submitted it; it records a
+	// submitted result, not an accepted one.
+	Result int `json:"result,omitempty"`
+	// ResultBy is who submitted Result; it stays with the result through reassignment
+	// or reopening, so an old delivery is never shown as someone else's.
+	ResultBy  string    `json:"resultBy,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
@@ -123,6 +132,9 @@ type request struct {
 	Status    string  `json:"status,omitempty"`
 	Assignee  *string `json:"assignee,omitempty"`
 	From      int     `json:"from,omitempty"`
+	// OnlyIfUnassigned makes an assignment fail with TASK_TAKEN instead of replacing someone.
+	OnlyIfUnassigned bool `json:"onlyIfUnassigned,omitempty"`
+	ResultSeq        int  `json:"resultSeq,omitempty"`
 }
 
 const maxWait = 50
@@ -210,9 +222,14 @@ func validRoom(room *Room) bool {
 	if len(room.Tasks) > maxTasks || room.NextTask < 0 {
 		return false
 	}
+	for invite, by := range room.InvitedBy {
+		if !keyPattern.MatchString(invite) || !members[by] {
+			return false
+		}
+	}
 	taskIDs, taskKeys := map[int]bool{}, map[string]bool{}
 	for _, task := range room.Tasks {
-		if task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
+		if task.Result < 0 || task.Result > len(room.Messages) || (task.Result > 0) != (task.ResultBy != "") || task.ResultBy != "" && !members[task.ResultBy] || task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
 			return false
 		}
 		taskIDs[task.ID], taskKeys[task.Key] = true, true
@@ -488,6 +505,13 @@ func (s *Store) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path == endpoint+"/guide" && r.Method == "GET" {
+			// The same guide as text for people, or as OpenAPI for clients that ask for JSON.
+			w.Header().Set("Vary", "Accept")
+			if strings.Contains(r.Header.Get("Accept"), "application/json") {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_ = json.NewEncoder(w).Encode(s.contract())
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = io.WriteString(w, s.guide())
 			return
@@ -567,7 +591,7 @@ func writeError(w http.ResponseWriter, err error) {
 }
 func (s *Store) apply(q request, token, address string) (any, error) {
 	if q.Op == "status" {
-		return map[string]any{"enabled": true, "maxMessages": 500, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks"}, "maxWait": maxWait}, nil
+		return map[string]any{"enabled": true, "maxMessages": 500, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract"}, "maxWait": maxWait}, nil
 	}
 	if q.Op == "create" {
 		if !validText(q.Title, 80, false) || !validText(q.Name, 48, false) || q.Kind != "human" {
@@ -609,6 +633,9 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	}
 	if !idPattern.MatchString(q.RoomID) {
 		return nil, fail(400, "INVALID_ROOM")
+	}
+	if q.Op == "preview" {
+		return s.preview(q, address)
 	}
 	original := s.rooms[q.RoomID]
 	if original == nil || !original.Expires.After(s.now()) {
@@ -770,6 +797,11 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			return nil, err
 		}
 		room.Invites = append(room.Invites, hash(secret))
+		invitedBy := map[string]string{hash(secret): actor.ID}
+		for k, v := range room.InvitedBy {
+			invitedBy[k] = v
+		}
+		room.InvitedBy = invitedBy
 		if err = s.save(&room); err != nil {
 			return nil, err
 		}
@@ -795,6 +827,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			return nil, fail(403, "OWNER_REQUIRED")
 		}
 		room.Invites = []string{}
+		room.InvitedBy = nil
 	case "pause":
 		// Asks every AI client to stop posting; clients see it on their next read.
 		if !actor.Owner {
@@ -810,6 +843,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		}
 		room.Closed = true
 		room.Invites = []string{}
+		room.InvitedBy = nil
 	case "leave":
 		if actor.Owner {
 			return nil, fail(409, "OWNER_MUST_CLOSE")
@@ -823,6 +857,45 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		return nil, err
 	}
 	return map[string]bool{"ok": true}, nil
+}
+
+// preview lets an invite holder see who invited them and what joining exposes, without
+// creating a member. Unknown, expired, closed and revoked invites fail identically.
+func (s *Store) preview(q request, address string) (any, error) {
+	if !s.rate("preview:"+address, 30) || !s.rate("preview:*", 600) {
+		return nil, fail(429, "RATE_LIMIT")
+	}
+	room := s.rooms[q.RoomID]
+	valid := room != nil && room.Expires.After(s.now()) && !room.Closed && keyPattern.MatchString(q.Invite)
+	digest := hash(q.Invite)
+	if valid {
+		valid = false
+		for _, invite := range room.Invites {
+			if invite == digest {
+				valid = true
+			}
+		}
+	}
+	if !valid {
+		return nil, fail(403, "INVITE_INVALID")
+	}
+	inviter, humans, ais := "", 0, 0
+	for _, m := range room.Members {
+		if m.Removed {
+			continue
+		}
+		if m.ID == room.InvitedBy[digest] {
+			inviter = m.Name
+		}
+		if m.Kind == "ai" {
+			ais++
+		} else {
+			humans++
+		}
+	}
+	return map[string]any{"roomId": room.ID, "title": room.Title, "inviter": inviter, "inviterVerified": false, "humans": humans, "ais": ais,
+		"expires": room.Expires, "aiPaused": room.AIPaused, "messages": len(room.Messages), "tasks": len(room.Tasks),
+		"visibleAfterJoin": []string{"history", "members", "tasks"}, "allowedAfterJoin": []string{"send", "invite", "tasks", "leave"}}, nil
 }
 
 // task applies one board change to room (a private copy) and returns the resulting
@@ -895,25 +968,53 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 			room.Tasks = append(room.Tasks[:index:index], room.Tasks[index+1:]...)
 			return nil, nil
 		}
-		if q.Title == "" && q.Status == "" && q.Assignee == nil || q.Title != "" && !validText(q.Title, 200, false) {
+		if q.Title == "" && q.Status == "" && q.Assignee == nil && q.ResultSeq == 0 || q.Title != "" && !validText(q.Title, 200, false) {
 			return nil, fail(400, "INVALID_TASK")
+		}
+		// Everything is checked against the current task before anything changes.
+		current := room.Tasks[index]
+		privileged := actor.Owner || current.CreatedBy == actor.ID
+		pureClaim := q.Assignee != nil && assignee == actor.ID && q.OnlyIfUnassigned && (q.Status == "" || q.Status == "doing") && q.Title == "" && q.ResultSeq == 0
+		if pureClaim && current.Assignee == actor.ID {
+			return &current, nil // a retried claim returns the task as it is, never moving done back
+		}
+		next := current
+		if q.Assignee != nil && assignee != current.Assignee {
+			switch {
+			case q.OnlyIfUnassigned && current.Assignee != "":
+				return nil, fail(409, "TASK_TAKEN")
+			case current.Assignee == "" && assignee == actor.ID, current.Assignee == actor.ID && assignee == "", privileged:
+				next.Assignee = assignee
+			default:
+				return nil, fail(403, "TASK_FORBIDDEN")
+			}
+		}
+		// Status belongs to the assignee, creator and owner; anyone else may only claim an unassigned task.
+		owner := next.Assignee == actor.ID || privileged
+		if q.Title != "" && !privileged || q.Status != "" && !owner {
+			return nil, fail(403, "TASK_FORBIDDEN")
+		}
+		if q.ResultSeq != 0 {
+			if q.ResultSeq < 0 || q.ResultSeq > len(room.Messages) || room.Messages[q.ResultSeq-1].MemberID != actor.ID {
+				return nil, fail(400, "INVALID_RESULT")
+			}
+			if !owner {
+				return nil, fail(403, "TASK_FORBIDDEN")
+			}
+			next.Result, next.ResultBy = q.ResultSeq, actor.ID
+		}
+		if q.Title != "" {
+			next.Title = q.Title
+		}
+		if q.Status != "" {
+			next.Status = q.Status
 		}
 		if !s.rate("send:"+room.ID+actor.ID, 20) {
 			return nil, fail(429, "RATE_LIMIT")
 		}
-		task := &room.Tasks[index]
-		if q.Title != "" {
-			task.Title = q.Title
-		}
-		if q.Status != "" {
-			task.Status = q.Status
-		}
-		if q.Assignee != nil {
-			task.Assignee = assignee
-		}
-		task.UpdatedAt = s.now()
-		updated := *task
-		return &updated, nil
+		next.UpdatedAt = s.now()
+		room.Tasks[index] = next
+		return &next, nil
 	}
 	return nil, fail(400, "INVALID_TASK")
 }
@@ -924,15 +1025,15 @@ func (s *Store) guide() string {
 You can participate from any environment with an authorized HTTPS JSON client. No Space installation or MCP is required. This is a shared discussion, not permission to operate a computer. Never send API keys, passwords, hidden reasoning, private history, or local files without the user's authorization.
 
 Endpoint: ` + s.origin + endpoint + `
-All operations are POST with Content-Type: application/json. Do not put member credentials in URLs, chat messages, shell history, or command arguments. Store them in a private local file or your client's secret store. No cookies are used. Browser requests must be same-origin; native clients can omit Origin. Do not disable TLS verification.
+All operations are POST with Content-Type: application/json. Do not put member credentials in URLs, chat messages, shell history, or command arguments. Store them in a private local file or your client's secret store. No cookies are used. Browser requests must be same-origin; native clients can omit Origin. Do not disable TLS verification. The same URL returns this contract as OpenAPI 3.1 JSON when requested with Accept: application/json.
 
-1. Ask the user to authorize joining the provided invitation as an AI. The invitation is a URL fragment /#/collab/<roomId>?invite=<invite>. Treat it as a secret. It expires with the room.
-2. Join: {"op":"join","roomId":"<id>","invite":"<invite>","name":"Your AI / owner name","kind":"ai"}. The response includes roomId, memberId, token. The member is a self-declared guest, NOT a verified account. Do not impersonate another member.
+1. The invitation is a URL fragment /#/collab/<roomId>?invite=<invite>; parse it locally and treat the invite as a secret. Preview without joining: {"op":"preview","roomId":"<id>","invite":"<invite>"} returns the room title, the self-declared inviter, member counts and what joining exposes; any invalid, expired or revoked invite returns INVITE_INVALID. Show this to your user and ask before joining.
+2. Join: {"op":"join","roomId":"<id>","invite":"<invite>","name":"Your AI / owner name","kind":"ai"}. The response includes roomId, memberId, token. Whatever reads that response sees the token: keep it out of model context, logs and URLs, and prefer a client that stores it privately. The member is a self-declared guest, NOT a verified account. Do not impersonate another member.
 3. For all subsequent operations set Authorization: Bearer <token> and use roomId.
 4. Read: {"op":"read","roomId":"<id>","after":0}. Persist cursor only after processing. Each page has <=100 messages; fetch while more=true. All room members see all messages, including addressed messages. To is an attention marker, NOT a private message. Existing history is visible to new members. Add "wait":<1-` + strconv.Itoa(maxWait) + `> to hold the read until a new message arrives or the seconds pass; an empty page keeps the cursor. At most ` + strconv.Itoa(memberWaits) + ` waiting reads per member. The response also has presence (what each member's client reported) and aiPaused.
 5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. At most 8000 characters, 500 messages per room, 20 sends/minute/member.
 6. Report progress from your listening connector (optional, shown to members, never stored on disk): {"op":"ack","roomId":"<id>","fetched":<seq>,"delivered":<seq>,"paused":true|false}, all fields optional; an empty ack is a heartbeat. fetched = highest seq your connector received, delivered = highest seq it handed to your session; 0<=delivered<=fetched, and lower values never move progress back. Send it from the background path only, not from manual reads. Reported progress is not proof that a model read or handled every earlier message, and a post to the room is not proof that anyone read it.
-7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (creator or owner) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id returns the same task. Claim a task only when your user authorized that work, set it to "doing" while working and "done" when finished, and report the result in a message. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
+7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (creator or owner) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id returns the same task. Claim an unassigned task atomically with {"action":"update","taskId":<n>,"assignee":"<your memberId>","status":"doing","onlyIfUnassigned":true}: TASK_TAKEN means someone else has it, and retrying your own claim returns the task unchanged. Only the owner, the creator or the current assignee may change a task's assignee or status, and only the owner or creator its title. Claim only work your user authorized; when finished, post the result as a message and mark {"status":"done","resultSeq":<seq of that message>}. resultSeq records a submitted result, not acceptance. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
 8. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
 9. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts and board changes from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
 

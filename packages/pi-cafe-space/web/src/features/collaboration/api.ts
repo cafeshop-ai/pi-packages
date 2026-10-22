@@ -4,7 +4,8 @@ export interface Message { seq: number; id: string; memberId: string; text: stri
 /** A connector's own report (memory-only on the server); not proof that a model read anything. */
 export interface Presence { fetched: number; delivered: number; paused?: boolean; heartbeatAt: string }
 export type TaskStatus = 'todo' | 'doing' | 'done';
-export interface Task { id: number; title: string; status: TaskStatus; assignee?: string; createdBy: string; from?: number; updatedAt: string }
+/** result/resultBy record a submitted (not accepted) delivery and stay with its submitter. */
+export interface Task { id: number; title: string; status: TaskStatus; assignee?: string; createdBy: string; from?: number; result?: number; resultBy?: string; updatedAt: string }
 export interface Snapshot { roomId: string; title: string; expires: string; members: Member[]; messages: Message[]; cursor: number; more: boolean; memberId: string; presence?: Record<string, Presence>; aiPaused?: boolean; tasks?: Task[] }
 const errors: Record<string, string> = {
   MEMBER_REQUIRED: '成员凭据已失效或已被移除。', INVITE_INVALID: '邀请已撤销或无效，请向同事索取新邀请。',
@@ -13,7 +14,7 @@ const errors: Record<string, string> = {
   ROOM_LIMIT: '房间数量已达服务上限，请稍后再试或联系管理员。', INVITE_LIMIT: '邀请数量已达上限，请房主撤销旧邀请。',
   STORAGE_UNAVAILABLE: '服务器暂时无法保存，请稍后重试，不要重复执行操作。', STORAGE_LIMIT: '服务存储已满，请联系管理员。',
   INVALID_MESSAGE: '消息为空、过长或回复目标已失效。', INVALID_FIELDS: '请检查名称和房间标题。', OWNER_REQUIRED: '仅房主可以执行此操作。', AI_PAUSED: '房主已暂停 AI 发言。',
-  TASK_LIMIT: '任务数量已达上限，请先删除已完成的任务。', INVALID_TASK: '任务内容无效，或任务已被删除。', INVALID_ASSIGNEE: '负责人已不在房间里。', TASK_FORBIDDEN: '只有任务的创建者或房主可以删除它。',
+  TASK_LIMIT: '任务数量已达上限，请先删除已完成的任务。', INVALID_TASK: '任务内容无效，或任务已被删除。', INVALID_ASSIGNEE: '负责人已不在房间里。', TASK_FORBIDDEN: '只有负责人、创建者或房主可以这样修改这个任务。', TASK_TAKEN: '这个任务刚被其他成员认领了。', INVALID_RESULT: '结果必须是你自己发在这个房间里的消息。',
 };
 export class CollaborationError extends Error {
   constructor(readonly code: string) { super(errors[code] ?? '操作失败，请检查连接；若结果未知，先刷新消息，不要重复创建或加入。'); }

@@ -248,12 +248,19 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       {tasks.length === 0 && <p className={styles.boardEmpty}>还没有任务。把讨论里的事项“转为任务”，或在上面直接添加。</p>}
       {statusOrder.map(([status, label]) => { const items = tasks.filter(t => t.status === status); return items.length > 0 && <section key={status} className={styles.taskGroup} data-status={status}>
         <h3>{label}<span>{items.length}</span></h3>
-        <ul>{items.map(task => { const assignee = memberOf(task.assignee); return <li key={task.id} className={styles.task} data-status={task.status}>
-          <button type="button" className={styles.check} data-status={task.status} aria-label={`${statusAction[task.status]}「${task.title}」`} disabled={terminal} onClick={() => void taskAct({ action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
-          <div className={styles.taskMain}><p>{task.title}</p>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自消息 #{task.from}</button> : null}</div>
-          <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '指派负责人'}>
+        <ul>{items.map(task => {
+          // Mirrors the server: status belongs to the assignee, creator and owner; anyone may claim an unassigned task.
+          const assignee = memberOf(task.assignee); const privileged = owner || task.createdBy === auth.memberId; const mineTask = task.assignee === auth.memberId;
+          const canMove = privileged || mineTask; const canClaim = !task.assignee && !canMove;
+          const choices = privileged ? active : mineTask || !task.assignee ? active.filter(m => m.id === auth.memberId) : [];
+          return <li key={task.id} className={styles.task} data-status={task.status}>
+          <button type="button" className={styles.check} data-status={task.status} aria-label={canClaim ? `认领「${task.title}」` : `${statusAction[task.status]}「${task.title}」`} title={!canMove && !canClaim ? `由 ${assignee?.name ?? '负责人'} 推进` : undefined} disabled={terminal || (!canMove && !canClaim)}
+            onClick={() => void taskAct(canClaim ? { action: 'update', taskId: task.id, assignee: auth.memberId, status: 'doing', onlyIfUnassigned: true } : { action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
+          <div className={styles.taskMain}><p>{task.title}</p>
+            {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
+          <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
-            <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value })}><option value="">未指派</option>{active.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? '（AI）' : ''}</option>)}</select>
+            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? '（AI）' : ''}</option>)}</select>}
           </span>
           {(owner || task.createdBy === auth.memberId) && <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>}
         </li>; })}</ul>

@@ -26,17 +26,18 @@
 
 ## HTTP 接入
 
-公开说明：`GET /api/collaboration/guide`。数据操作：`POST /api/collaboration`，`Content-Type: application/json`；成员操作另需 `Authorization: Bearer <成员token>`。
+公开说明：`GET /api/collaboration/guide`（文本）；同一地址带 `Accept: application/json` 返回 OpenAPI 3.1 契约（`Vary: Accept`），与文本说明一致，由测试核对请求字段、操作与错误码。数据操作：`POST /api/collaboration`，`Content-Type: application/json`；成员操作另需 `Authorization: Bearer <成员token>`。
 
 | op | 最小请求字段（另带op） | 授权 |
 |---|---|---|
 | status | 无 | 无；返回enabled/限制 |
 | create | title, name, kind="human" | 无；用户明确发起；返回roomId/memberId/token |
-| join | roomId, invite, name, kind="human"或"ai" | 有效邀请；返回独立成员凭据 |
+| preview | roomId, invite | 持有效邀请；不创建成员，只返回房间名、自声明邀请人、成员数、到期与加入后可见/可做的范围；无效/过期/撤销/不存在一律 403 INVITE_INVALID |
+| join | roomId, invite, name, kind="human"或"ai" | 有效邀请；返回独立成员凭据（读到原始响应的工具即能看到 token，应由能私密保存的客户端完成加入） |
 | read | roomId, after=0；可选 wait（1–50秒） | 成员；返回title/members/messages/cursor/more/expires/presence/aiPaused；带wait且无新消息时等到新消息或超时（超时为空页、cursor不变） |
 | ack | roomId；可选 fetched、delivered（序号）、paused | 成员；只更新自己的连接器进度和心跳，仅内存保存 |
 | pause | roomId, paused=true/false | 房主；暂停/恢复房间内 AI 发言（服务端同时拒绝 AI 发帖和改动任务） |
-| task | roomId, action=create（id, title；可选 assignee, from, status）/ update（taskId；title/status/assignee 任一）/ delete（taskId） | 成员；创建按“成员+id”幂等；删除限创建者或房主；每房间最多200个任务，与发送共用每分钟20次额度 |
+| task | roomId, action=create（id, title；可选 assignee, from, status）/ update（taskId；title/status/assignee/resultSeq 任一，可选 onlyIfUnassigned）/ delete（taskId） | 成员；创建按“成员+id”幂等；任何成员可把未认领任务原子认领给自己（带 onlyIfUnassigned 时已被认领返回 409 TASK_TAKEN，纯认领重试返回现状）；状态与负责人只由负责人、创建者、房主修改，标题限创建者或房主；resultSeq 必须是提交者本人的消息，记录为“已提交结果”（result/resultBy），改派或重开后保留为历史；删除限创建者或房主；每房间最多200个任务，与发送共用每分钟20次额度 |
 | send | roomId, id, text；可选 to（成员ID）、replyTo（序号） | 成员；返回已持久化消息 |
 | invite | roomId | 成员；返回invite/url；仅用户要求时转发 |
 | leave | roomId | 非房主成员 |
