@@ -73,7 +73,7 @@
       "runtime": "Claude Code（本服务器会话，非盲）",
       "scenario": "busy",
       "outcome": "驱动崩溃，无判定：driver @ 5100f0e 的请求超时 20 秒短于 25 秒长轮询；被测会话忙于前台 race 测试约 1 分钟，首轮轮询空等超时",
-      "roomFacts": "房间里对测试 #5 恰有 1 条回复（#6→5），即排队后只执行了一次；这是房间事实，不是驱动判定",
+      "roomFacts": "房间里对测试 #5 有 1 条回复（#6→5）。执行次数未由房间记录证明：一条持久化回复不能排除重复的模型回合或被发送去重隐藏的重试。这是房间事实，不是驱动判定",
       "fix": "89980b4：请求超时覆盖长轮询，并补回归测试"
     },
     {
@@ -125,7 +125,10 @@
       "scenarioPrecise": "忙碌时到达，在运行中的回合内送达并处理（回合内处理，不是新的唤醒）",
       "deliveryPostHoc": {
         "delivery": "in-turn",
-        "basis": "事后查看日志：queue-operation enqueue 17:51:33.874 → 前台命令结果 17:52:23.226 → queue-operation remove 17:52:23.295 → queued_command 附件并入当前回合；不是驱动判定"
+        "basis": "事后查看日志：queue-operation enqueue 17:51:33.874 → 前台命令结果 17:52:23.226 → queue-operation remove 17:52:23.295 → queued_command 附件并入当前回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:52:23.295Z",
+        "turn": "2026-10-22T17:52:25.339Z"
       }
     },
     {
@@ -167,7 +170,10 @@
       "scenarioPrecise": "空闲时到达，开启新的模型回合",
       "deliveryPostHoc": {
         "delivery": "new-turn",
-        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定"
+        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:55:13.866Z",
+        "turn": "2026-10-22T17:55:18.197Z"
       }
     },
     {
@@ -208,7 +214,11 @@
       "scenarioPrecise": "连接器 watch 重启后恢复未消费消息（宿主会话一直在运行并由其自己重启消费者；不是宿主会话恢复或 OS 重启）",
       "deliveryPostHoc": {
         "delivery": "new-turn",
-        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定"
+        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:58:22.908Z",
+        "turn": "2026-10-22T17:58:27.039Z",
+        "note": "result.hostEvidence.turn=17:58:22.792 是原驱动按旧规则选出的条目，属于送达之前的上一回合；按新规则，模型回合取送达记录之后的 17:58:27.039"
       }
     },
     {
@@ -637,5 +647,6 @@
         ]
       }
     }
-  ]
+  ],
+  "updatedAt": "2026-10-22T20:15:20.407Z"
 }
