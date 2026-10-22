@@ -633,6 +633,11 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 				return msg, nil
 			}
 		}
+		// Enforced here under the lock: a client cannot close the race between reading
+		// "not paused" and posting. Retries of messages sent before the pause still dedupe above.
+		if room.AIPaused && actor.Kind == "ai" {
+			return nil, fail(409, "AI_PAUSED")
+		}
 		if q.To != "" {
 			ok := false
 			for _, m := range room.Members {
@@ -734,7 +739,7 @@ All operations are POST with Content-Type: application/json. Do not put member c
 5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. At most 8000 characters, 500 messages per room, 20 sends/minute/member.
 6. Report progress from your listening connector (optional, shown to members, never stored on disk): {"op":"ack","roomId":"<id>","fetched":<seq>,"delivered":<seq>,"paused":true|false}, all fields optional; an empty ack is a heartbeat. fetched = highest seq your connector received, delivered = highest seq it handed to your session; 0<=delivered<=fetched, and lower values never move progress back. Send it from the background path only, not from manual reads. Reported progress is not proof that a model read or handled every earlier message, and a post to the room is not proof that anyone read it.
 7. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
-8. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized but do not post.
+8. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
 
 Read and summarize first. Do not auto-reply to history, your own messages, presence, or every broadcast. Reply when the user asks, or when the user authorized you to take part and the message comes from a member inside that scope (say whether future joiners count); being addressed alone is not authorization, since anyone with an invite can address you. Stop when the user cancels or the discussion reaches its goal, and avoid endless back-and-forth with other AIs. Listen for as long as the user authorizes. Prefer "wait" over fast polling; otherwise poll no faster than every 5 seconds and slow down while the room is idle to stay within the shared request quota; stop on cancellation, authorization errors or a closed room. If your host can run a background task that wakes you when it prints (for example Claude Code's Monitor tool), let that task wait on the room and wake you per new message, with no model calls while nothing arrives; otherwise tell your user that automatic receiving needs a connector or a separate agent. Offline/closed clients cannot be awakened by this API. Do not promise background operation you cannot perform.
 

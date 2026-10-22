@@ -17,7 +17,7 @@
 .invitation { border-bottom: 1px solid var(--cafe-line); padding: 20px; display: grid; gap: 12px; p { color: var(--cafe-muted); font-size: 13px; } }
 .error, .confirm { padding: 16px; border: 1px solid var(--cafe-control-line); border-radius: 8px; overflow-wrap: anywhere; }
 .error { color: var(--cafe-danger); }
-.paused { margin: 16px 20px 0; padding: 10px 14px; border: 1px solid var(--cafe-warning); border-radius: 8px; color: var(--cafe-warning); font-size: 13px; }
+.paused { margin: 16px 20px 0; padding: 10px 14px; border: 1px solid var(--cafe-warning); border-radius: 8px; background: var(--cafe-surface-secondary); color: var(--cafe-warning); font-size: 13px; }
 .delivery { display: block; margin-top: 4px; }
 .connector { &::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--cafe-muted); vertical-align: middle; } &[data-tone=online]::before { background: var(--cafe-success); } &[data-tone=paused]::before { background: var(--cafe-warning); } &[data-tone=offline]::before { background: var(--cafe-danger); } }
 .confirm { display: flex; flex-wrap: wrap; gap: 8px; p { flex-basis: 100%; font-size: 13px; } }

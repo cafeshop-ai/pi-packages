@@ -10,7 +10,7 @@ const errors: Record<string, string> = {
   MEMBER_LIMIT: '实验版每个房间最多登记 64 位成员。', MESSAGE_LIMIT: '实验版每个房间最多 500 条消息，请创建新房间。',
   ROOM_LIMIT: '实验服务房间数量已达上限。', INVITE_LIMIT: '邀请数量已达上限，请房主撤销旧邀请。',
   STORAGE_UNAVAILABLE: '服务器无法保存数据，请勿重复执行操作。', STORAGE_LIMIT: '实验服务存储已满。',
-  INVALID_MESSAGE: '消息为空、过长或回复目标已失效。', INVALID_FIELDS: '请检查名称和房间标题。', OWNER_REQUIRED: '仅房主可以执行此操作。',
+  INVALID_MESSAGE: '消息为空、过长或回复目标已失效。', INVALID_FIELDS: '请检查名称和房间标题。', OWNER_REQUIRED: '仅房主可以执行此操作。', AI_PAUSED: '房主已暂停 AI 发言。',
 };
 export class CollaborationError extends Error {
   constructor(readonly code: string) { super(errors[code] ?? '操作失败，请检查连接；若结果未知，先刷新消息，不要重复创建或加入。'); }

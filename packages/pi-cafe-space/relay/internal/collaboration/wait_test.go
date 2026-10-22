@@ -180,6 +180,9 @@ func TestPresenceAckAndOwnerPause(t *testing.T) {
 	if call(t, s, map[string]any{"op": "read", "roomId": id}, token, 200)["aiPaused"] != true {
 		t.Fatal("members must see that AI replies are paused")
 	}
+	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "ai-while-paused", "text": "x"}, token, 409)
+	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "first-message", "text": "first-message"}, owner, 200)
+	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "human-while-paused", "text": "人仍可发言"}, owner, 200)
 	restarted, err := New(s.directory, testOrigin)
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +191,9 @@ func TestPresenceAckAndOwnerPause(t *testing.T) {
 	if again["aiPaused"] != true || len(again["presence"].(map[string]any)) != 0 {
 		t.Fatal("pause persists across restarts; presence starts empty until connectors report")
 	}
+	call(t, restarted, map[string]any{"op": "send", "roomId": id, "id": "ai-while-paused", "text": "x"}, token, 409)
+	call(t, restarted, map[string]any{"op": "pause", "roomId": id, "paused": false}, owner, 200)
+	call(t, restarted, map[string]any{"op": "send", "roomId": id, "id": "ai-after-resume", "text": "恢复后可以发言"}, token, 200)
 }
 
 func TestVerifiedMembersHaveTheirOwnQuota(t *testing.T) {

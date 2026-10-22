@@ -49,7 +49,8 @@ try {
   await api({ op: 'ack', roomId: owner.roomId, fetched: woken.cursor, delivered: woken.cursor }, ai.token);
   assert.equal((await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId].delivered, 3);
   await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token, 403); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
-  checks.push('long-poll wait woken by a new message, connector ack presence, owner-only AI pause');
+  await api({ op: 'send', roomId: owner.roomId, id: 'smoke-ai-paused', text: '暂停期间的 AI 发言。' }, ai.token, 409);
+  checks.push('long-poll wait woken by a new message, connector ack presence, owner-only AI pause enforced on AI sends');
   await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 3); assert.equal(snapshot.aiPaused, true); assert.deepEqual(snapshot.presence, {}); checks.push('restart retains membership, message history and AI pause; presence restarts empty');
   if (values.browser) {
     const { chromium } = await import('playwright-core'); browser = await chromium.launch({ executablePath: resolve(values.browser), headless: true });
