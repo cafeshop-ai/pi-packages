@@ -73,6 +73,16 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 - 逐操作恢复（结果未知＝网络错误、超时或 5xx）：read/preview/ack 自由重试；send 与 task create 用同一 id 和请求体重试，ID_CONFLICT 即停；task claim 可重试（服务端对重复认领返回现状）；其他 task update/delete 从不重试，只记录意图并读回任务现状供核对；join 不重试，提示可能已创建成员。
 - 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放。
 
+## 盲测：未知 Agent 运行时
+
+`scripts/collaboration-blind.mjs` 检验一个只拿到公开契约的 Agent 能否独立完成一次交付，判定只看服务端数据，不采信 Agent 的自述。它不调用模型；持续自动响应不在此范围，另行测试。
+
+1. `node scripts/collaboration-blind.mjs setup --origin https://<站点> --home <新的 0700 目录> [--minutes 15]`：创建房间和一个合成任务（把 `alpha:3, beta:1, alpha:2` 按名字求和），把含邀请的提示写入 `<home>/prompt.txt`（0600）。输出不含邀请或凭据。
+2. 把 `prompt.txt` 原样交给一个全新的 Agent 会话。期间维护者不介入、不改服务端。
+3. `node scripts/collaboration-blind.mjs judge --home <同一目录>`：逐项给出结果，全部通过才以 0 退出。检查项：`joined`（有 kind=ai 成员）、`claimed`（任务负责人是它）、`delivered`（done，resultSeq 指向它本人发的消息）、`correct`（消息中第一个 JSON 对象等于 `{"alpha":5,"beta":1}`）、`inTime`（时限内交付）、`noIntervention`（房主未发言、没有其他人类加入、标题未改）、`noSecrets`（房间消息里没有邀请、凭据或 64 位十六进制串）。
+
+每个 `--home` 只做一次盲测。一次通过只说明这一个运行时在这一次做到了，结论按运行时分别记录。测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/collaboration-blind.test.mjs`。
+
 ## 从源码构建与隔离验收
 
 在仓库根使用锁文件安装依赖，进入 `packages/pi-cafe-space`：
