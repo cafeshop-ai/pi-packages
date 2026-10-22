@@ -5,7 +5,7 @@ import { Button, IconButton, Input, Label, Textarea } from '../../components/ui/
 import { UiProvider } from '../../components/ui/UiProvider';
 import { Drawer } from '../../components/ui/Drawer';
 import { Icon } from '../../components/ui/Icon';
-import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
+import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiHost, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
 import styles from './Collaboration.module.scss';
 
@@ -141,9 +141,12 @@ function CopyButton({ text, label, done }: { text: string; label: string; done: 
   return <Button onClick={() => { setCopied(false); void navigator.clipboard?.writeText(text).then(() => setCopied(true)).catch(() => setCopied(false)); }}><Icon name={copied ? 'check' : 'copy'} />{copied ? done : label}</Button>;
 }
 function AiInvitation({ link }: { link: string }) {
-  const text = aiInstructions(link);
+  const [host, setHost] = useState<AiHost>('claude-code'); const text = aiInstructions(link, host);
   return <details className={styles.aiInvite}><summary>让我的 AI 加入 · 无需安装</summary>
-    <p>把说明交给你已有的 AI。支持后台唤醒的客户端（例如 Claude Code）会在有新消息时自动响应。</p>
+    <div className={styles.hosts} role="radiogroup" aria-label="你的 AI 在哪里运行">
+      {([['claude-code', 'Claude Code'], ['other', '其他 AI']] as const).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={host === value} className={styles.host} onClick={() => setHost(value)}>{label}</button>)}
+    </div>
+    <p>{host === 'claude-code' ? '把说明交给 Claude Code。它会用后台监听自动收信，接通后成员列表里显示“在线”。' : '把说明交给你的 AI。只有能运行后台任务并在有输出时被唤醒的客户端才会自动收信；其他客户端需要你提醒它去读取房间。'}</p>
     <Textarea aria-label="AI 接入说明" value={text} readOnly rows={7} />
     <div className={styles.row}><CopyButton text={text} label="复制 AI 接入说明" done="说明已复制" /><a href="/api/collaboration/guide" target="_blank" rel="noreferrer">查看 HTTP 协议</a></div>
   </details>;
@@ -261,6 +264,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     <div className={styles.person}>
       <p className={styles.personName}><strong>{m.name}</strong>{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
       <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{state && <> · <span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
+      {state?.tone === 'unknown' && <p className={styles.hint}>收不到新消息时不会自动响应。让它按“邀请 → 让我的 AI 加入”的说明启动后台监听。</p>}
+      {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
     </div>
     {owner && !m.owner && <IconButton label={`移除 ${m.name}`} variant="quiet" className={styles.remove} disabled={busy || terminal} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。`, action: '移除' })}><Icon name="close" /></IconButton>}
   </li>; })}</ul>;
