@@ -7,6 +7,7 @@ import { Drawer } from '../../components/ui/Drawer';
 import { Icon } from '../../components/ui/Icon';
 import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiHost, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
+import { templateTaskId, templates, type Template } from './templates';
 import styles from './Collaboration.module.scss';
 
 const messageError = (error: unknown) => error instanceof Error ? error.message : '连接失败，请重试。';
@@ -164,7 +165,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const [error, setError] = useState(''); const [connected, setConnected] = useState(false); const [terminal, setTerminal] = useState(false); const [busy, setBusy] = useState(false);
   const [text, setText] = useState(''); const [to, setTo] = useState(''); const [reply, setReply] = useState(0); const [link, setLink] = useState('');
   const [inviteOpen, setInviteOpen] = useState(false); const [sideOpen, setSideOpen] = useState(false); const [tab, setTab] = useState<'tasks' | 'people'>('tasks');
-  const [confirm, setConfirm] = useState<Confirm | null>(null); const [privacyOpen, setPrivacyOpen] = useState(false); const [draft, setDraft] = useState(''); const [notice, setNotice] = useState('');
+  const [confirm, setConfirm] = useState<Confirm | null>(null); const [privacyOpen, setPrivacyOpen] = useState(false); const [draft, setDraft] = useState(''); const [applying, setApplying] = useState(''); const [notice, setNotice] = useState('');
   // Touch screens have no hover: tapping a bubble reveals that message's actions.
   const [selected, setSelected] = useState(0);
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
@@ -238,6 +239,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const openSide = (next: 'tasks' | 'people') => { setTab(next); if (narrow()) setSideOpen(true); };
   const openInvite = () => { setInviteOpen(true); if (!link) void act('invite'); };
   const addTask = (event: FormEvent) => { event.preventDefault(); const title = draft.trim(); if (!title) return; void taskAct({ action: 'create', id: crypto.randomUUID(), title }).then(ok => { if (ok) setDraft(''); }); };
+  const applyTemplate = async (template: Template) => {
+    setApplying(template.key); let added = 0;
+    for (const [index, title] of template.tasks.entries()) { if (!await taskAct({ action: 'create', id: templateTaskId(template, index), title })) break; added++; }
+    setApplying(''); if (added === template.tasks.length) setNotice(`已添加「${template.label}」的 ${added} 项任务`);
+  };
   const fromMessage = (message: Message) => void taskAct({ action: 'create', id: crypto.randomUUID(), title: excerpt(message.text, 80), from: message.seq, ...(memberOf(message.to)?.kind === 'ai' ? { assignee: message.to } : {}) }, '已加入任务板').then(ok => { if (ok) setTab('tasks'); });
 
   const board = (): ReactNode => {
@@ -245,7 +251,9 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     return <div className={styles.board}>
       <div className={styles.boardHead}><p><strong>{done}</strong> / {tasks.length} 已完成</p><progress aria-label="任务完成度" value={done} max={Math.max(tasks.length, 1)} /></div>
       <form className={styles.addTask} onSubmit={addTask}><Icon name="plus" /><Input aria-label="新任务" placeholder="添加任务，回车保存" value={draft} maxLength={200} disabled={terminal || !snapshot} onChange={e => setDraft(e.target.value)} /></form>
-      {tasks.length === 0 && <p className={styles.boardEmpty}>还没有任务。把讨论里的事项“转为任务”，或在上面直接添加。</p>}
+      {tasks.length === 0 && <div className={styles.boardEmpty}><p>还没有任务。把讨论里的事项“转为任务”，或从一套清单开始：</p>
+        <div className={styles.templates}>{templates.map(t => <button key={t.key} type="button" className={styles.template} disabled={terminal || !snapshot || !!applying} aria-busy={applying === t.key} onClick={() => void applyTemplate(t)}><strong>{t.label}</strong><span>{t.hint}</span></button>)}</div>
+      </div>}
       {statusOrder.map(([status, label]) => { const items = tasks.filter(t => t.status === status); return items.length > 0 && <section key={status} className={styles.taskGroup} data-status={status}>
         <h3>{label}<span>{items.length}</span></h3>
         <ul>{items.map(task => {

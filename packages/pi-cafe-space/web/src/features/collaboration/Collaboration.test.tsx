@@ -154,6 +154,21 @@ it('runs a task board: add, advance, assign and turn a message into a task', asy
   await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'create', title: '请整理发布清单并核对版本号', from: 1, assignee: ai }));
   expect(await screen.findByText('已加入任务板')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '来自 #1' })).toBeInTheDocument();
 });
+it('starts an empty board from a template with stable task ids, in order', async () => {
+  saveMembership(auth); let tasks: Record<string, unknown>[] = []; let fail = 3;
+  fetcher.mockImplementation(async (_url, init) => {
+    const q = JSON.parse(init.body as string);
+    if (q.op === 'task') { if (--fail === 0) return response({ error: 'RATE_LIMITED' }, 429); const known = tasks.find(t => t.key === q.id); if (known) return response(known); const task = { id: tasks.length + 1, key: q.id, title: q.title, status: 'todo', createdBy: memberId, updatedAt: '2030-01-01T00:00:00Z' }; tasks = [...tasks, task]; return response(task); }
+    return response({ ...snapshot, tasks });
+  });
+  mount('/collab/' + roomId); fireEvent.click(await screen.findByRole('button', { name: /故障排查/ }));
+  // A failure stops the run where it happened and claims no success.
+  await waitFor(() => expect(sent().filter(v => v.op === 'task')).toHaveLength(3)); expect(tasks).toHaveLength(2); expect(screen.queryByText(/已添加/)).toBeNull();
+  const creates = () => sent().filter(v => v.op === 'task'); expect(creates().map(v => v.id)).toEqual(['template-debug-v1-1', 'template-debug-v1-2', 'template-debug-v1-3']);
+  tasks = []; cleanup(); mount('/collab/' + roomId); fireEvent.click(await screen.findByRole('button', { name: /故障排查/ }));
+  expect(await screen.findByText('已添加「故障排查」的 5 项任务')).toBeInTheDocument();
+  expect(tasks.map(t => t.title)).toEqual(['描述现象：影响范围、开始时间、复现步骤', '收集证据：日志、监控、最近变更', '提出假设并逐一验证', '修复或止损，写明回滚方式', '确认恢复，记录根因与后续']);
+});
 it('lets an ordinary member claim unassigned tasks but not move or reassign work owned by others', async () => {
   const boss = 'f'.repeat(32), ai = 'e'.repeat(32);
   saveMembership(auth);
