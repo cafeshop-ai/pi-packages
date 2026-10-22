@@ -8,6 +8,7 @@ import { Icon } from '../../components/ui/Icon';
 import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiHost, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
 import { templateTaskId, templates, type Template } from './templates';
+import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
 import styles from './Collaboration.module.scss';
 
 const messageError = (error: unknown) => error instanceof Error ? error.message : '连接失败，请重试。';
@@ -165,7 +166,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const [error, setError] = useState(''); const [connected, setConnected] = useState(false); const [terminal, setTerminal] = useState(false); const [busy, setBusy] = useState(false);
   const [text, setText] = useState(''); const [to, setTo] = useState(''); const [reply, setReply] = useState(0); const [link, setLink] = useState('');
   const [inviteOpen, setInviteOpen] = useState(false); const [sideOpen, setSideOpen] = useState(false); const [tab, setTab] = useState<'tasks' | 'people'>('tasks');
-  const [confirm, setConfirm] = useState<Confirm | null>(null); const [privacyOpen, setPrivacyOpen] = useState(false); const [draft, setDraft] = useState(''); const [applying, setApplying] = useState(''); const [notice, setNotice] = useState('');
+  const [confirm, setConfirm] = useState<Confirm | null>(null); const [privacyOpen, setPrivacyOpen] = useState(false); const [draft, setDraft] = useState(''); const [applying, setApplying] = useState(''); const [probing, setProbing] = useState(''); const [notice, setNotice] = useState('');
   // Touch screens have no hover: tapping a bubble reveals that message's actions.
   const [selected, setSelected] = useState(0);
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
@@ -223,6 +224,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       setMessages(old => old.some(m => m.seq === sent.seq) ? old : [...old, sent].sort((a, b) => a.seq - b.seq)); setText(''); setReply(0); setTo(''); pending.current = null; follow.current = true;
     } catch (e) { setError(messageError(e)); } finally { setBusy(false); }
   })(); };
+  const probe = (ai: Member) => { if (probing) return; setProbing(ai.id); setError(''); void (async () => {
+    try { const sent = await call<Message>({ op: 'send', id: crypto.randomUUID(), text: probeText(probeCode()), to: ai.id });
+      setMessages(old => old.some(m => m.seq === sent.seq) ? old : [...old, sent].sort((a, b) => a.seq - b.seq)); follow.current = true; setNotice(`已向 ${ai.name} 发出响应测试`);
+    } catch (e) { setError(messageError(e)); } finally { setProbing(''); }
+  })(); };
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // Desktop chat convention; touch keyboards keep Enter for new lines and use the send button.
     const coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
@@ -235,6 +241,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const now = Date.now(); const tasks = snapshot?.tasks ?? []; const openTasks = tasks.filter(t => t.status !== 'done').length;
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
   const thinking = thinkingOf(members, messages, presence, now);
+  const probes = probesOf(messages, members, now);
   const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
   const openSide = (next: 'tasks' | 'people') => { setTab(next); if (narrow()) setSideOpen(true); };
   const openInvite = () => { setInviteOpen(true); if (!link) void act('invite'); };
@@ -282,6 +289,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{state && <> · <span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
       {state?.tone === 'unknown' && <p className={styles.hint}>收不到新消息时不会自动响应。让它按“邀请 → 让我的 AI 加入”的说明启动后台监听。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
+      {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
+        return (last || own?.kind === 'human') && <p className={styles.probe}>
+          {last && <span data-state={last.state} title="只说明这一次在房间里往返成功，不代表持续在线或会自动处理">{last.label}</span>}
+          {own?.kind === 'human' && <button type="button" className={styles.probeButton} disabled={!!blocked || !!probing || terminal} title={blocked || '发一条带验证码的消息，看它多久回复'} onClick={() => probe(m)}>{probing === m.id ? '正在发出…' : last ? '再测一次' : '测试响应'}</button>}
+        </p>; })()}
     </div>
     {owner && !m.owner && <IconButton label={`移除 ${m.name}`} variant="quiet" className={styles.remove} disabled={busy || terminal} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。`, action: '移除' })}><Icon name="close" /></IconButton>}
   </li>; })}</ul>;
@@ -326,6 +338,12 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
               const continued = !newDay && previous?.memberId === message.memberId && Date.parse(message.at) - Date.parse(previous.at) < 5 * 60_000 && !message.replyTo;
               const quoted = message.replyTo ? messages.find(m => m.seq === message.replyTo) : undefined;
               const delivery = snapshot && deliveryOf(message, members, messages, presence);
+              // Tests and bare answers to them collapse into one line each; an answer with more to say stays a message.
+              const tested = probes.answers.get(message.seq);
+              if (probeOf(message, members) || tested && message.text.trim().length <= 16) return <div key={message.seq}>
+                {newDay && <p className={styles.dayDivider}><span>{day(message.at)}</span></p>}
+                <p id={`msg-${message.seq}`} className={styles.probeLine} data-state={tested ? 'ok' : undefined}>{tested ? <><Icon name="check" />{nameOf(message.memberId)} 已回复响应测试 · 耗时 {tested.took}</> : <>{nameOf(message.memberId)} 向 {nameOf(message.to ?? '')} 发起响应测试</>}<time dateTime={message.at}>{clock(message.at)}</time></p>
+              </div>;
               return <div key={message.seq}>
                 {newDay && <p className={styles.dayDivider}><span>{day(message.at)}</span></p>}
                 <article id={`msg-${message.seq}`} className={styles.message} data-own={mine} data-ai={author?.kind === 'ai'} data-addressed={message.to === auth.memberId} data-continued={continued} data-fresh={freshFrom.current !== null && message.seq > freshFrom.current} data-selected={selected === message.seq}>

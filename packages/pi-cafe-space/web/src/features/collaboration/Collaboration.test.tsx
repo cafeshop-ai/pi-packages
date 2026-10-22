@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor, cleanup, act } from '@testing-libra
 import { MemoryRouter } from 'react-router';
 import { Collaboration, connectorState, deliveryOf, thinkingOf } from './Collaboration';
 import { App } from '../../app/App';
-import { aiInstructions, collaboration, saveMembership } from './api';
+import { aiInstructions, collaboration, saveMembership, type Member } from './api';
+import { probeBlocked, probeDaily, probeOf, probesOf, probeText, probeWait } from './probe';
 const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64), invite = 'd'.repeat(64);
 const auth = { roomId, memberId, token };
 const snapshot = { roomId, memberId, title: '多人讨论', expires: '2030-01-01T00:00:00Z', members: [{ id: memberId, name: '创建者', kind: 'human', owner: true }, { id: 'e'.repeat(32), name: '同事的 AI', kind: 'ai' }], messages: [], cursor: 0, more: false };
@@ -100,6 +101,38 @@ it('shows AI connector reports honestly: online, offline or unknown, never failu
   expect(screen.getByText(/启动后台监听/)).toBeInTheDocument(); expect(screen.getByText(/后台监听已停止/)).toBeInTheDocument();
   expect(connectorState({ fetched: 0, delivered: 0, paused: true, heartbeatAt: fresh }, Date.now()).tone).toBe('paused');
 });
+it('derives response tests from room history: one round trip, honest silence, room-wide limits', () => {
+  const ai = 'e'.repeat(32), members = snapshot.members as Member[]; const at = (s: number) => new Date(Date.UTC(2030, 0, 1, 0, 0, s)).toISOString(); const t0 = Date.parse(at(0));
+  const probe = { seq: 1, id: 'probe-0001', memberId, to: ai, text: probeText('K7Q2'), at: at(0) };
+  expect(probeOf(probe, members)).toBe('K7Q2');
+  // Only the addressed AI's own message carrying the code counts; a human echoing it or a wrong reply target does not.
+  const echo = { seq: 2, id: 'echo-00001', memberId, text: 'K7Q2', at: at(3) };
+  const misplaced = { seq: 3, id: 'misplaced1', memberId: ai, text: 'K7Q2', replyTo: 2, at: at(5) };
+  const answer = { seq: 4, id: 'answer-001', memberId: ai, text: '收到 K7Q2', replyTo: 1, at: at(12) };
+  expect(probesOf([probe, echo, misplaced], members, t0 + 60_000).latest.get(ai)).toMatchObject({ state: 'waiting' });
+  const silent = probesOf([probe, echo], members, t0 + probeWait).latest.get(ai)!; expect(silent.label).toBe('尚未确认响应，原因未知');
+  const ok = probesOf([probe, echo, misplaced, answer], members, t0 + 60_000); expect(ok.latest.get(ai)!.label).toBe('本次响应测试成功，耗时 12 秒'); expect(ok.answers.get(4)).toBe(ok.latest.get(ai));
+  expect(probeBlocked(ok.latest.get(ai), 1, t0 + 60_000)).toBe('10 分钟内只能测试一次'); expect(probeBlocked(ok.latest.get(ai), probeDaily, t0 + probeWait)).toMatch(/24 小时内/);
+  expect(probeBlocked(ok.latest.get(ai), 1, t0 + probeWait)).toBe('');
+  // An AI cannot start a test, and a test of a human is not one.
+  expect(probeOf({ ...probe, memberId: ai, to: memberId }, members)).toBeUndefined();
+});
+it('lets a human test an AI from the member list and shows the answer as one line', async () => {
+  saveMembership(auth); const ai = 'e'.repeat(32); let messages: Record<string, unknown>[] = [];
+  fetcher.mockImplementation(async (_url, init) => {
+    const q = JSON.parse(init.body as string);
+    if (q.op === 'send') { const sent = { seq: messages.length + 1, id: q.id, memberId, to: q.to, text: q.text, at: new Date().toISOString() }; messages = [...messages, sent]; return response(sent); }
+    return response({ ...snapshot, cursor: messages.length, messages });
+  });
+  mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' }); fireEvent.click(screen.getByRole('tab', { name: /成员/ }));
+  fireEvent.click(await screen.findByRole('button', { name: '测试响应' }));
+  await waitFor(() => expect(sent().find(v => v.op === 'send')).toMatchObject({ to: ai })); const code = /验证码 ([A-Z0-9]{4})/.exec(sent().find(v => v.op === 'send')!.text)![1];
+  expect(await screen.findByText('正在等待响应测试的回复')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '再测一次' })).toBeDisabled();
+  expect(screen.getByText(/向 同事的 AI 发起响应测试/)).toBeInTheDocument(); expect(screen.queryByText(/收到请直接在房间回复/)).toBeNull();
+  messages = [...messages, { seq: 2, id: 'ai-answer-1', memberId: ai, text: code, replyTo: 1, at: new Date(Date.parse(messages[0]!.at as string) + 4000).toISOString() }];
+  expect(await screen.findByText('本次响应测试成功，耗时 4 秒', {}, { timeout: 8000 })).toBeInTheDocument();
+  expect(screen.getByText(/同事的 AI 已回复响应测试 · 耗时 4 秒/)).toBeInTheDocument();
+}, 15_000);
 it('derives delivery of addressed messages from replies and connector reports only', () => {
   const ai = { id: 'e'.repeat(32), name: '同事的 AI', kind: 'ai' as const, owner: false }, human = { id: memberId, name: '创建者', kind: 'human' as const, owner: true };
   const ask = { seq: 3, id: 'ask-ai', memberId, text: '请核对', to: ai.id, at: '2030-01-01T00:00:00Z' };

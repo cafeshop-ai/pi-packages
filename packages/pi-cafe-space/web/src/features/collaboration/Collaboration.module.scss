@@ -183,6 +183,12 @@
 .you { font-size: 11px; color: var(--cafe-muted); }
 .meta { color: var(--cafe-muted); font-size: 12px; }
 .connector { &[data-tone=online] { color: var(--cafe-success); } &[data-tone=paused] { color: var(--cafe-warning); } }
+.probe { margin-top: 2px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 11.5px; color: var(--cafe-muted);
+  [data-state=ok] { color: var(--cafe-success); } }
+.probeButton { min-height: 0 !important; padding: 0; border: 0; background: none; color: var(--cafe-accent); font: inherit; cursor: pointer;
+  &:hover:not(:disabled) { text-decoration: underline; } &:disabled { color: var(--cafe-muted); cursor: default; } }
+.probeLine { margin: 10px auto; width: fit-content; max-width: 100%; display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; background: var(--cafe-surface-secondary); color: var(--cafe-muted); font-size: 12px; animation: arrive .3s var(--cafe-ease) both;
+  &[data-state=ok] { color: var(--cafe-success); } svg { width: 13px; height: 13px; } time { opacity: .7; font-variant-numeric: tabular-nums; } }
 .hint { margin-top: 4px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, var(--cafe-warning) 9%, transparent); color: var(--cafe-muted); font-size: 11.5px; line-height: 1.6; }
 .hosts { display: inline-flex; gap: 2px; padding: 2px; margin-top: 10px; border: 1px solid var(--cafe-line); border-radius: 10px; }
 .host { padding: 5px 12px; border: 0; border-radius: 8px; background: none; color: var(--cafe-muted); font: 500 12.5px var(--cafe-sans); cursor: pointer; min-height: 0 !important;
