@@ -79,6 +79,8 @@ npm run pack -- --platforms linux-amd64
 node scripts/collaboration-smoke.mjs --binary /absolute/path/to/native/pi-cafe-relay
 ```
 
+稳定性演练：`node scripts/collaboration-drill.mjs --binary /absolute/path/to/native/pi-cafe-relay`。它用真实后台监听脚本依次注入 Relay 长轮询中重启、监听进程崩溃后从游标恢复、同 ID 重复发送、监听被冻结时消息积压、房主暂停，验收标准是全部消息恰好送达一次且有序（0 丢失、0 重复）。
+
 浏览器扩展验收：追加 `--browser /absolute/path/to/chrome --out /private/test-artifacts`。脚本只启动自己创建的临时cloud、独立浏览器context和合成成员，重启自己的服务验证持久化；不连接用户Pi、不读取模型配置、不调用provider。浏览器截图包含合成讨论，不包含原生产邀请或凭据。
 
 ## 交给服务器 Codex 的部署步骤

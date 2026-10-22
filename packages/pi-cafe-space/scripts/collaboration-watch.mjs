@@ -33,16 +33,19 @@ try { features = (await call({ op: 'status' })).json.features ?? []; } catch {}
 const wait = features.includes('wait'), ack = features.includes('ack');
 say(`[watch] room ${roomId.slice(0, 6)} after #${cursor}; ${wait ? 'long-poll wait' : 'polling'}${ack ? ', reporting ack' : ''}`);
 
-const names = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now();
+const names = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
+// Brief outages (a restart) recover in seconds; longer ones back off to 30s.
+const retry = async () => { backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff); };
 // Report presence at once instead of after the first long poll.
 if (ack) try { if ((await call({ op: 'ack', roomId })).status === 200) lastAck = Date.now(); } catch {}
 for (;;) {
   let result;
   try { result = await call({ op: 'read', roomId, after: cursor, ...(wait ? { wait: 25 } : {}) }, wait ? 40_000 : 20_000); }
-  catch (error) { say(`[watch] network error: ${flat(error.message).slice(0, 120)}; retrying in 15s`); await sleep(15_000); continue; }
+  catch (error) { if (backoff >= 8000) say(`[watch] still unreachable: ${flat(error.message).slice(0, 120)}`); await retry(); continue; }
   if (result.status === 429) { say(`[watch] rate limited; waiting ${result.retryAfter}s`); await sleep(result.retryAfter * 1000); continue; }
-  if (result.status >= 500) { await sleep(10_000); continue; }
+  if (result.status >= 500) { await retry(); continue; }
   if (result.status !== 200) { say(`[watch] stopped: HTTP ${result.status} ${result.json.error ?? ''}`); process.exit(1); }
+  backoff = 0;
   const page = result.json;
   for (const m of page.members) names.set(m.id, m.name);
   if (members) for (const m of page.members) {
