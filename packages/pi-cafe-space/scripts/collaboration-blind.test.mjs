@@ -16,6 +16,8 @@ const binary = process.env.PI_CAFE_RELAY_BINARY;
 const script = fileURLToPath(new URL('./collaboration-blind.mjs', import.meta.url));
 let dir, origin, relay; const outputs = [];
 const blind = args => { const r = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 60_000 }); outputs.push(r.stdout, r.stderr); return { code: r.status, json: () => JSON.parse(r.stdout) }; };
+const blindAsync = args => new Promise(ok => { const child = spawn(process.execPath, [script, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = '';
+  child.stdout.on('data', b => out += b); child.stderr.on('data', b => err += b); child.on('exit', code => { outputs.push(out, err); ok({ code, json: () => JSON.parse(out) }); }); });
 const api = async (body, token) => (await fetch(origin + '/api/collaboration', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) })).json();
 const home = name => { const path = join(dir, name); mkdirSync(path, { mode: 0o700 }); return path; };
 // The agent's side, done the way the public guide describes: join from the prompt, claim, deliver, link.
@@ -70,4 +72,40 @@ test('fails a wrong result, a leaked credential and owner intervention, each on 
   const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 1);
   const failed = verdict.json().checks.filter(c => c.ok === false).map(c => c.check).sort();
   assert.deepEqual(failed, ['correct', 'roomNoIntervention', 'roomNoKnownSecrets']);
+});
+
+// A listening agent stand-in: answers response tests addressed to it, exactly or sloppily.
+const listen = (roomId, me, exact) => {
+  let stop = false;
+  const loop = (async () => {
+    let after = (await api({ op: 'read', roomId }, me.token)).cursor;
+    while (!stop) {
+      const page = await api({ op: 'read', roomId, after, wait: 1 }, me.token); after = page.cursor;
+      for (const m of page.messages) { const nonce = /验证码\s*([A-Z2-9]{20})/.exec(m.text)?.[1];
+        if (nonce && m.to === me.memberId) await api({ op: 'send', roomId, id: 'answer-' + m.seq, text: `收到 ${nonce}`, ...(exact ? { replyTo: m.seq } : {}) }, me.token); }
+    }
+  })();
+  return () => { stop = true; return loop; };
+};
+test('listen mode: a reply quoting the nonce with the exact replyTo is one room round trip, never proof of host wake-up', { skip: !binary }, async () => {
+  const h = home('listen'); assert.equal(blind(['setup', '--origin', origin, '--home', h, '--mode', 'listen']).code, 0);
+  const run = owner(h); const prompt = readFileSync(join(h, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /持续参与/); assert(prompt.includes(`memberId ${run.memberId}`)); assert.equal((await api({ op: 'read', roomId: run.roomId }, run.token)).tasks?.length ?? 0, 0);
+  assert.equal(blind(['respond', '--home', h, '--wait-seconds', '2']).code, 2, 'no agent to test yet');
+  assert.equal(blind(['respond', '--home', h, '--scenario', 'whenever']).code, 2);
+  const [, roomId, invite] = /#\/collab\/([a-f0-9]{32})\?invite=([a-f0-9]{64})/.exec(prompt);
+  const me = await api({ op: 'join', roomId, invite, name: '监听测试 Agent', kind: 'ai' });
+  let stop = listen(roomId, me, true);
+  const exact = await blindAsync(['respond', '--home', h, '--scenario', 'idle', '--wait-seconds', '20']); await stop();
+  assert.equal(exact.code, 0); assert.equal(exact.json().responded, true); assert.match(exact.json().label, /^本次响应测试成功，耗时/); assert.match(exact.json().hostAutoWake, /^未验证/);
+  // A reply that quotes the nonce without pointing at the test does not count.
+  stop = listen(roomId, me, false);
+  const sloppy = await blindAsync(['respond', '--home', h, '--scenario', 'quiet', '--wait-seconds', '4']); await stop();
+  assert.equal(sloppy.code, 1); assert.equal(sloppy.json().label, '尚未确认响应，原因未知');
+  const verdict = blind(['judge', '--home', h]); const checks = Object.fromEntries(verdict.json().checks.map(c => [c.check, c]));
+  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /2 次响应测试中 1 次/);
+  assert.equal(checks.roomNoIntervention.ok, true, 'the tests themselves are not intervention');
+  assert(verdict.json().notCovered.some(n => n.startsWith('自动响应（宿主唤醒）：未验证')));
+  const log = readFileSync(join(h, 'respond.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
 });
