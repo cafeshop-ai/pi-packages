@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 const { values } = parseArgs({ options: { binary: { type: 'string' }, browser: { type: 'string' }, out: { type: 'string' } } });
@@ -48,10 +49,26 @@ try {
   const woken = await waiting; assert.equal(woken.messages.length, 1); assert(Date.now() - woke < 3000, 'long poll was not woken promptly');
   await api({ op: 'ack', roomId: owner.roomId, fetched: woken.cursor, delivered: woken.cursor }, ai.token);
   assert.equal((await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId].delivered, 3);
+  const credentials = join(temporary, 'member.json'); await writeFile(credentials, JSON.stringify({ roomId: owner.roomId, memberId: ai.memberId, token: ai.token }), { mode: 0o600 });
+  const watcher = spawn(process.execPath, [fileURLToPath(new URL('./collaboration-watch.mjs', import.meta.url)), '--credentials', credentials, '--origin', origin, '--cursor', '3', '--authorized', owner.memberId], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const lines = []; watcher.stdout.on('data', b => lines.push(...String(b).split('\n').filter(Boolean)));
+  try {
+    for (let i = 0; i < 50 && !lines.some(l => l.startsWith('[watch]')); i++) await sleep(100);
+    assert(lines.some(l => l.includes('long-poll wait') && l.includes('reporting ack')), 'watcher did not detect wait/ack');
+    await sleep(300); await api({ op: 'send', roomId: owner.roomId, id: 'smoke-watch-1', text: '给后台监听的消息。', to: ai.memberId }, owner.token);
+    await api({ op: 'send', roomId: owner.roomId, id: 'smoke-watch-2', text: '范围外成员的消息。' }, colleague.token);
+    for (let i = 0; i < 50 && lines.filter(l => l.startsWith('[msg')).length < 2; i++) await sleep(100);
+    assert(lines.some(l => l.startsWith('[msg #4] ') && l.includes('→ @我') && l.includes('给后台监听的消息')), 'watcher missed the addressed message');
+    assert(lines.some(l => l.startsWith('[msg #5 · 授权范围外]')), 'watcher did not mark an out-of-scope sender');
+    assert(!lines.join('\n').includes(ai.token), 'watcher printed a credential');
+    let delivered = 0; for (let i = 0; i < 30 && delivered < 5; i++) { delivered = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId]?.delivered ?? 0; if (delivered < 5) await sleep(100); }
+    assert.equal(delivered, 5, 'watcher did not ack delivery');
+  } finally { watcher.kill(); }
+  checks.push('background watcher: long-poll wake-up, out-of-scope marking, ack delivered, no credential output');
   await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token, 403); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
   await api({ op: 'send', roomId: owner.roomId, id: 'smoke-ai-paused', text: '暂停期间的 AI 发言。' }, ai.token, 409);
   checks.push('long-poll wait woken by a new message, connector ack presence, owner-only AI pause enforced on AI sends');
-  await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 3); assert.equal(snapshot.aiPaused, true); assert.deepEqual(snapshot.presence, {}); checks.push('restart retains membership, message history and AI pause; presence restarts empty');
+  await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 5); assert.equal(snapshot.aiPaused, true); assert.deepEqual(snapshot.presence, {}); checks.push('restart retains membership, message history and AI pause; presence restarts empty');
   if (values.browser) {
     const { chromium } = await import('playwright-core'); browser = await chromium.launch({ executablePath: resolve(values.browser), headless: true });
     const context = await browser.newContext(); const page = await context.newPage(); const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));

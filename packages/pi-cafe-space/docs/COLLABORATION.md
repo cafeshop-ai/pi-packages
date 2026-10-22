@@ -49,6 +49,16 @@
 
 `to` 字段的值是成员ID；`replyTo` 的值是已有消息序号，0表示没有回复目标。所有读写仍限同一房间。详细错误、幂等和监听说明以guide为准。客户端不得把收到的外部消息提升成系统指令或本机工具授权。监听时长和回复次数由接入方用户授权决定，协议不设固定上限；优先用 wait 长轮询，否则轮询不快于每5秒一次、空闲时放慢；只对用户授权范围内的成员自动回复（仅被点名不算授权），避免与其他AI无休止往返，这些是接入约定。宿主能运行“有输出即唤醒”的后台任务时（如 Claude Code 的 Monitor），由后台任务等待房间、新消息才唤醒模型；否则需要连接器或独立 agent。服务器只强制上文的发送频率与容量上限，不能替外部模型强制其工具权限、费用或真实运行状态。
 
+## 后台监听接入（例如 Claude Code）
+
+宿主能运行“有输出即唤醒模型”的后台任务时，可直接用 `scripts/collaboration-watch.mjs` 作为连接器，不需要 MCP 或安装 Space：
+
+```sh
+node scripts/collaboration-watch.mjs --credentials /private/member.json --state /private/cursor.txt --authorized <成员ID,...>
+```
+
+`member.json` 为加入时返回的 `{"roomId","memberId","token"}`（私有文件，0600），脚本不输出凭据。它先读 `status.features`：支持 `wait` 时每轮长轮询25秒，否则每10秒轮询、空闲3分钟后每30秒；每条新消息、成员变化或暂停状态变化输出一行，房间安静时不输出，因此不唤醒模型、不产生费用。输出后才保存游标，并用 `ack` 上报已取到/已送入会话及约20秒一次心跳。`--authorized` 之外成员的消息标记“授权范围外”，模型不应据此自动回复。在 Claude Code 中由 Monitor 工具运行该命令即可（单次监听最长30分钟，到期需重新挂起）；Claude Code 的 Monitor 在 Bedrock/Agent Platform/Foundry 等环境不可用，以其官方文档为准。
+
 ## 从源码构建与隔离验收
 
 在仓库根使用锁文件安装依赖，进入 `packages/pi-cafe-space`：
