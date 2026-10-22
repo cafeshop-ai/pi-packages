@@ -86,7 +86,7 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
    - 房间内干预：`roomNoIntervention`，只说明房主没在房间发言、没有其他人类加入、标题未改。
    - `notCovered` 列出脚本证明不了的部分：join 响应、工具输出、模型上下文和本地文件中的凭据；房间外的提示、人工补步骤或代操作；自动响应。这些要靠运行轨迹另行核验，分栏记录，房间内检查通过不代表这些栏通过。
 
-持续参与（自动响应）另建房间测试：`setup --mode listen` 生成只授权自动回复房主的提示；Agent 声明已在监听后，操作方停止与它的一切交互，按情景运行 `respond --home <dir> --scenario idle|busy|network|restart|quiet [--wait-seconds 600]`。每次由房主发一条带 20 位随机 nonce 的响应测试，只有该 Agent 引用 nonce、且 replyTo 准确指向这条测试的消息才算回复；结果只说“本次响应测试成功，耗时 X”或“尚未确认响应，原因未知”，记录追加到 `<home>/respond.jsonl`（0600）。judge 在监听模式下报告 `roomRecordedReply`，并且不把这些测试算作房主干预。房间往返不能证明宿主自动唤醒：后者需要测试驱动（而非被测 Agent）记录的事件因果链——连接器读到该 seq、宿主队列接收、模型回合开始、发出回复——且期间人工输入为 0；宿主不提供可观察事件时只报告房间往返。有限次抽样不代表持续在线。
+持续参与（自动响应）另建房间测试：`setup --mode listen` 生成只授权自动回复房主的提示；Agent 声明已在监听后，操作方停止与它的一切交互，按情景运行 `respond --home <dir> --scenario idle|busy|network|restart|quiet [--wait-seconds 600]`。每次由房主发一条带 20 位随机 nonce 的响应测试，只有该 Agent 引用 nonce、且 replyTo 准确指向这条测试的消息才算回复；结果只说“本次响应测试成功，耗时 X”或“尚未确认响应，原因未知”，记录追加到 `<home>/respond.jsonl`（0600）。judge 在监听模式下报告 `roomRecordedReply`，并且不把这些测试算作房主干预。房间往返不能证明宿主自动唤醒：后者需要测试驱动（而非被测 Agent）记录的事件因果链——连接器读到该 seq、宿主队列接收、模型回合开始、发出回复——且期间人工输入为 0；宿主不提供可观察事件时只报告房间往返。`--host claude-code --transcript <会话 JSONL 绝对路径>` 读取 Claude Code 自己写的会话日志：只看测试窗口内新追加的部分，并核对之前的内容未被改动；要求 nonce 第一次出现就在宿主事件里（忙碌时为 queue-operation，空闲时为 origin.kind=task-notification 的条目），之后有模型回合，再之后才是房间回复，且窗口内没有 origin.kind=human 的输入。日志写在本机，被测 Agent 若有写文件权限，理论上仍可伪造追加内容，结论注明这一点。有限次抽样不代表持续在线。
 
 每个 `--home` 只做一次盲测。各运行时使用同一份标准提示；如有附加说明须原文记录并标明。一次通过只说明这一个运行时在这一次做到了，结论按运行时分别记录。测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/collaboration-blind.test.mjs`。
 

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -75,13 +75,14 @@ test('fails a wrong result, a leaked credential and owner intervention, each on 
 });
 
 // A listening agent stand-in: answers response tests addressed to it, exactly or sloppily.
-const listen = (roomId, me, exact) => {
+const listen = (roomId, me, exact, onProbe) => {
   let stop = false;
   const loop = (async () => {
     let after = (await api({ op: 'read', roomId }, me.token)).cursor;
     while (!stop) {
       const page = await api({ op: 'read', roomId, after, wait: 1 }, me.token); after = page.cursor;
       for (const m of page.messages) { const nonce = /验证码\s*([A-Z2-9]{20})/.exec(m.text)?.[1];
+        if (nonce && m.to === me.memberId) await onProbe?.(m, nonce);
         if (nonce && m.to === me.memberId) await api({ op: 'send', roomId, id: 'answer-' + m.seq, text: `收到 ${nonce}`, ...(exact ? { replyTo: m.seq } : {}) }, me.token); }
     }
   })();
@@ -108,4 +109,24 @@ test('listen mode: a reply quoting the nonce with the exact replyTo is one room 
   assert(verdict.json().notCovered.some(n => n.startsWith('自动响应（宿主唤醒）：未验证')));
   const log = readFileSync(join(h, 'respond.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
+});
+
+test('host evidence: a Claude Code log counts only a host event, then a model turn, then the reply, with no human input', { skip: !binary }, async () => {
+  const h = home('host'); assert.equal(blind(['setup', '--origin', origin, '--home', h, '--mode', 'listen']).code, 0);
+  const [, roomId, invite] = /#\/collab\/([a-f0-9]{32})\?invite=([a-f0-9]{64})/.exec(readFileSync(join(h, 'prompt.txt'), 'utf8'));
+  const me = await api({ op: 'join', roomId, invite, name: '宿主证据测试', kind: 'ai' });
+  const log = join(dir, 'session.jsonl'); writeFileSync(log, JSON.stringify({ type: 'user', origin: { kind: 'human' }, timestamp: new Date().toISOString(), message: { content: '开始监听' } }) + '\n', { mode: 0o600 });
+  const line = entry => appendFileSync(log, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n');
+  const run = async (scenario, onProbe) => { const stop = listen(roomId, me, true, onProbe);
+    const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log]); await stop(); return r.json(); };
+  const wake = (m, nonce) => line({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><event>[msg #${m.seq}] ${nonce}</event></task-notification>` });
+  const ok = await run('idle', async (m, nonce) => { wake(m, nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); });
+  assert.match(ok.hostAutoWake, /^宿主日志显示/); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
+  const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(prompted.hostAutoWake, '未验证：期间有 1 次人工输入');
+  const typed = await run('quiet', async (m, nonce) => { line({ type: 'user', origin: { kind: 'human' }, message: { content: `回复 ${nonce}` } }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(typed.hostAutoWake, '未验证：nonce 首次出现于 human，不是宿主事件');
+  const rewritten = await run('restart', async (m, nonce) => { writeFileSync(log, readFileSync(log, 'utf8').replace('开始监听', '改写过的'), { mode: 0o600 }); wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(rewritten.hostAutoWake, '未验证：窗口前的日志被改动');
+  assert.equal(blind(['respond', '--home', h, '--host', 'claude-code', '--transcript', 'relative.jsonl']).code, 2);
 });

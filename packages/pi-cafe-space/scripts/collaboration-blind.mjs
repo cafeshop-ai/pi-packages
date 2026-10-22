@@ -11,8 +11,10 @@
 //       task (default): a room with one synthetic task; listen: a room where the agent is asked to
 //       stay and auto-reply to the owner. The agent prompt goes to <home>/prompt.txt
 //   collaboration-blind respond --home <dir> [--scenario idle|busy|network|restart|quiet] [--wait-seconds 600]
+//                              [--host claude-code --transcript <host session log>]
 //       (listen mode) the owner posts a response test carrying a long random nonce and waits for
-//       a reply from the agent that quotes it with replyTo set to the test
+//       a reply from the agent that quotes it with replyTo set to the test. With --host, the
+//       driver also reads what the host itself logged during the window (see hostEvidence)
 //   collaboration-blind judge --home <dir>
 //       prints {stage, roomChecksPassed, checks[], notCovered[]}; exits 0 only when every room check passes
 //
@@ -23,7 +25,7 @@
 // agent (connector read the seq, host queue took it, a model turn started, the reply followed)
 // with zero user input in between. Without such host events only the round trip is reported.
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -88,9 +90,37 @@ const isProbe = (m, run) => m.memberId === run.memberId && m.id.startsWith('blin
 const answerTo = (probe, messages, agentId) => { const nonce = probePattern.exec(probe.text)[1];
   return messages.find(m => m.seq > probe.seq && m.memberId === agentId && m.replyTo === probe.seq && m.text.includes(nonce)); };
 const scenarios = ['idle', 'busy', 'network', 'restart', 'quiet'];
+
+// Host adapters read the log the host writes itself, outside the agent's tools, and only the part
+// appended during the test window; the earlier part must be unchanged. The chain must show, in
+// order: a host event carrying the nonce (the first place the nonce appears at all), then a model
+// turn, then the reply in the room, with no human input anywhere in the window.
+const hosts = {
+  // Claude Code: session JSONL. Monitor output reaches the model as a queue-operation (when busy)
+  // or a user entry with origin.kind task-notification (when idle); a person's prompt is a user
+  // entry with origin.kind human.
+  'claude-code': (entries, nonce) => {
+    const first = entries.find(e => JSON.stringify(e).includes(nonce));
+    const event = first && (first.type === 'queue-operation' || first.type === 'attachment' || first.origin?.kind === 'task-notification') ? first : undefined;
+    return { event: event && { at: event.timestamp, kind: event.type === 'user' ? 'task-notification' : event.type },
+      firstNonceIn: first ? (first.origin?.kind ?? first.type) : 'absent',
+      turn: event && entries.find(e => e.type === 'assistant' && Date.parse(e.timestamp) >= Date.parse(event.timestamp))?.timestamp,
+      humanInputs: entries.filter(e => e.type === 'user' && e.origin?.kind === 'human').length };
+  },
+};
+function snapshot(path) { const data = readFileSync(path); return { size: data.length, head: createHash('sha256').update(data).digest('hex') }; }
+function hostEvidence(host, path, before, nonce, answer) {
+  const data = readFileSync(path); const unchanged = data.length >= before.size && createHash('sha256').update(data.subarray(0, before.size)).digest('hex') === before.head;
+  const entries = data.subarray(before.size).toString('utf8').split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  const found = hosts[host](entries, nonce);
+  const verified = unchanged && !!answer && !!found.event && !!found.turn && found.humanInputs === 0 && Date.parse(found.turn) <= Date.parse(answer.at);
+  return { host, appendOnly: unchanged, ...found,
+    verdict: verified ? '宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，期间人工输入 0 次'
+      : `未验证：${!unchanged ? '窗口前的日志被改动' : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件` : !found.turn ? '没有找到之后的模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : '回复早于模型回合'}` };
+}
 const seconds = ms => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`; };
 
-async function respond({ home, waitSeconds, scenario }) {
+async function respond({ home, waitSeconds, scenario, host, transcript }) {
   const run = JSON.parse(readPrivate(join(home, 'owner.json'))); secrets.add(run.token); secrets.add(run.invite);
   const origin = checkOrigin(run.origin); const room = await call(origin, { op: 'read', roomId: run.roomId, after: 0 }, run.token);
   const agents = room.members.filter(m => m.kind === 'ai' && !m.removed);
@@ -98,20 +128,22 @@ async function respond({ home, waitSeconds, scenario }) {
   const agent = agents[0]; const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   const nonce = Array.from(randomBytes(20), b => alphabet[b % alphabet.length]).join('');
   const log = join(home, 'respond.jsonl'); const n = (existsSync(log) ? readPrivate(log) : '').split('\n').filter(Boolean).length + 1;
-  const runId = randomUUID(); const started = performance.now();
+  const runId = randomUUID(); const started = performance.now(); const before = host ? snapshot(transcript) : undefined;
   const probe = await call(origin, { op: 'send', roomId: run.roomId, id: `blind-respond-${n}`, to: agent.id, text: `【响应测试】收到请直接在房间回复验证码 ${nonce}，回复时把 replyTo 设为这条消息，无需做其他事情。` }, run.token);
   let answer, after = probe.seq; const deadline = Date.now() + waitSeconds * 1000;
   while (!answer && Date.now() < deadline) {
     const page = await call(origin, { op: 'read', roomId: run.roomId, after, wait: Math.max(1, Math.min(25, Math.floor((deadline - Date.now()) / 1000))) }, run.token);
     answer = answerTo(probe, page.messages, agent.id); after = page.cursor;
   }
+  const evidence = host ? hostEvidence(host, transcript, before, nonce, answer) : undefined;
   const record = { n, runId, scenario, probeSeq: probe.seq, sentAt: probe.at, waitSeconds, answerSeq: answer?.seq, answeredAt: answer?.at,
-    took: answer ? seconds(Date.parse(answer.at) - Date.parse(probe.at)) : undefined, driverMs: Math.round(performance.now() - started) };
+    took: answer ? seconds(Date.parse(answer.at) - Date.parse(probe.at)) : undefined, driverMs: Math.round(performance.now() - started), ...(evidence ? { hostEvidence: evidence } : {}) };
   writePrivate(log, (existsSync(log) ? readPrivate(log) : '') + JSON.stringify(record) + '\n');
   const presence = (await call(origin, { op: 'read', roomId: run.roomId, after }, run.token)).presence?.[agent.id];
   print({ scenario, runId, responded: !!answer, label: answer ? `本次响应测试成功，耗时 ${record.took}` : '尚未确认响应，原因未知', probe: `#${probe.seq}`, ...(answer ? { answer: `#${answer.seq}` } : {}),
     connectorReport: presence ? { fetched: presence.fetched, delivered: presence.delivered, heartbeatAt: presence.heartbeatAt } : '未上报',
-    hostAutoWake: '未验证：只证明一次房间往返。需测试驱动记录的宿主事件因果链（连接器读到该 seq → 宿主队列接收 → 模型回合开始 → 回复），且期间人工输入为 0' });
+    hostAutoWake: evidence?.verdict ?? '未验证：只证明一次房间往返。需测试驱动记录的宿主事件因果链（连接器读到该 seq → 宿主队列接收 → 模型回合开始 → 回复），且期间人工输入为 0',
+    ...(evidence ? { hostEvidence: evidence } : {}) });
   if (!answer) process.exitCode = 1;
 }
 
@@ -177,10 +209,14 @@ async function judge({ home }) {
 }
 
 try {
-  const { positionals: [command], values } = parseArgs({ allowPositionals: true, options: { origin: { type: 'string' }, home: { type: 'string' }, minutes: { type: 'string', default: '15' }, mode: { type: 'string', default: 'task' }, 'wait-seconds': { type: 'string', default: '600' }, scenario: { type: 'string', default: 'idle' } } });
+  const { positionals: [command], values } = parseArgs({ allowPositionals: true, options: { origin: { type: 'string' }, home: { type: 'string' }, minutes: { type: 'string', default: '15' }, mode: { type: 'string', default: 'task' }, 'wait-seconds': { type: 'string', default: '600' }, scenario: { type: 'string', default: 'idle' }, host: { type: 'string' }, transcript: { type: 'string' } } });
   const home = privateHome(values.home);
   if (command === 'setup') { if (!['task', 'listen'].includes(values.mode)) throw new Fail('--mode is task or listen'); await setup({ origin: checkOrigin(values.origin ?? ''), home, minutes: Number(values.minutes) || 15, mode: values.mode }); }
-  else if (command === 'respond') { if (!scenarios.includes(values.scenario)) throw new Fail(`--scenario is one of ${scenarios.join(', ')}`); await respond({ home, waitSeconds: Number(values['wait-seconds']) || 600, scenario: values.scenario }); }
+  else if (command === 'respond') {
+    if (!scenarios.includes(values.scenario)) throw new Fail(`--scenario is one of ${scenarios.join(', ')}`);
+    if (values.host && (!hosts[values.host] || !values.transcript?.startsWith('/'))) throw new Fail(`--host is one of ${Object.keys(hosts).join(', ')} and needs an absolute --transcript`);
+    await respond({ home, waitSeconds: Number(values['wait-seconds']) || 600, scenario: values.scenario, host: values.host, transcript: values.transcript });
+  }
   else if (command === 'judge') await judge({ home });
   else throw new Fail('usage: collaboration-blind setup --origin <https url> --home <dir> [--minutes 15] [--mode task|listen] | respond --home <dir> [--wait-seconds 600] | judge --home <dir>');
 } catch (error) {
