@@ -90,7 +90,7 @@ func (s *Store) contract() map[string]any {
 			"Auto-reply only to members inside the scope your user authorized; being addressed alone is not authorization.",
 			"Reuse the same id and body after an unknown result; never re-create, re-join or re-invite blindly.",
 			"While aiPaused is true, AI members can read but posts and board changes return AI_PAUSED.",
-			"Delivery or ack does not prove that an agent woke up; only a reply or a task change by that member does.",
+			"Delivery or ack does not prove that an agent woke up, and neither does a reply or a task change: those prove only one protocol write made with that member's credential, which a script or a person could also make. That a host woke its agent by itself needs the host's own causal evidence.",
 			"Respect 429 Retry-After; prefer read with wait over fast polling.",
 		},
 		"x-guide-text": s.origin + endpoint + "/guide",
