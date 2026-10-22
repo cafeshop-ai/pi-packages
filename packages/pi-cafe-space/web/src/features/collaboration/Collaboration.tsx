@@ -53,8 +53,8 @@ export function Collaboration() {
 function Create() {
   const navigate = useNavigate();
   const [name, setName] = useState(''); const [title, setTitle] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  useEffect(() => { const abort = new AbortController(); void collaboration<{ enabled: boolean }>({ op: 'status' }, undefined, abort.signal).then(v => setEnabled(v.enabled), () => { if (!abort.signal.aborted) setEnabled(false); }); return () => abort.abort(); }, []);
+  const [enabled, setEnabled] = useState<boolean | null>(null); const [retention, setRetention] = useState(7);
+  useEffect(() => { const abort = new AbortController(); void collaboration<{ enabled: boolean; retentionDays?: number }>({ op: 'status' }, undefined, abort.signal).then(v => { setEnabled(v.enabled); if (Number.isInteger(v.retentionDays) && v.retentionDays! > 0) setRetention(v.retentionDays!); }, () => { if (!abort.signal.aborted) setEnabled(false); }); return () => abort.abort(); }, []);
   return <section className={styles.landing}>
     <div className={styles.pitch}>
       <p className={styles.eyebrow}>PEOPLE + AI</p>
@@ -73,7 +73,7 @@ function Create() {
       <h2>新建房间</h2>
       <div className={styles.field}><Label htmlFor="collab-title">房间名称</Label><Input id="collab-title" value={title} onChange={e => setTitle(e.target.value)} maxLength={80} required placeholder="例如：Space 发布讨论" /></div>
       <div className={styles.field}><Label htmlFor="collab-name">你的名称</Label><Input id="collab-name" value={name} onChange={e => setName(e.target.value)} maxLength={48} required autoComplete="nickname" placeholder="其他成员看到的称呼" /></div>
-      <p className={styles.note}>持邀请的人可以查看全部历史。消息以明文保存在云端，房间 7 天后到期，请勿发送密钥或敏感资料。</p>
+      <p className={styles.note}>持邀请的人可以查看全部历史。消息以明文保存在云端，房间 {retention} 天后到期，请勿发送密钥或敏感资料。</p>
       <Button type="submit" variant="primary" loading={busy} disabled={enabled !== true}>创建协作房间</Button>
       {enabled === false && <p className={styles.formError} role="alert">协作服务暂不可用，请稍后再试；电脑房间不受影响。</p>}
       {error && <p className={styles.formError} role="alert">{error}</p>}
@@ -193,7 +193,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       <Button className={styles.danger} disabled={busy || terminal} onClick={() => setConfirm({ op: 'close', label: '关闭房间？所有成员将无法继续访问，此操作不能撤销。' })}>关闭房间</Button>
     </div></section> : <section className={styles.panelSection}><Button disabled={busy || terminal} onClick={() => setConfirm({ op: 'leave', label: '退出房间并清除此浏览器的成员凭据？' })}>退出房间</Button></section>}
     {confirm && <section className={styles.confirm} aria-label="确认操作"><p>{confirm.label}</p><div className={styles.row}><Button variant="primary" loading={busy} onClick={() => void act(confirm.op, confirm.fields ?? {})}>确认</Button><Button disabled={busy} onClick={() => setConfirm(null)}>取消</Button></div></section>}
-    <details className={styles.privacy}><summary>隐私与限制</summary><p>讨论以明文保存在云端，不是端到端加密；新成员可以看到全部历史。房间不会同步任何人的电脑会话、文件或工具权限。房间创建 7 天后到期，最多登记 64 位成员、保存 500 条消息。离线的 AI 不会被唤醒。清除浏览器数据会丢失成员凭据，房主凭据没有找回入口。</p></details>
+    <details className={styles.privacy}><summary>隐私与限制</summary><p>讨论以明文保存在云端，不是端到端加密；新成员可以看到全部历史。房间不会同步任何人的电脑会话、文件或工具权限。房间到期后停止访问（到期时间见页面顶部），最多登记 64 位成员、保存 500 条消息。离线的 AI 不会被唤醒。清除浏览器数据会丢失成员凭据，房主凭据没有找回入口。</p></details>
   </>;
   return <section className={styles.room}>
     <header className={styles.toolbar}>

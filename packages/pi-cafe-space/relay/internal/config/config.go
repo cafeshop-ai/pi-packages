@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/auth"
 	"math"
+	"net/netip"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -14,10 +15,21 @@ import (
 	"unicode/utf16"
 )
 
+// CollaborationLimits are the operator's capacity and client-identity choices for
+// collaboration rooms. Zero values are never produced: Parse fills the defaults.
+type CollaborationLimits struct {
+	MaxRooms, RetentionDays, MaxStoreMB int
+	// Only requests whose direct peer is one of these proxies may name the client
+	// through ClientIPHeader (a single-address header such as CF-Connecting-IP).
+	TrustedProxies []netip.Prefix
+	ClientIPHeader string
+}
+
 type Config struct {
 	CredentialsFile        string
 	RemoteConfig           string
 	CollaborationDirectory string
+	Collaboration          CollaborationLimits
 	ManagedConfig          string
 	// Service must verify room mode before accepting user-chosen local tokens.
 	ManagedRoomCredentials bool
@@ -95,6 +107,14 @@ func Parse(env map[string]string) (Config, error) {
 	if c.CollaborationDirectory != "" && (c.CredentialsFile != "" || c.RemoteConfig == "" || len(c.CollaborationDirectory) > 4096 || strings.ContainsRune(c.CollaborationDirectory, 0) || !filepath.IsAbs(c.CollaborationDirectory)) {
 		return Config{}, errors.New("Collaboration requires an absolute durable directory and explicit remote configuration")
 	}
+	limits, err := collaborationLimits(env)
+	if err != nil {
+		return Config{}, err
+	}
+	if c.CollaborationDirectory == "" && (limits.ClientIPHeader != "" || len(limits.TrustedProxies) > 0 || env["PI_CAFE_COLLAB_MAX_ROOMS"] != "" || env["PI_CAFE_COLLAB_RETENTION_DAYS"] != "" || env["PI_CAFE_COLLAB_MAX_STORE_MB"] != "") {
+		return Config{}, errors.New("Collaboration limits require PI_CAFE_COLLAB_DIRECTORY")
+	}
+	c.Collaboration = limits
 	c.ManagedConfig = env["PI_COLLAB_MANAGED_CONFIG"]
 	if len(c.ManagedConfig) > 4096 || strings.ContainsRune(c.ManagedConfig, 0) {
 		return Config{}, errors.New("Invalid managed configuration path")
@@ -197,4 +217,42 @@ func sufficientEntropy(s string) bool {
 		entropy -= p * math.Log2(p)
 	}
 	return entropy >= 3 && entropy*float64(n) >= 64
+}
+
+var headerName = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+func collaborationLimits(env map[string]string) (CollaborationLimits, error) {
+	l := CollaborationLimits{MaxRooms: 1024, RetentionDays: 7, MaxStoreMB: 64}
+	for _, n := range []struct {
+		key      string
+		value    *int
+		min, max int
+	}{{"PI_CAFE_COLLAB_MAX_ROOMS", &l.MaxRooms, 1, 100000}, {"PI_CAFE_COLLAB_RETENTION_DAYS", &l.RetentionDays, 1, 365}, {"PI_CAFE_COLLAB_MAX_STORE_MB", &l.MaxStoreMB, 1, 4096}} {
+		if raw := env[n.key]; raw != "" {
+			v, err := strconv.Atoi(raw)
+			if err != nil || !decimal.MatchString(raw) || v < n.min || v > n.max {
+				return CollaborationLimits{}, errors.New(n.key + " must be a whole number from " + strconv.Itoa(n.min) + " to " + strconv.Itoa(n.max))
+			}
+			*n.value = v
+		}
+	}
+	if raw := env["PI_CAFE_COLLAB_TRUSTED_PROXIES"]; raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			prefix, err := netip.ParsePrefix(part)
+			if err != nil {
+				addr, addrErr := netip.ParseAddr(part)
+				if addrErr != nil {
+					return CollaborationLimits{}, errors.New("PI_CAFE_COLLAB_TRUSTED_PROXIES must list IP addresses or CIDR prefixes")
+				}
+				prefix = netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen())
+			}
+			l.TrustedProxies = append(l.TrustedProxies, prefix.Masked())
+		}
+	}
+	l.ClientIPHeader = env["PI_CAFE_COLLAB_CLIENT_IP_HEADER"]
+	if l.ClientIPHeader != "" && !headerName.MatchString(l.ClientIPHeader) || (l.ClientIPHeader == "") != (len(l.TrustedProxies) == 0) {
+		return CollaborationLimits{}, errors.New("PI_CAFE_COLLAB_CLIENT_IP_HEADER and PI_CAFE_COLLAB_TRUSTED_PROXIES must be set together")
+	}
+	return l, nil
 }

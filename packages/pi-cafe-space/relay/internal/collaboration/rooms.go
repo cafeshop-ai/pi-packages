@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,7 +27,18 @@ import (
 
 const endpoint = "/api/collaboration"
 const maxRoomBytes = 20 << 20
-const maxStoreBytes = 64 << 20
+const maxLimitKeys = 1 << 16
+
+// Options are the operator's capacity and client-identity choices; zero values use the defaults.
+type Options struct {
+	MaxRooms, RetentionDays, MaxStoreBytes int
+	// A request whose direct peer is in TrustedProxies is attributed to the single
+	// address in ClientIPHeader (for example CF-Connecting-IP set behind Cloudflare).
+	// Spoofed values can only spread one client over several buckets; global
+	// ceilings still bound the total.
+	TrustedProxies []netip.Prefix
+	ClientIPHeader string
+}
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -115,6 +127,7 @@ type Store struct {
 	changed           map[string]chan struct{}
 	waiting           map[string]int
 	waits             int
+	options           Options
 	now               func() time.Time
 }
 
@@ -176,7 +189,16 @@ func validRoom(room *Room) bool {
 // New requires an explicit durable directory. Corrupt state fails closed.
 // POSIX modes are enforced on Linux; Windows development uses the directory's inherited user ACL.
 // shortcut: one process owns this private directory; use a transactional database before multi-replica deployment.
-func New(directory, origin string) (*Store, error) {
+func New(directory, origin string, options Options) (*Store, error) {
+	if options.MaxRooms <= 0 {
+		options.MaxRooms = 1024
+	}
+	if options.RetentionDays <= 0 {
+		options.RetentionDays = 7
+	}
+	if options.MaxStoreBytes <= 0 {
+		options.MaxStoreBytes = 64 << 20
+	}
 	origin = strings.TrimSuffix(origin, "/")
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.String() != u.Scheme+"://"+u.Host || !filepath.IsAbs(directory) {
@@ -192,12 +214,11 @@ func New(directory, origin string) (*Store, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("collaboration directory must be private and ordinary")
 	}
-	s := &Store{directory: directory, origin: origin, rooms: map[string]*Room{}, sizes: map[string]int{}, limits: map[string]window{}, presence: map[string]map[string]*Presence{}, changed: map[string]chan struct{}{}, waiting: map[string]int{}, now: time.Now}
+	s := &Store{directory: directory, origin: origin, rooms: map[string]*Room{}, sizes: map[string]int{}, limits: map[string]window{}, presence: map[string]map[string]*Presence{}, changed: map[string]chan struct{}{}, waiting: map[string]int{}, options: options, now: time.Now}
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return nil, err
 	}
-	total := 0
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -232,10 +253,8 @@ func New(directory, origin string) (*Store, error) {
 			}
 			continue
 		}
-		total += len(data)
-		if total > maxStoreBytes || len(s.rooms) >= 64 {
-			return nil, errors.New("collaboration store capacity exceeded")
-		}
+		// Existing rooms always load, even after an operator lowers the limits:
+		// a lower limit blocks new rooms and growing writes, never startup.
 		s.rooms[id] = &room
 		s.sizes[id] = len(data)
 	}
@@ -252,7 +271,7 @@ func (s *Store) save(room *Room) error {
 			total += size
 		}
 	}
-	if len(data) > maxRoomBytes || total > maxStoreBytes {
+	if len(data) > maxRoomBytes || total > s.options.MaxStoreBytes {
 		return fail(507, "STORAGE_LIMIT")
 	}
 	file, err := os.CreateTemp(s.directory, ".room-*")
@@ -283,6 +302,30 @@ func (s *Store) save(room *Room) error {
 		delete(s.changed, room.ID)
 	}
 	return nil
+}
+
+// client names the requester for anonymous quotas: the direct peer, or the single
+// address a trusted proxy put in the configured header. Anything else falls back to the peer.
+func (s *Store) client(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil || s.options.ClientIPHeader == "" {
+		return host
+	}
+	for _, proxy := range s.options.TrustedProxies {
+		if proxy.Contains(peer.Unmap()) {
+			if values := r.Header.Values(s.options.ClientIPHeader); len(values) == 1 {
+				if addr, err := netip.ParseAddr(strings.TrimSpace(values[0])); err == nil {
+					return addr.Unmap().String()
+				}
+			}
+			break
+		}
+	}
+	return host
 }
 
 // member returns the ID of the active member that token identifies in roomID, if any.
@@ -370,13 +413,13 @@ func (s *Store) rate(key string, max int) bool {
 	if v.count >= max {
 		return false
 	}
-	if len(s.limits) >= 4096 {
+	if len(s.limits) >= maxLimitKeys {
 		for k, w := range s.limits {
 			if now.Sub(w.start) >= time.Minute {
 				delete(s.limits, k)
 			}
 		}
-		if _, ok := s.limits[key]; !ok && len(s.limits) >= 4096 {
+		if _, ok := s.limits[key]; !ok && len(s.limits) >= maxLimitKeys {
 			return false
 		}
 	}
@@ -436,22 +479,21 @@ func (s *Store) Wrap(next http.Handler) http.Handler {
 			writeError(w, fail(400, "INVALID_REQUEST"))
 			return
 		}
-		address, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			address = r.RemoteAddr
-		}
+		address := s.client(r)
 		token := ""
 		if values := r.Header.Values("Authorization"); len(values) == 1 && strings.HasPrefix(values[0], "Bearer ") {
 			token = strings.TrimPrefix(values[0], "Bearer ")
 		}
 		s.mu.Lock()
-		// A reverse proxy's forwarded headers are deliberately not trusted for quotas. Behind a
-		// proxy every visitor shares one address, so a verified member gets its own room budget.
-		key, max := "http:"+address, 600
+		// Forwarded headers are trusted only from configured proxies (see client). A verified
+		// member gets its own room budget; anonymous traffic also shares a global ceiling.
+		var allowed bool
 		if member := s.member(q.RoomID, token); member != "" {
-			key, max = "member:"+q.RoomID+member, 240
+			allowed = s.rate("member:"+q.RoomID+member, 240)
+		} else {
+			allowed = s.rate("http:"+address, 600) && s.rate("http:*", 6000)
 		}
-		if !s.rate(key, max) {
+		if !allowed {
 			s.mu.Unlock()
 			w.Header().Set("Retry-After", "60")
 			writeError(w, fail(429, "RATE_LIMIT"))
@@ -481,13 +523,13 @@ func writeError(w http.ResponseWriter, err error) {
 }
 func (s *Store) apply(q request, token, address string) (any, error) {
 	if q.Op == "status" {
-		return map[string]any{"enabled": true, "maxMessages": 500, "retentionDays": 7, "features": []string{"wait", "ack", "pause"}, "maxWait": maxWait}, nil
+		return map[string]any{"enabled": true, "maxMessages": 500, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause"}, "maxWait": maxWait}, nil
 	}
 	if q.Op == "create" {
 		if !validText(q.Title, 80, false) || !validText(q.Name, 48, false) || q.Kind != "human" {
 			return nil, fail(400, "INVALID_FIELDS")
 		}
-		if !s.rate("create:"+address, 5) {
+		if !s.rate("create:"+address, 5) || !s.rate("create:*", 60) {
 			return nil, fail(429, "RATE_LIMIT")
 		}
 		for id, room := range s.rooms {
@@ -500,7 +542,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 				delete(s.presence, id)
 			}
 		}
-		if len(s.rooms) >= 64 {
+		if len(s.rooms) >= s.options.MaxRooms {
 			return nil, fail(409, "ROOM_LIMIT")
 		}
 		id, err := random(16)
@@ -515,7 +557,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		room := &Room{Version: 1, ID: id, Title: q.Title, Expires: s.now().Add(7 * 24 * time.Hour), Members: []Member{{ID: memberID, Name: q.Name, Kind: "human", Owner: true, TokenHash: hash(secret)}}, Invites: []string{}, Messages: []Message{}}
+		room := &Room{Version: 1, ID: id, Title: q.Title, Expires: s.now().Add(time.Duration(s.options.RetentionDays) * 24 * time.Hour), Members: []Member{{ID: memberID, Name: q.Name, Kind: "human", Owner: true, TokenHash: hash(secret)}}, Invites: []string{}, Messages: []Message{}}
 		if err = s.save(room); err != nil {
 			return nil, err
 		}
@@ -540,7 +582,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if !keyPattern.MatchString(q.Invite) || !validText(q.Name, 48, false) || (q.Kind != "human" && q.Kind != "ai") {
 			return nil, fail(400, "INVALID_FIELDS")
 		}
-		if !s.rate("join:"+address, 30) {
+		if !s.rate("join:"+address, 30) || !s.rate("join:*", 300) {
 			return nil, fail(429, "RATE_LIMIT")
 		}
 		found := false

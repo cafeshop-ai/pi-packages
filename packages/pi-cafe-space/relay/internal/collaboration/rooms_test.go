@@ -19,7 +19,7 @@ const testOrigin = "https://space.example.test"
 func store(t *testing.T) *Store {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
-	s, e := New(dir, testOrigin)
+	s, e := New(dir, testOrigin, Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -79,7 +79,7 @@ func TestRoomsAcrossClientsAndRestart(t *testing.T) {
 	}
 	forwarded := invitation(t, s, id, token)
 	join(t, s, id, forwarded, "Another AI")
-	restored, err := New(s.directory, testOrigin)
+	restored, err := New(s.directory, testOrigin, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestPersistenceFailureDoesNotPublishAndCorruptionFailsClosed(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir, testOrigin); err == nil {
+	if _, err := New(dir, testOrigin, Options{}); err == nil {
 		t.Fatal("corrupt state accepted")
 	}
 }
@@ -217,7 +217,7 @@ func TestExpirationAndBounds(t *testing.T) {
 	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "last-message", "text": "over capacity"}, owner, 409)
 	s.now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
 	call(t, s, map[string]any{"op": "read", "roomId": id}, owner, 404)
-	if _, err := New("relative", testOrigin); err == nil {
+	if _, err := New("relative", testOrigin, Options{}); err == nil {
 		t.Fatal("relative directory accepted")
 	}
 }

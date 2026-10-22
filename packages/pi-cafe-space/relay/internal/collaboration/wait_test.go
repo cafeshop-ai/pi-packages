@@ -183,7 +183,7 @@ func TestPresenceAckAndOwnerPause(t *testing.T) {
 	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "ai-while-paused", "text": "x"}, token, 409)
 	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "first-message", "text": "first-message"}, owner, 200)
 	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "human-while-paused", "text": "人仍可发言"}, owner, 200)
-	restarted, err := New(s.directory, testOrigin)
+	restarted, err := New(s.directory, testOrigin, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
