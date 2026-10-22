@@ -52,7 +52,9 @@ test('passes an agent that joins, claims, delivers a correct result and links it
   assert.equal(statSync(join(h, 'owner.json')).mode & 0o777, 0o600); assert.equal(statSync(join(h, 'prompt.txt')).mode & 0o777, 0o600);
   const before = blind(['judge', '--home', h]); assert.equal(before.code, 1); assert.equal(before.json().checks.find(c => c.check === 'joined').ok, false);
   await agent(h, '统计完成：{"alpha": 5, "beta": 1}');
-  const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 0, JSON.stringify(verdict.json())); assert.equal(verdict.json().passed, true);
+  const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 0, JSON.stringify(verdict.json())); assert.equal(verdict.json().roomChecksPassed, true);
+  // Server data cannot speak for tool output, model context or help given outside the room.
+  assert.equal(verdict.json().notCovered.length, 3); assert(!('passed' in verdict.json()));
   assert.equal(blind(['setup', '--origin', origin, '--home', h]).code, 2, 'one blind test per home');
   const { token, invite } = owner(h); for (const text of outputs) { assert(!text.includes(token), 'owner token printed'); assert(!text.includes(invite), 'invite printed'); }
 });
@@ -65,5 +67,5 @@ test('fails a wrong result, a leaked credential and owner intervention, each on 
   });
   const verdict = blind(['judge', '--home', h]); assert.equal(verdict.code, 1);
   const failed = verdict.json().checks.filter(c => !c.ok).map(c => c.check).sort();
-  assert.deepEqual(failed, ['correct', 'noIntervention', 'noSecrets']);
+  assert.deepEqual(failed, ['correct', 'roomNoIntervention', 'roomNoKnownSecrets']);
 });
