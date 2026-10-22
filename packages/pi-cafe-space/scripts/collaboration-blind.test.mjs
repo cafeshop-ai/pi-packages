@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -44,7 +44,7 @@ after(async () => { if (!binary) return; relay.kill(); await rm(dir, { recursive
 
 test('refuses non-https origins and shared homes', { skip: !binary }, () => {
   assert.equal(blind(['setup', '--origin', 'http://example.com', '--home', home('remote')]).code, 2);
-  const open = join(dir, 'open'); mkdirSync(open, { mode: 0o755 }); assert.equal(blind(['setup', '--origin', origin, '--home', open]).code, 2);
+  const open = join(dir, 'open'); mkdirSync(open); chmodSync(open, 0o755); assert.equal(blind(['setup', '--origin', origin, '--home', open]).code, 2);
 });
 
 test('passes an agent that joins, claims, delivers a correct result and links it', { skip: !binary }, async () => {

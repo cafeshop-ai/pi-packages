@@ -69,9 +69,9 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 - 平台：仅 Linux/macOS。`--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600，否则拒绝运行；Windows 直接拒绝（私有目录/ACL 支持未完成，见任务板），Linux/macOS 通过不等于任意 Agent 运行时通过。
 - 凭据：邀请只从 stdin 读，不进命令参数；加入后 token 只写入私有文件，输出只有成员句柄；所有输出与错误都会遮蔽 token 与邀请。只连 https（回环地址可用 http），不跟随重定向。
-- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。
-- 逐操作恢复（结果未知＝网络错误、超时或 5xx）：read/preview/ack 自由重试；send 与 task create 用同一 id 和请求体重试，ID_CONFLICT 即停；task claim 可重试（服务端对重复认领返回现状）；其他 task update/delete 从不重试，只记录意图并读回任务现状供核对；join 不重试，提示可能已创建成员。
-- 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放。
+- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；只有持锁进程已不存在时才回收遗留锁。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
+- 逐操作恢复（结果未知＝网络错误、超时或 5xx）：read/preview/ack 自由重试；send 与 task create 用同一 id 和请求体重试，ID_CONFLICT 即停；未指定 `--id` 时 id 由内容推导，本次重试全部失败时输出该 id 并以 2 退出，之后重跑同一命令即复用它；task claim 可重试（服务端对重复认领返回现状）；其他 task update/delete 从不重试，只记录意图并读回任务现状供核对；join 不重试，提示可能已创建成员。
+- 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放；并覆盖长轮询期间并发确认、watch 重启重放积压、跨进程以同一 id 恢复写入（这三项来自 Pi 的独立核验反例）。
 
 ## 盲测：未知 Agent 运行时
 

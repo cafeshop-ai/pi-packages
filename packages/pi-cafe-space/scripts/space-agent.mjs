@@ -10,7 +10,8 @@
 //   space-agent --home <dir> status | read [--after N]
 //   space-agent --home <dir> sync [--wait 25]          fetch into the inbox, report ack
 //   space-agent --home <dir> next | done <seq> | skip <seq> --reason <text>
-//   space-agent --home <dir> watch                     sync forever, one line per fetched message
+//   space-agent --home <dir> watch                     sync forever; prints every unconsumed message once per run,
+//                                                      replaying the backlog on start
 //   space-agent --home <dir> send --text-file <f> [--to id] [--reply seq] [--id id]
 //   space-agent --home <dir> task create --title <t> [--assignee id] [--from seq] [--id id]
 //   space-agent --home <dir> task claim <taskId>
@@ -19,12 +20,14 @@
 //
 // RECOVERY (unknown result = network error, timeout or 5xx):
 //   read, preview, ack ............ retried freely (ack only moves forward)
-//   send, task create ............. retried with the same id and body; ID_CONFLICT stops
+//   send, task create ............. retried with the same id and body; ID_CONFLICT stops. Without --id the id
+//                                   is derived from the content, so re-running the same command after an
+//                                   unknown result (exit 2, id printed) reuses it
 //   task claim .................... retried; the server returns a claimed task unchanged
 //   task update, task delete ...... never retried: the intent is recorded, the task read back
 //   join .......................... never retried: it may have created a member
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, appendFileSync, existsSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -56,6 +59,31 @@ function writePrivate(path, text) {
   renameSync(tmp, path);
 }
 const readJSON = (path, fallback) => { const text = readPrivate(path, null); return text === null ? fallback : JSON.parse(text); };
+
+// --- one writer at a time ----------------------------------------------------
+// Every change to state.json and inbox.jsonl is a short transaction under a lock file: re-read,
+// change, write. Network waits never hold the lock, so a long poll cannot block done, and no
+// writer saves a copy of the state it loaded before waiting.
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+async function transact(home, change) {
+  const lock = join(home, 'state.lock'); const mine = `${process.pid} ${randomUUID()}`;
+  for (const started = Date.now(); ;) {
+    try { const fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600); writeSync(fd, mine); closeSync(fd); break; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    // Only a lock whose process is gone is stale. Move it aside before deleting and put it back
+    // if it turns out to be a live lock taken after the check.
+    let held = ''; try { held = readFileSync(lock, 'utf8'); } catch {}
+    if (held && !alive(Number(held.split(' ')[0]))) {
+      const aside = `${lock}.${process.pid}.stale`;
+      try { renameSync(lock, aside); if (readFileSync(aside, 'utf8') !== held) { try { linkSync(aside, lock); } catch {} } unlinkSync(aside); } catch {}
+      continue;
+    }
+    if (Date.now() - started > 15_000) throw new Fail(`state is locked by another space-agent process (${lock})`);
+    await sleep(20);
+  }
+  try { const state = loadState(home); const value = change(state); writePrivate(statePath(home), JSON.stringify(state)); return value; }
+  finally { try { if (readFileSync(lock, 'utf8') === mine) unlinkSync(lock); } catch {} }
+}
 
 // --- invite and network ----------------------------------------------------
 function parseInvite(text) {
@@ -101,7 +129,8 @@ function member(home) {
 }
 const statePath = home => join(home, 'state.json');
 const loadState = home => readJSON(statePath(home), { fetched: 0, consumed: 0, skipped: [] });
-const inbox = home => (readPrivate(join(home, 'inbox.jsonl'), '') ?? '').split('\n').filter(Boolean).map(line => JSON.parse(line));
+// Readers outside the lock may meet a line still being appended: only newline-terminated lines count.
+const inbox = home => (readPrivate(join(home, 'inbox.jsonl'), '') ?? '').split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line));
 function appendInbox(home, messages) {
   const path = join(home, 'inbox.jsonl');
   if (!existsSync(path)) writePrivate(path, '');
@@ -118,20 +147,30 @@ function pending(home, m, state) {
   return null;
 }
 async function sync(home, wait) {
-  const m = member(home); const state = loadState(home);
-  let fetched = [];
+  const m = member(home); let after = loadState(home).fetched;
+  const fetched = [];
   for (let more = true; more;) {
-    const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: state.fetched, ...(wait ? { wait } : {}) }, m.token);
+    const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after, ...(wait ? { wait } : {}) }, m.token);
     if (result.status === 429) { await sleep(result.retryAfter * 1000); continue; }
     if (result.status !== 200) throw failed(result);
-    const page = result.json; const fresh = page.messages.filter(x => x.seq > state.fetched);
-    appendInbox(home, fresh); fetched = fetched.concat(fresh); state.fetched = page.cursor; more = page.more; wait = 0;
-    writePrivate(statePath(home), JSON.stringify(state));
-    if (page.aiPaused !== state.aiPaused) { state.aiPaused = page.aiPaused; writePrivate(statePath(home), JSON.stringify(state)); }
+    const page = result.json;
+    // done, skip or another sync may have run while this one waited: merge into the state on disk now.
+    fetched.push(...await transact(home, state => {
+      const fresh = page.messages.filter(x => x.seq > state.fetched);
+      appendInbox(home, fresh); state.fetched = Math.max(state.fetched, page.cursor); state.aiPaused = page.aiPaused; return fresh;
+    }));
+    after = Math.max(after, page.cursor); more = page.more; wait = 0;
   }
+  const state = loadState(home);
   // delivered reports the highest consumed seq: the agent's own confirmation, not proof of understanding.
   try { await call(m.origin, { op: 'ack', roomId: m.roomId, fetched: state.fetched, delivered: state.consumed }, m.token); } catch {}
   return { fetched, state };
+}
+
+// Retries inside one run can all fail; the id goes out so a later run can retry the same write.
+async function unknownKeepsId(write, id) {
+  try { return await write(); }
+  catch (error) { if (!(error instanceof Unknown)) throw error; print({ unknown: true, id, note: 'result unknown; run the same command again (or pass --id) to retry this write' }); throw new Fail('write result unknown', 2); }
 }
 
 // --- commands --------------------------------------------------------------
@@ -166,17 +205,30 @@ async function main(argv) {
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
   if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed }); }
-  if (command === 'next') { const m = member(home); const state = loadState(home); const next = pending(home, m, state); writePrivate(statePath(home), JSON.stringify(state)); return next ? print(next) : undefined; }
+  if (command === 'next') { const m = member(home); const next = await transact(home, state => pending(home, m, state)); return next ? print(next) : undefined; }
   if (command === 'done' || command === 'skip') {
-    const m = member(home); const state = loadState(home); const next = pending(home, m, state); const seq = Number(sub);
-    if (!next || next.seq !== seq) throw new Fail(`out of order: the next unconsumed message is ${next ? '#' + next.seq : 'none'}`);
-    if (command === 'skip') { if (!values.reason) throw new Fail('skip needs --reason'); state.skipped.push({ seq, reason: values.reason }); }
-    state.consumed = seq; writePrivate(statePath(home), JSON.stringify(state));
+    const m = member(home); const seq = Number(sub);
+    if (command === 'skip' && !values.reason) throw new Fail('skip needs --reason');
+    await transact(home, state => {
+      const next = pending(home, m, state);
+      if (!next || next.seq !== seq) throw new Fail(`out of order: the next unconsumed message is ${next ? '#' + next.seq : 'none'}`);
+      if (command === 'skip') state.skipped.push({ seq, reason: values.reason });
+      state.consumed = seq;
+    });
     return print({ consumed: seq });
   }
   if (command === 'watch') {
+    // Prints from the inbox, not from what this process fetched: a restart replays the whole
+    // unconsumed backlog, messages another process fetched still show up, and nothing already
+    // consumed is printed again.
+    const m = member(home); const shown = new Set();
+    const show = () => { const { consumed } = loadState(home); for (const x of inbox(home)) {
+      if (x.seq <= consumed || x.memberId === m.memberId || shown.has(x.seq)) continue;
+      shown.add(x.seq); print(`[msg #${x.seq}] ${x.memberId.slice(0, 6)}${x.to ? ' → ' + x.to.slice(0, 6) : ''}: ${String(x.text).replace(/\s+/g, ' ').slice(0, 1500)}`);
+    } };
+    show();
     for (let backoff = 0; ;) {
-      try { const { fetched } = await sync(home, 25); backoff = 0; for (const x of fetched) print(`[msg #${x.seq}] ${x.memberId.slice(0, 6)}${x.to ? ' → ' + x.to.slice(0, 6) : ''}: ${String(x.text).replace(/\s+/g, ' ').slice(0, 1500)}`); }
+      try { await sync(home, 25); backoff = 0; show(); }
       catch (error) { if (error instanceof Fail) throw error; backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff); }
     }
   }
@@ -184,14 +236,15 @@ async function main(argv) {
     const m = member(home); const text = readFileSync(values['text-file'] ?? '/dev/stdin', 'utf8').trim();
     const body = { op: 'send', roomId: m.roomId, text, ...(values.to ? { to: values.to } : {}), ...(values.reply ? { replyTo: Number(values.reply) } : {}) };
     body.id = values.id ?? 'agent-' + createHash('sha256').update(JSON.stringify([text, body.to ?? '', body.replyTo ?? 0])).digest('hex').slice(0, 32);
-    const result = await retrying(m.origin, body, m.token); if (result.status !== 200) throw failed(result); return print({ seq: result.json.seq, id: body.id });
+    const result = await unknownKeepsId(() => retrying(m.origin, body, m.token), body.id); if (result.status !== 200) throw failed(result); return print({ seq: result.json.seq, id: body.id });
   }
   if (command === 'task') {
     const m = member(home);
     if (sub === 'create') {
       if (!values.title) throw new Fail('--title is required');
-      const body = { op: 'task', roomId: m.roomId, action: 'create', id: values.id ?? randomUUID(), title: values.title, ...(values.assignee ? { assignee: values.assignee } : {}), ...(values.from ? { from: Number(values.from) } : {}) };
-      const result = await retrying(m.origin, body, m.token); if (result.status !== 200) throw failed(result); return print(result.json);
+      const body = { op: 'task', roomId: m.roomId, action: 'create', title: values.title, ...(values.assignee ? { assignee: values.assignee } : {}), ...(values.from ? { from: Number(values.from) } : {}) };
+      body.id = values.id ?? 'agent-task-' + createHash('sha256').update(JSON.stringify([body.title, body.assignee ?? '', body.from ?? 0])).digest('hex').slice(0, 32);
+      const result = await unknownKeepsId(() => retrying(m.origin, body, m.token), body.id); if (result.status !== 200) throw failed(result); return print(result.json);
     }
     const taskId = Number(arg); if (!Number.isInteger(taskId) || taskId <= 0) throw new Fail('task id required');
     if (sub === 'claim') {

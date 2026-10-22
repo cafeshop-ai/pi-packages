@@ -108,6 +108,45 @@ test('unified inbox: ordered confirmation, explicit skips, replay and no redeliv
   assert.equal(presence.delivered, first.seq + 2, 'delivered reports the highest confirmed message');
 });
 
+test('a long poll never overwrites a confirmation made while it waited', { skip: !binary }, async () => {
+  const h = home('race'); assert.equal(agent(h, ['join', '--name', 'Race agent'], link).code, 0);
+  await api({ op: 'send', roomId: owner.roomId, id: 'race-message-1', text: '先处理这条' }, owner.token);
+  assert.equal(agent(h, ['sync']).code, 0); const first = agent(h, ['next']).json();
+  // The poll waits for a message that never comes; meanwhile another process confirms one.
+  const polling = agentAsync(h, ['sync', '--wait', '4']); await sleep(800);
+  assert.equal(agent(h, ['done', String(first.seq)]).code, 0);
+  assert.equal((await polling).code, 0);
+  assert.equal(agent(h, ['status']).json().consumed, first.seq, 'the confirmation survived the poll');
+  assert.notEqual(agent(h, ['next']).json().seq, first.seq);
+});
+
+// Runs watch for a while and returns the message seqs it printed.
+const watched = (h, ms) => new Promise(ok => {
+  const child = spawn(process.execPath, [client, '--home', h, 'watch'], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '';
+  child.stdout.on('data', b => out += b); setTimeout(() => child.kill(), ms);
+  child.on('exit', () => { outputs.push(out); ok([...out.matchAll(/\[msg #(\d+)\]/g)].map(x => Number(x[1]))); });
+});
+test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
+  const h = home('replay'); assert.equal(agent(h, ['join', '--name', 'Replay agent'], link).code, 0);
+  const backlog = await api({ op: 'send', roomId: owner.roomId, id: 'replay-message-1', text: '重启前未处理' }, owner.token);
+  assert.equal(agent(h, ['sync']).code, 0);
+  assert(( await watched(h, 1500)).includes(backlog.seq), 'a restarted watch prints the fetched but unconsumed message');
+  for (let n = agent(h, ['next']); n.out; n = agent(h, ['next'])) assert.equal(agent(h, ['done', String(n.json().seq)]).code, 0);
+  assert.deepEqual(await watched(h, 1500), [], 'nothing confirmed is printed again');
+  const fresh = (async () => { await sleep(800); return api({ op: 'send', roomId: owner.roomId, id: 'replay-message-2', text: '重启后新到' }, owner.token); })();
+  const printed = await watched(h, 4000); assert.deepEqual(printed, [(await fresh).seq]);
+});
+
+test('a write with an unknown result can be retried by a later run with the same id', { skip: !binary }, async () => {
+  const h = home('stable'); assert.equal(agent(h, ['join', '--name', 'Stable agent'], link).code, 0);
+  await stopRelay();
+  const unknown = agent(h, ['task', 'create', '--title', '跨进程恢复的任务']); assert.equal(unknown.code, 2);
+  const { id } = JSON.parse(unknown.out); assert.match(id, /^agent-task-[a-f0-9]{32}$/);
+  await startRelay();
+  const created = agent(h, ['task', 'create', '--title', '跨进程恢复的任务']).json();
+  assert.equal(agent(h, ['task', 'create', '--title', '跨进程恢复的任务', '--id', id]).json().id, created.id, 'the printed id is the one a re-run uses');
+});
+
 test('send retries safely, claims are idempotent and unknown updates are never replayed', { skip: !binary }, async () => {
   const a = home('claim-a'), b = home('claim-b');
   assert.equal(agent(a, ['join', '--name', 'Claimer A'], link).code, 0); assert.equal(agent(b, ['join', '--name', 'Claimer B'], link).code, 0);
