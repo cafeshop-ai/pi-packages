@@ -1,0 +1,127 @@
+// Tests for the space-agent POSIX preview client against a native Relay.
+//   PI_CAFE_RELAY_BINARY=/absolute/path/to/pi-cafe-relay node --test scripts/space-agent.test.mjs
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { createServer as createNet } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+const binary = process.env.PI_CAFE_RELAY_BINARY;
+const client = fileURLToPath(new URL('./space-agent.mjs', import.meta.url));
+let dir, origin, relay, env, outputs = [];
+const startRelay = async () => {
+  relay = spawn(binary, [], { env, stdio: 'ignore' });
+  for (let i = 0; i < 80; i++) { try { if ((await fetch(origin + '/healthz')).ok) return; } catch {} await sleep(100); }
+  throw Error('relay did not start');
+};
+const stopRelay = async () => { if (relay.exitCode !== null) return; const done = new Promise(ok => relay.once('exit', ok)); relay.kill(); await done; };
+// The Relay closes idle keep-alive connections after a few seconds; retry once if a pooled one went stale.
+const api = async (body, token) => {
+  const send = () => fetch(origin + '/api/collaboration', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+  try { return (await send()).json(); } catch { return (await send()).json(); }
+};
+const agent = (home, args, input = '') => {
+  const r = spawnSync(process.execPath, [client, '--home', home, ...args], { input, encoding: 'utf8', timeout: 60_000 });
+  outputs.push(r.stdout, r.stderr); return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim(), json: () => JSON.parse(r.stdout.trim().split('\n').at(-1)) };
+};
+// For servers living in this process: spawnSync would block them and deadlock.
+const agentAsync = (home, args, input = '') => new Promise(ok => {
+  const child = spawn(process.execPath, [client, '--home', home, ...args], { stdio: ['pipe', 'pipe', 'pipe'] }); let out = '', err = '';
+  child.stdout.on('data', b => out += b); child.stderr.on('data', b => err += b); child.stdin.end(input);
+  child.on('exit', code => { outputs.push(out, err); ok({ code, out: out.trim(), err: err.trim() }); });
+});
+const home = name => { const path = join(dir, name); mkdirSync(path, { mode: 0o700 }); return path; };
+let owner, link, invite;
+
+before(async () => {
+  if (!binary) return;
+  dir = await mkdtemp(join(tmpdir(), 'space-agent-test-'));
+  const reserve = createNet(); await new Promise(ok => reserve.listen(0, '127.0.0.1', ok)); const port = reserve.address().port; await new Promise(ok => reserve.close(ok));
+  origin = `http://127.0.0.1:${port}`;
+  writeFileSync(join(dir, 'cloud.json'), JSON.stringify({ mode: 'cloud', publicOrigin: origin, roomAccess: true, enableWebRTC: true }), { mode: 0o600 });
+  env = { PATH: process.env.PATH ?? '', PI_COLLAB_HOST: '127.0.0.1', PI_COLLAB_PORT: String(port), PI_COLLAB_HOST_TOKEN: randomBytes(32).toString('base64url'), PI_COLLAB_CLIENT_TOKEN: randomBytes(32).toString('base64url'), PI_COLLAB_ALLOWED_ORIGINS: origin, PI_CAFE_REMOTE_CONFIG: join(dir, 'cloud.json'), PI_CAFE_COLLAB_DIRECTORY: join(dir, 'data') };
+  await startRelay();
+  owner = await api({ op: 'create', title: '客户端测试', name: 'Owner', kind: 'human' });
+  ({ invite, url: link } = await api({ op: 'invite', roomId: owner.roomId }, owner.token));
+});
+after(async () => {
+  if (!binary) return;
+  await stopRelay(); await rm(dir, { recursive: true, force: true });
+  // No output of any command may contain a credential or the invite.
+  for (const text of outputs) { assert(!text.includes(invite), 'invite leaked'); assert(!text.includes(owner.token), 'token leaked'); }
+});
+
+test('refuses unsafe homes, non-https origins and redirects', { skip: !binary }, async () => {
+  const open = join(dir, 'open'); mkdirSync(open, { mode: 0o755 }); chmodSync(open, 0o755);
+  const r = agent(open, ['status']); assert.equal(r.code, 1); assert.match(r.err, /0700/);
+  assert.match(agent(home('remote'), ['preview'], `http://example.com/#/collab/${owner.roomId}?invite=${invite}`).err, /only https/);
+  const redirect = createServer((_, res) => { res.writeHead(307, { Location: origin + '/api/collaboration' }); res.end(); });
+  await new Promise(ok => redirect.listen(0, '127.0.0.1', ok));
+  let followed = false; redirect.on('request', () => {});
+  const target = createServer((_, res) => { followed = true; res.end('{}'); }); await new Promise(ok => target.listen(0, '127.0.0.1', ok));
+  redirect.removeAllListeners('request'); redirect.on('request', (_, res) => { res.writeHead(307, { Location: `http://127.0.0.1:${target.address().port}/api/collaboration` }); res.end(); });
+  const started = Date.now();
+  const bounced = await agentAsync(home('redirect'), ['preview'], `http://127.0.0.1:${redirect.address().port}/#/collab/${owner.roomId}?invite=${invite}`);
+  redirect.close(); target.close();
+  assert.notEqual(bounced.code, 0, 'a redirect must not be followed'); assert.equal(followed, false, 'the redirect target was contacted');
+  assert(Date.now() - started < 5_000, 'a redirect fails at once instead of being retried'); assert.match(bounced.err, /redirects are not followed/);
+});
+
+test('joins privately and never prints the token', { skip: !binary }, () => {
+  const h = home('member');
+  const preview = agent(h, ['preview'], link); assert.equal(preview.code, 0); assert.equal(preview.json().title, '客户端测试');
+  const joined = agent(h, ['join', '--name', 'Test agent'], link); assert.equal(joined.code, 0); assert.equal(joined.json().joined, true);
+  const token = JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).token; outputs.push(''); assert.match(token, /^[a-f0-9]{64}$/);
+  assert.equal(statSync(join(h, 'member.json')).mode & 0o777, 0o600); assert.equal(statSync(h).mode & 0o777, 0o700);
+  assert.equal(agent(h, ['join', '--name', 'Again'], link).code, 1, 'one membership per home');
+  for (const text of outputs) assert(!text.includes(token), 'member token leaked');
+});
+
+test('unified inbox: ordered confirmation, explicit skips, replay and no redelivery after manual handling', { skip: !binary }, async () => {
+  const h = home('inbox'); assert.equal(agent(h, ['join', '--name', 'Inbox agent'], link).code, 0);
+  const me = JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).memberId;
+  for (const n of [1, 2, 3]) await api({ op: 'send', roomId: owner.roomId, id: `inbox-message-${n}`, text: `第 ${n} 条`, to: me }, owner.token);
+  const base = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).cursor - 3;
+  assert.equal(agent(h, ['sync']).json().fetched, base + 3);
+  const first = agent(h, ['next']).json(); assert.equal(first.text, '第 1 条');
+  assert.match(agent(h, ['done', String(first.seq + 1)]).err, /out of order/);
+  assert.equal(agent(h, ['done', String(first.seq)]).code, 0);
+  // A manual read shows everything but consumes nothing.
+  assert.equal(agent(h, ['read']).code, 0); assert.equal(agent(h, ['next']).json().text, '第 2 条');
+  assert.match(agent(h, ['skip', String(first.seq + 1)]).err, /reason/);
+  assert.equal(agent(h, ['skip', String(first.seq + 1), '--reason', 'handled by hand']).code, 0);
+  // A new process replays the unconfirmed message until it is confirmed.
+  assert.equal(agent(h, ['next']).json().text, '第 3 条'); assert.equal(agent(h, ['next']).json().text, '第 3 条');
+  assert.equal(agent(h, ['done', String(first.seq + 2)]).code, 0);
+  // Own messages never become work; confirmed messages are never delivered again.
+  writeFileSync(join(dir, 'reply.txt'), '收到三条'); assert.equal(agent(h, ['send', '--text-file', join(dir, 'reply.txt')]).code, 0);
+  agent(h, ['sync']); assert.equal(agent(h, ['next']).out, '');
+  const status = agent(h, ['status']).json(); assert.equal(status.consumed, status.fetched); assert.equal(status.skipped, 2);
+  const presence = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[me];
+  assert.equal(presence.delivered, first.seq + 2, 'delivered reports the highest confirmed message');
+});
+
+test('send retries safely, claims are idempotent and unknown updates are never replayed', { skip: !binary }, async () => {
+  const a = home('claim-a'), b = home('claim-b');
+  assert.equal(agent(a, ['join', '--name', 'Claimer A'], link).code, 0); assert.equal(agent(b, ['join', '--name', 'Claimer B'], link).code, 0);
+  writeFileSync(join(dir, 'same.txt'), '同一条消息');
+  assert.equal(agent(a, ['send', '--text-file', join(dir, 'same.txt')]).json().seq, agent(a, ['send', '--text-file', join(dir, 'same.txt')]).json().seq);
+  const task = await api({ op: 'task', roomId: owner.roomId, action: 'create', id: 'agent-test-task-1', title: '统计 alpha 与 beta' }, owner.token);
+  assert.equal(agent(a, ['task', 'claim', String(task.id)]).json().status, 'doing');
+  assert.equal(agent(a, ['task', 'claim', String(task.id)]).json().status, 'doing', 'a retried claim returns the task');
+  assert.match(agent(b, ['task', 'claim', String(task.id)]).err, /TASK_TAKEN/);
+  await stopRelay();
+  const unknown = agent(a, ['task', 'update', String(task.id), '--status', 'done']);
+  assert.equal(unknown.code, 2); assert.match(unknown.out, /"unknown":true/);
+  assert.match(readFileSync(join(a, 'intents.jsonl'), 'utf8'), /"status":"done"/);
+  await startRelay();
+  const tasks = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).tasks;
+  assert.equal(tasks.find(t => t.id === task.id).status, 'doing', 'the unknown update was not replayed');
+});
