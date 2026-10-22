@@ -114,7 +114,8 @@ function checkOrigin(origin) {
   return url.origin;
 }
 class Unknown extends Error {}
-async function call(origin, body, token, timeout = 20_000) {
+// The deadline covers a long poll's whole wait: a quiet room is healthy, not a failure.
+async function call(origin, body, token, timeout = ((body.wait ?? 0) + 20) * 1000) {
   let response;
   try {
     response = await fetch(origin + '/api/collaboration', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeout),

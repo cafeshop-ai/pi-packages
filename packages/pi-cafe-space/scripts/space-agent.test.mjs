@@ -196,6 +196,12 @@ test('short writes are completed and a write that makes no progress never commit
   assert.equal(agent(z, ['sync']).code, 0); assert.equal(agent(z, ['next']).code, 0); assert(agent(z, ['next']).json().seq > 0);
 });
 
+test('a quiet room is healthy: a full 25-second long poll returns normally', { skip: !binary }, async () => {
+  const h = home('quiet'); assert.equal(agent(h, ['join', '--name', 'Quiet agent'], link).code, 0); assert.equal(agent(h, ['sync']).code, 0);
+  const started = Date.now(); const quiet = await agentAsync(h, ['sync', '--wait', '25']);
+  assert.equal(quiet.code, 0, quiet.err); assert(Date.now() - started >= 24_000, 'it really waited the whole poll');
+});
+
 test('send retries safely, claims are idempotent and unknown updates are never replayed', { skip: !binary }, async () => {
   const a = home('claim-a'), b = home('claim-b');
   assert.equal(agent(a, ['join', '--name', 'Claimer A'], link).code, 0); assert.equal(agent(b, ['join', '--name', 'Claimer B'], link).code, 0);

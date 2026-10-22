@@ -110,16 +110,22 @@ const scenarios = ['idle', 'busy', 'network', 'restart', 'quiet'];
 // leaves the result unverified. This is a bounded look at a log that keeps growing, never proof
 // that the log is complete.
 const hosts = {
-  // Claude Code: session JSONL. Monitor output reaches the model as a queue-operation (when busy)
-  // or a user entry with origin.kind task-notification (when idle). Tool results are user entries
-  // whose content is only tool_result blocks. origin.kind human is a person; anything else that
-  // is a user entry (a `!` shell input, a hook or peer message) is unknown.
+  // Claude Code: session JSONL. Monitor output is first queued (queue-operation). It then either
+  // starts a new model turn, as a user entry with origin.kind task-notification, or joins the turn
+  // already running, as a queued_command attachment: the second is handling inside a turn, not a
+  // new wake-up, and is reported as such. Tool results are user entries whose content is only
+  // tool_result blocks. origin.kind human is a person; any other user entry (a `!` shell input, a
+  // hook or peer message) is unknown.
   'claude-code': (entries, nonce, windowEnd) => {
     const first = entries.find(e => JSON.stringify(e).includes(nonce));
     const event = first && (first.type === 'queue-operation' || first.type === 'attachment' || first.origin?.kind === 'task-notification') ? first : undefined;
     const inputs = entries.filter(e => e.type === 'user' && (!e.timestamp || !windowEnd || Date.parse(e.timestamp) <= Date.parse(windowEnd)));
     const toolResult = e => Array.isArray(e.message?.content) && e.message.content.length > 0 && e.message.content.every(c => c?.type === 'tool_result');
+    const carries = e => JSON.stringify(e).includes(nonce);
+    const newTurn = entries.some(e => e.type === 'user' && e.origin?.kind === 'task-notification' && carries(e));
+    const inTurn = entries.some(e => e.type === 'attachment' && e.attachment?.type === 'queued_command' && carries(e));
     return { event: event && { at: event.timestamp, kind: event.type === 'user' ? 'task-notification' : event.type },
+      delivery: newTurn && !inTurn ? 'new-turn' : inTurn && !newTurn ? 'in-turn' : 'unknown',
       firstNonceIn: first ? (first.origin?.kind ?? first.type) : 'absent',
       turn: event && entries.find(e => e.type === 'assistant' && Date.parse(e.timestamp) >= Date.parse(event.timestamp))?.timestamp,
       humanInputs: inputs.filter(e => e.origin?.kind === 'human').length,
@@ -129,15 +135,20 @@ const hosts = {
 function snapshot(path) { const data = readFileSync(path); return { size: data.length, head: createHash('sha256').update(data).digest('hex') }; }
 function hostEvidence(host, path, before, nonce, answer) {
   const data = readFileSync(path); const unchanged = data.length >= before.size && createHash('sha256').update(data.subarray(0, before.size)).digest('hex') === before.head;
-  // Only newline-terminated lines: the host may be writing the last one right now.
-  const lines = data.subarray(before.size).toString('utf8').split('\n').slice(0, -1).filter(Boolean);
+  // Only newline-terminated lines are parsed, but a visible unfinished last record could still be
+  // a person's input, so it leaves the result unverified rather than counting as nothing.
+  const appended = data.subarray(before.size).toString('utf8'); const incompleteTail = appended.length > 0 && !appended.endsWith('\n');
+  const lines = appended.split('\n').slice(0, -1).filter(Boolean);
   const entries = lines.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); const broken = lines.length - entries.length;
+  // Ordering and the window rest on timestamps: one that does not parse cannot be placed, so it is never silently dropped.
+  const badTimes = entries.filter(e => e.timestamp !== undefined && Number.isNaN(Date.parse(e.timestamp))).length + (answer && Number.isNaN(Date.parse(answer.at)) ? 1 : 0);
   const found = hosts[host](entries, nonce, answer?.at);
-  const reason = !unchanged ? '窗口前的日志被改动' : broken ? `日志有 ${broken} 行无法解析` : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件`
+  const reason = !unchanged ? '窗口前的日志被改动' : broken ? `日志有 ${broken} 行无法解析` : incompleteTail ? '日志末尾有未写完的记录' : badTimes ? `有 ${badTimes} 个时间无法解析的条目` : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件`
     : !found.turn ? '没有找到之后的模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : found.unknownInputs ? `期间有 ${found.unknownInputs} 个无法确认来源的输入条目`
-    : Date.parse(found.turn) > Date.parse(answer.at) ? '回复早于模型回合' : '';
-  return { host, appendOnly: unchanged, brokenLines: broken, observedUntil: new Date().toISOString(), ...found,
-    verdict: reason ? `未验证：${reason}` : '宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次' };
+    : Date.parse(found.turn) > Date.parse(answer.at) ? '回复早于模型回合' : found.delivery === 'unknown' ? '无法确定监听事件以何种方式送达模型' : '';
+  return { host, appendOnly: unchanged, brokenLines: broken, incompleteTail, badTimes, observedUntil: new Date().toISOString(), ...found,
+    verdict: reason ? `未验证：${reason}` : found.delivery === 'new-turn' ? '宿主日志显示：监听事件带来该 nonce → 新的模型回合 → 房间回复，观察窗口内人工或未知输入 0 次'
+      : '宿主日志显示：监听事件在运行中的回合内送达 → 同一回合处理 → 房间回复（回合内处理，不是新的唤醒），观察窗口内人工或未知输入 0 次' };
 }
 
 const seconds = ms => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`; };
