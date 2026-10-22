@@ -1,0 +1,490 @@
+{
+  "passed": true,
+  "runtime": "Pi SDK 1.1.0",
+  "bridgeCommit": "e598590",
+  "activeTools": [
+    "cafe_room_reply",
+    "cafe_room_status"
+  ],
+  "realModel": {
+    "provider": "cafe",
+    "id": "gpt-6-astra"
+  },
+  "modelRequests": 8,
+  "conversationalUserInputs": 0,
+  "ordinaryConfigUnchanged": true,
+  "blockedNetwork": 0,
+  "failedConnectorReads": 2,
+  "cases": [
+    {
+      "scenario": "idle",
+      "probeSeq": 1,
+      "answerSeq": 3,
+      "observedOrder": [
+        "connector_read",
+        "persisted_host_receipt",
+        "provider_request_contains_nonce",
+        "threaded_reply"
+      ],
+      "elapsedMs": 17458
+    },
+    {
+      "scenario": "busy-with-7s-provider-delay",
+      "probeSeq": 2,
+      "answerSeq": 4,
+      "observedOrder": [
+        "connector_read",
+        "persisted_host_receipt",
+        "provider_request_contains_nonce",
+        "threaded_reply"
+      ],
+      "elapsedMs": 23280
+    },
+    {
+      "scenario": "controlled-transport-interruption",
+      "probeSeq": 5,
+      "answerSeq": 6,
+      "observedOrder": [
+        "connector_read",
+        "persisted_host_receipt",
+        "provider_request_contains_nonce",
+        "threaded_reply"
+      ],
+      "elapsedMs": 17604
+    },
+    {
+      "scenario": "sdk-session-restore",
+      "probeSeq": 7,
+      "answerSeq": 8,
+      "observedOrder": [
+        "connector_read",
+        "persisted_host_receipt",
+        "provider_request_contains_nonce",
+        "threaded_reply"
+      ],
+      "elapsedMs": 8691
+    }
+  ],
+  "scope": "Controlled non-blind source-bridge test; synthetic loopback room, actual SDK and model requests. Busy condition includes injected 7s provider delay. Restore is SDK session disposal/recreation, not OS restart. Four samples do not establish sustained availability or generic CLI support.",
+  "trace": [
+    {
+      "ms": 80,
+      "kind": "driver_command",
+      "command": "connect"
+    },
+    {
+      "ms": 95,
+      "kind": "connector_read",
+      "after": 0,
+      "seqs": [],
+      "whileStreaming": false
+    },
+    {
+      "ms": 100,
+      "kind": "probe",
+      "seq": 1,
+      "scenario": "idle",
+      "whileStreaming": false
+    },
+    {
+      "ms": 5118,
+      "kind": "connector_read",
+      "after": 0,
+      "seqs": [
+        1
+      ],
+      "whileStreaming": false
+    },
+    {
+      "ms": 5120,
+      "kind": "agent_start"
+    },
+    {
+      "ms": 5197,
+      "kind": "host_receipt",
+      "seq": 1,
+      "entryId": "a4738564"
+    },
+    {
+      "ms": 5197,
+      "kind": "provider_request",
+      "request": 1,
+      "seqs": [
+        1
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 5197,
+      "kind": "probe",
+      "seq": 2,
+      "scenario": "busy-with-7s-provider-delay",
+      "whileStreaming": true
+    },
+    {
+      "ms": 5197,
+      "kind": "injected_provider_delay",
+      "msDelay": 7000
+    },
+    {
+      "ms": 10127,
+      "kind": "connector_read",
+      "after": 1,
+      "seqs": [
+        2
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 15136,
+      "kind": "connector_read",
+      "after": 1,
+      "seqs": [
+        2
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 17553,
+      "kind": "tool_start",
+      "name": "cafe_room_reply"
+    },
+    {
+      "ms": 17556,
+      "kind": "connector_read",
+      "after": 1,
+      "seqs": [
+        2
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 17558,
+      "kind": "room_reply",
+      "probeSeq": 1,
+      "answerSeq": 3
+    },
+    {
+      "ms": 17563,
+      "kind": "provider_request",
+      "request": 2,
+      "seqs": [
+        1
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 20150,
+      "kind": "connector_read",
+      "after": 1,
+      "seqs": [
+        2,
+        3
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 23722,
+      "kind": "agent_settled",
+      "aborted": false
+    },
+    {
+      "ms": 25157,
+      "kind": "connector_read",
+      "after": 1,
+      "seqs": [
+        2,
+        3
+      ],
+      "whileStreaming": false
+    },
+    {
+      "ms": 25159,
+      "kind": "agent_start"
+    },
+    {
+      "ms": 25161,
+      "kind": "host_receipt",
+      "seq": 2,
+      "entryId": "bab41be0"
+    },
+    {
+      "ms": 25161,
+      "kind": "provider_request",
+      "request": 3,
+      "seqs": [
+        1,
+        2
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 28473,
+      "kind": "tool_start",
+      "name": "cafe_room_reply"
+    },
+    {
+      "ms": 28475,
+      "kind": "connector_read",
+      "after": 2,
+      "seqs": [
+        3
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 28477,
+      "kind": "room_reply",
+      "probeSeq": 2,
+      "answerSeq": 4
+    },
+    {
+      "ms": 28479,
+      "kind": "provider_request",
+      "request": 4,
+      "seqs": [
+        1,
+        2
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 30162,
+      "kind": "connector_read",
+      "after": 2,
+      "seqs": [
+        3,
+        4
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 31391,
+      "kind": "agent_settled",
+      "aborted": false
+    },
+    {
+      "ms": 31451,
+      "kind": "probe",
+      "seq": 5,
+      "scenario": "controlled-transport-interruption",
+      "whileStreaming": false
+    },
+    {
+      "ms": 35170,
+      "kind": "transport_failure"
+    },
+    {
+      "ms": 40179,
+      "kind": "transport_failure"
+    },
+    {
+      "ms": 40238,
+      "kind": "transport_restored"
+    },
+    {
+      "ms": 45196,
+      "kind": "connector_read",
+      "after": 4,
+      "seqs": [
+        5
+      ],
+      "whileStreaming": false
+    },
+    {
+      "ms": 45197,
+      "kind": "agent_start"
+    },
+    {
+      "ms": 45198,
+      "kind": "host_receipt",
+      "seq": 5,
+      "entryId": "a7d693d9"
+    },
+    {
+      "ms": 45198,
+      "kind": "provider_request",
+      "request": 5,
+      "seqs": [
+        1,
+        2,
+        5
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 49052,
+      "kind": "tool_start",
+      "name": "cafe_room_reply"
+    },
+    {
+      "ms": 49054,
+      "kind": "connector_read",
+      "after": 5,
+      "seqs": [],
+      "whileStreaming": true
+    },
+    {
+      "ms": 49055,
+      "kind": "room_reply",
+      "probeSeq": 5,
+      "answerSeq": 6
+    },
+    {
+      "ms": 49057,
+      "kind": "provider_request",
+      "request": 6,
+      "seqs": [
+        1,
+        2,
+        5
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 50213,
+      "kind": "connector_read",
+      "after": 5,
+      "seqs": [
+        6
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 51462,
+      "kind": "agent_settled",
+      "aborted": false
+    },
+    {
+      "ms": 51518,
+      "kind": "driver_command",
+      "command": "pause"
+    },
+    {
+      "ms": 51519,
+      "kind": "sdk_session_disposed"
+    },
+    {
+      "ms": 51519,
+      "kind": "probe",
+      "seq": 7,
+      "scenario": "sdk-session-restore",
+      "whileStreaming": false
+    },
+    {
+      "ms": 51524,
+      "kind": "driver_command",
+      "command": "connect"
+    },
+    {
+      "ms": 51526,
+      "kind": "connector_read",
+      "after": 6,
+      "seqs": [
+        7
+      ],
+      "whileStreaming": false
+    },
+    {
+      "ms": 56530,
+      "kind": "connector_read",
+      "after": 6,
+      "seqs": [
+        7
+      ],
+      "whileStreaming": false
+    },
+    {
+      "ms": 56531,
+      "kind": "agent_start"
+    },
+    {
+      "ms": 56532,
+      "kind": "host_receipt",
+      "seq": 7,
+      "entryId": "51818ac6"
+    },
+    {
+      "ms": 56532,
+      "kind": "provider_request",
+      "request": 7,
+      "seqs": [
+        1,
+        2,
+        5,
+        7
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 60207,
+      "kind": "tool_start",
+      "name": "cafe_room_reply"
+    },
+    {
+      "ms": 60209,
+      "kind": "connector_read",
+      "after": 7,
+      "seqs": [],
+      "whileStreaming": true
+    },
+    {
+      "ms": 60210,
+      "kind": "room_reply",
+      "probeSeq": 7,
+      "answerSeq": 8
+    },
+    {
+      "ms": 60212,
+      "kind": "provider_request",
+      "request": 8,
+      "seqs": [
+        1,
+        2,
+        5,
+        7
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 61542,
+      "kind": "connector_read",
+      "after": 7,
+      "seqs": [
+        8
+      ],
+      "whileStreaming": true
+    },
+    {
+      "ms": 62618,
+      "kind": "agent_settled",
+      "aborted": false
+    },
+    {
+      "ms": 66556,
+      "kind": "connector_read",
+      "after": 8,
+      "seqs": [],
+      "whileStreaming": false
+    },
+    {
+      "ms": 71566,
+      "kind": "connector_read",
+      "after": 8,
+      "seqs": [],
+      "whileStreaming": false
+    }
+  ],
+  "previousRun": {
+    "passed": false,
+    "modelRequests": 10,
+    "criterion": "Observed causal order for busy-with-7s-provider-delay",
+    "threadedReplies": 4,
+    "automaticDeliveries": 3,
+    "busyCase": "Already-running model called read, reply and done for #2. Its persisted manual-read/consumed records exist; no automatic delivery for #2. This is not human intervention, but it does not establish a new wake.",
+    "conversationalUserInputs": 0,
+    "ordinaryConfigUnchanged": true
+  },
+  "evidenceBoundary": "Local driver observed SDK persistence and real provider HTTP requests. Same-process instrumentation is not tamper-resistant. No private transcript or credentials are included.",
+  "memberCredentialInModelRequestBodies": false
+}
