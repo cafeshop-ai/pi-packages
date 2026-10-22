@@ -2,6 +2,8 @@ package collaboration
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -150,4 +152,54 @@ func TestPreviewShowsMinimalMetadataWithoutJoining(t *testing.T) {
 	}
 	call(t, s, map[string]any{"op": "revoke", "roomId": id}, owner, 200)
 	call(t, s, map[string]any{"op": "preview", "roomId": id, "invite": invite}, "", 403)
+}
+
+func TestTaskCreateRetryIsRecognisedAfterLaterEdits(t *testing.T) {
+	s := store(t)
+	id, owner := create(t, s)
+	ai := join(t, s, id, invitation(t, s, id, owner), "Retry AI")
+	aiToken, aiID := ai["token"].(string), ai["memberId"].(string)
+	original := map[string]any{"op": "task", "roomId": id, "action": "create", "id": "independent-replay", "title": "Original title"}
+	first := call(t, s, original, aiToken, 200)
+	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": first["id"], "title": "Renamed later"}, owner, 200)
+	// The creation response was lost and the creator retries the same request after someone renamed the task.
+	again := call(t, s, original, aiToken, 200)
+	if again["id"] != first["id"] || again["title"] != "Renamed later" || again["request"] != nil || again["key"] != nil {
+		t.Fatalf("a retry must return the task as it is now, without internals: %v", again)
+	}
+	for _, other := range []map[string]any{{"title": "Another title"}, {"title": "Original title", "assignee": aiID}, {"title": "Original title", "status": "doing"}} {
+		retry := map[string]any{"op": "task", "roomId": id, "action": "create", "id": "independent-replay"}
+		for k, v := range other {
+			retry[k] = v
+		}
+		call(t, s, retry, aiToken, 409)
+	}
+	if tasks := call(t, s, map[string]any{"op": "read", "roomId": id}, owner, 200)["tasks"].([]any); len(tasks) != 1 || tasks[0].(map[string]any)["request"] != nil {
+		t.Fatalf("no duplicate task and no fingerprint in reads: %v", tasks)
+	}
+
+	// A task saved before fingerprints existed keeps the old comparison against its current title.
+	path := filepath.Join(s.directory, id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var room map[string]any
+	if err := json.Unmarshal(data, &room); err != nil {
+		t.Fatal(err)
+	}
+	delete(room["tasks"].([]any)[0].(map[string]any), "request")
+	data, _ = json.Marshal(room)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := New(s.directory, testOrigin, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call(t, legacy, original, aiToken, 409)
+	original["title"] = "Renamed later"
+	if same := call(t, legacy, original, aiToken, 200); same["id"] != first["id"] {
+		t.Fatalf("legacy retry must match the current title: %v", same)
+	}
 }

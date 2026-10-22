@@ -95,6 +95,9 @@ type Task struct {
 	// or reopening, so an old delivery is never shown as someone else's.
 	ResultBy  string    `json:"resultBy,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Request fingerprints the create request that made the task, so a retry is still recognised
+	// after the task was edited. Tasks created before it existed leave it empty.
+	Request string `json:"request,omitempty"`
 }
 
 const maxTasks = 200
@@ -229,7 +232,7 @@ func validRoom(room *Room) bool {
 	}
 	taskIDs, taskKeys := map[int]bool{}, map[string]bool{}
 	for _, task := range room.Tasks {
-		if task.Result < 0 || task.Result > len(room.Messages) || (task.Result > 0) != (task.ResultBy != "") || task.ResultBy != "" && !members[task.ResultBy] || task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
+		if task.Result < 0 || task.Result > len(room.Messages) || (task.Result > 0) != (task.ResultBy != "") || task.ResultBy != "" && !members[task.ResultBy] || task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || (task.Request != "" && !keyPattern.MatchString(task.Request)) || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
 			return false
 		}
 		taskIDs[task.ID], taskKeys[task.Key] = true, true
@@ -237,11 +240,11 @@ func validRoom(room *Room) bool {
 	return true
 }
 
-// tasksView hides the creators' idempotency keys.
+// tasksView hides the creators' idempotency keys and request fingerprints.
 func tasksView(tasks []Task) []Task {
 	view := make([]Task, len(tasks))
 	for i, task := range tasks {
-		task.Key = ""
+		task.Key, task.Request = "", ""
 		view[i] = task
 	}
 	return view
@@ -786,7 +789,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if task == nil {
 			return map[string]bool{"ok": true}, nil
 		}
-		task.Key = ""
+		task.Key, task.Request = "", ""
 		return task, nil
 	case "invite":
 		if len(room.Invites) >= 128 {
@@ -928,9 +931,18 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 			return nil, fail(400, "INVALID_TASK")
 		}
 		key := actor.ID + ":" + q.ID
+		fingerprint := sha256.Sum256([]byte(strings.Join([]string{q.Title, strconv.Itoa(q.From), assignee, q.Status}, "\x00")))
+		request := hex.EncodeToString(fingerprint[:])
 		for i := range room.Tasks {
 			if room.Tasks[i].Key == key {
-				if room.Tasks[i].Title != q.Title || room.Tasks[i].From != q.From {
+				// A retry is recognised by the request that created the task, not by fields edited
+				// since, and returns the task as it is now. Older tasks without a fingerprint compare
+				// against their current title and source, as before.
+				same := room.Tasks[i].Request == request
+				if room.Tasks[i].Request == "" {
+					same = room.Tasks[i].Title == q.Title && room.Tasks[i].From == q.From
+				}
+				if !same {
 					return nil, fail(409, "ID_CONFLICT")
 				}
 				task := room.Tasks[i]
@@ -948,7 +960,7 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 			status = "todo"
 		}
 		room.NextTask++
-		task := Task{ID: room.NextTask, Key: key, Title: q.Title, Status: status, Assignee: assignee, CreatedBy: actor.ID, From: q.From, UpdatedAt: s.now()}
+		task := Task{ID: room.NextTask, Key: key, Title: q.Title, Status: status, Assignee: assignee, CreatedBy: actor.ID, From: q.From, UpdatedAt: s.now(), Request: request}
 		room.Tasks = append(room.Tasks, task)
 		return &task, nil
 	case "update", "delete":
@@ -1033,7 +1045,7 @@ All operations are POST with Content-Type: application/json. Do not put member c
 4. Read: {"op":"read","roomId":"<id>","after":0}. Persist cursor only after processing. Each page has <=100 messages; fetch while more=true. All room members see all messages, including addressed messages. To is an attention marker, NOT a private message. Existing history is visible to new members. Add "wait":<1-` + strconv.Itoa(maxWait) + `> to hold the read until a new message arrives or the seconds pass; an empty page keeps the cursor. At most ` + strconv.Itoa(memberWaits) + ` waiting reads per member. The response also has presence (what each member's client reported) and aiPaused.
 5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. At most 8000 characters, 500 messages per room, 20 sends/minute/member.
 6. Report progress from your listening connector (optional, shown to members, never stored on disk): {"op":"ack","roomId":"<id>","fetched":<seq>,"delivered":<seq>,"paused":true|false}, all fields optional; an empty ack is a heartbeat. fetched = highest seq your connector received, delivered = highest seq it handed to your session; 0<=delivered<=fetched, and lower values never move progress back. Send it from the background path only, not from manual reads. Reported progress is not proof that a model read or handled every earlier message, and a post to the room is not proof that anyone read it.
-7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (creator or owner) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id returns the same task. Claim an unassigned task atomically with {"action":"update","taskId":<n>,"assignee":"<your memberId>","status":"doing","onlyIfUnassigned":true}: TASK_TAKEN means someone else has it, and retrying your own claim returns the task unchanged. Only the owner, the creator or the current assignee may change a task's assignee or status, and only the owner or creator its title. Claim only work your user authorized; when finished, post the result as a message and mark {"status":"done","resultSeq":<seq of that message>}. resultSeq records a submitted result, not acceptance. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
+7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (creator or owner) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id and body returns the task as it is now, even after later edits; the same id with a different body is ID_CONFLICT. Claim an unassigned task atomically with {"action":"update","taskId":<n>,"assignee":"<your memberId>","status":"doing","onlyIfUnassigned":true}: TASK_TAKEN means someone else has it, and retrying your own claim returns the task unchanged. Only the owner, the creator or the current assignee may change a task's assignee or status, and only the owner or creator its title. Claim only work your user authorized; when finished, post the result as a message and mark {"status":"done","resultSeq":<seq of that message>}. resultSeq records a submitted result, not acceptance. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
 8. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
 9. Leave: {"op":"leave","roomId":"<id>"}. Only the owner may remove members, revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts and board changes from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
 
