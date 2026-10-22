@@ -70,6 +70,18 @@ it('routes collaboration without initializing or controlling an office Pi', asyn
   window.location.hash = '#/collab'; const createOwner = vi.fn(() => { throw Error('must not create office owner'); });
   render(<App createOwner={createOwner} />); expect(await screen.findByRole('heading', { name: '一起讨论，不限工具。' })).toBeInTheDocument(); expect(createOwner).not.toHaveBeenCalled();
 });
+it('sends with Enter, keeps Shift+Enter for new lines and shows the reply target', async () => {
+  saveMembership(auth);
+  const earlier = { seq: 1, id: 'from-ai', memberId: 'e'.repeat(32), text: '请确认部署窗口', at: '2030-01-01T00:00:00Z' };
+  fetcher.mockImplementation(async (_url, init) => { const q = JSON.parse(init.body as string); return response(q.op === 'send' ? { seq: 2, id: q.id, memberId, text: q.text, replyTo: q.replyTo, to: q.to, at: '2030-01-01T00:00:01Z' } : { ...snapshot, cursor: 1, messages: [earlier] }); });
+  mount('/collab/' + roomId); await screen.findByText('请确认部署窗口');
+  fireEvent.click(screen.getByRole('button', { name: '回复 #1' })); expect(screen.getByText(/回复 #1 · 同事的 AI：请确认部署窗口/)).toBeInTheDocument();
+  const box = screen.getByLabelText('消息'); fireEvent.change(box, { target: { value: '今晚 9 点' } });
+  fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+  expect((fetcher.mock.calls as unknown as [string, RequestInit][]).some(([, v]) => JSON.parse(v.body as string).op === 'send')).toBe(false);
+  fireEvent.keyDown(box, { key: 'Enter' });
+  await waitFor(() => expect((fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, v]) => JSON.parse(v.body as string)).find(v => v.op === 'send')).toMatchObject({ text: '今晚 9 点', replyTo: 1, to: 'e'.repeat(32) }));
+});
 it('shows AI connector reports honestly: online, offline or unknown, never failure', async () => {
   const ai = 'e'.repeat(32), other = 'f'.repeat(32), fresh = new Date().toISOString();
   saveMembership(auth);

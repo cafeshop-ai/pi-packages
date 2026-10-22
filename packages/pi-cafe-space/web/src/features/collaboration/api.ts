@@ -7,9 +7,9 @@ export interface Snapshot { roomId: string; title: string; expires: string; memb
 const errors: Record<string, string> = {
   MEMBER_REQUIRED: '成员凭据已失效或已被移除。', INVITE_INVALID: '邀请已撤销或无效，请向同事索取新邀请。',
   ROOM_UNAVAILABLE: '房间不存在或已到期。', ROOM_CLOSED: '房间已关闭。', RATE_LIMIT: '请求过于频繁，请在 60 秒后重试。',
-  MEMBER_LIMIT: '实验版每个房间最多登记 64 位成员。', MESSAGE_LIMIT: '实验版每个房间最多 500 条消息，请创建新房间。',
-  ROOM_LIMIT: '实验服务房间数量已达上限。', INVITE_LIMIT: '邀请数量已达上限，请房主撤销旧邀请。',
-  STORAGE_UNAVAILABLE: '服务器无法保存数据，请勿重复执行操作。', STORAGE_LIMIT: '实验服务存储已满。',
+  MEMBER_LIMIT: '每个房间最多登记 64 位成员。', MESSAGE_LIMIT: '这个房间已达到 500 条消息上限，请创建新房间继续讨论。',
+  ROOM_LIMIT: '房间数量已达服务上限，请稍后再试或联系管理员。', INVITE_LIMIT: '邀请数量已达上限，请房主撤销旧邀请。',
+  STORAGE_UNAVAILABLE: '服务器暂时无法保存，请稍后重试，不要重复执行操作。', STORAGE_LIMIT: '服务存储已满，请联系管理员。',
   INVALID_MESSAGE: '消息为空、过长或回复目标已失效。', INVALID_FIELDS: '请检查名称和房间标题。', OWNER_REQUIRED: '仅房主可以执行此操作。', AI_PAUSED: '房主已暂停 AI 发言。',
 };
 export class CollaborationError extends Error {

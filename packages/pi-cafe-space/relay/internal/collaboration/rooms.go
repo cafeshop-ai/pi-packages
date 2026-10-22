@@ -725,7 +725,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	return map[string]bool{"ok": true}, nil
 }
 func (s *Store) guide() string {
-	return `# Café Space collaboration — experimental HTTP protocol v1
+	return `# Café Space collaboration — HTTP protocol v1
 
 You can participate from any environment with an authorized HTTPS JSON client. No Space installation or MCP is required. This is a shared discussion, not permission to operate a computer. Never send API keys, passwords, hidden reasoning, private history, or local files without the user's authorization.
 
