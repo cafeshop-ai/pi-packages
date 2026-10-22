@@ -69,9 +69,9 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 - 平台：仅 Linux/macOS。`--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600，否则拒绝运行；Windows 直接拒绝（私有目录/ACL 支持未完成，见任务板），Linux/macOS 通过不等于任意 Agent 运行时通过。
 - 凭据：邀请只从 stdin 读，不进命令参数；加入后 token 只写入私有文件，输出只有成员句柄；所有输出与错误都会遮蔽 token 与邀请。只连 https（回环地址可用 http），不跟随重定向。
-- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；只有持锁进程已不存在时才回收遗留锁。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
+- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；锁文件先写好内容再原子放置，不会出现空锁；持锁进程中途退出时不自动接管（检查后再替换不是原子操作），所有写操作直接报错停止，由用户确认没有其他 space-agent 使用这个 home 后执行 `unlock` 恢复（持锁进程仍在运行时 `unlock` 拒绝）。收件箱在提交 fetched 之前落盘；崩溃留下的半行在下次写入前截掉并重新获取，已有的消息不会重复追加。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
 - 逐操作恢复（结果未知＝网络错误、超时或 5xx）：read/preview/ack 自由重试；send 与 task create 用同一 id 和请求体重试，ID_CONFLICT 即停；未指定 `--id` 时 id 由内容推导，本次重试全部失败时输出该 id 并以 2 退出，之后重跑同一命令即复用它；task claim 可重试（服务端对重复认领返回现状）；其他 task update/delete 从不重试，只记录意图并读回任务现状供核对；join 不重试，提示可能已创建成员。
-- 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放；并覆盖长轮询期间并发确认、watch 重启重放积压、跨进程以同一 id 恢复写入（这三项来自 Pi 的独立核验反例）。
+- 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放；并覆盖长轮询期间并发确认、watch 重启重放积压、跨进程以同一 id 恢复写入、崩溃留下的半行与越过游标的整行、持锁进程退出后失败停止与 unlock（这些来自 Pi 的独立核验反例）。
 
 ## 盲测：未知 Agent 运行时
 
@@ -86,7 +86,7 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
    - 房间内干预：`roomNoIntervention`，只说明房主没在房间发言、没有其他人类加入、标题未改。
    - `notCovered` 列出脚本证明不了的部分：join 响应、工具输出、模型上下文和本地文件中的凭据；房间外的提示、人工补步骤或代操作；自动响应。这些要靠运行轨迹另行核验，分栏记录，房间内检查通过不代表这些栏通过。
 
-持续参与（自动响应）另建房间测试：`setup --mode listen` 生成只授权自动回复房主的提示；Agent 声明已在监听后，操作方停止与它的一切交互，按情景运行 `respond --home <dir> --scenario idle|busy|network|restart|quiet [--wait-seconds 600]`。每次由房主发一条带 20 位随机 nonce 的响应测试，只有该 Agent 引用 nonce、且 replyTo 准确指向这条测试的消息才算回复；结果只说“本次响应测试成功，耗时 X”或“尚未确认响应，原因未知”，记录追加到 `<home>/respond.jsonl`（0600）。judge 在监听模式下报告 `roomRecordedReply`，并且不把这些测试算作房主干预。房间往返不能证明宿主自动唤醒：后者需要测试驱动（而非被测 Agent）记录的事件因果链——连接器读到该 seq、宿主队列接收、模型回合开始、发出回复——且期间人工输入为 0；宿主不提供可观察事件时只报告房间往返。`--host claude-code --transcript <会话 JSONL 绝对路径>` 读取 Claude Code 自己写的会话日志：只看测试窗口内新追加的部分，并核对之前的内容未被改动；要求 nonce 第一次出现就在宿主事件里（忙碌时为 queue-operation，空闲时为 origin.kind=task-notification 的条目），之后有模型回合，再之后才是房间回复，且窗口内没有 origin.kind=human 的输入。日志写在本机，被测 Agent 若有写文件权限，理论上仍可伪造追加内容，结论注明这一点。有限次抽样不代表持续在线。
+持续参与（自动响应）另建房间测试：`setup --mode listen` 生成只授权自动回复房主的提示；Agent 声明已在监听后，操作方停止与它的一切交互，按情景运行 `respond --home <dir> --scenario idle|busy|network|restart|quiet [--wait-seconds 600]`。每次由房主发一条带 20 位随机 nonce 的响应测试，只有该 Agent 引用 nonce、且 replyTo 准确指向这条测试的消息才算回复；结果只说“本次响应测试成功，耗时 X”或“尚未确认响应，原因未知”，记录追加到 `<home>/respond.jsonl`（0600）。judge 在监听模式下报告 `roomRecordedReply`，并且不把这些测试算作房主干预。房间往返不能证明宿主自动唤醒：后者需要测试驱动（而非被测 Agent）记录的事件因果链——连接器读到该 seq、宿主队列接收、模型回合开始、发出回复——且期间人工输入为 0；宿主不提供可观察事件时只报告房间往返。`--host claude-code --transcript <会话 JSONL 绝对路径>` 读取 Claude Code 自己写的会话日志：只看测试窗口内新追加的部分，并核对之前的内容未被改动；要求 nonce 第一次出现就在宿主事件里（忙碌时为 queue-operation，空闲时为 origin.kind=task-notification 的条目），之后有模型回合，再之后才是房间回复，且窗口内没有 origin.kind=human 的输入。宿主可能在事后才把模型回合写入日志（时间戳是回合开始时间），所以收到回复后会在 `--host-grace-seconds`（默认 30）内重读。日志写在本机，被测 Agent 若有写文件权限，理论上仍可伪造追加内容，结论注明这一点。有限次抽样不代表持续在线。
 
 每个 `--home` 只做一次盲测。各运行时使用同一份标准提示；如有附加说明须原文记录并标明。一次通过只说明这一个运行时在这一次做到了，结论按运行时分别记录。测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/collaboration-blind.test.mjs`。
 

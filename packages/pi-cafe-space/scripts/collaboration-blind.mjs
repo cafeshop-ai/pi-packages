@@ -120,7 +120,7 @@ function hostEvidence(host, path, before, nonce, answer) {
 }
 const seconds = ms => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`; };
 
-async function respond({ home, waitSeconds, scenario, host, transcript }) {
+async function respond({ home, waitSeconds, scenario, host, transcript, graceSeconds }) {
   const run = JSON.parse(readPrivate(join(home, 'owner.json'))); secrets.add(run.token); secrets.add(run.invite);
   const origin = checkOrigin(run.origin); const room = await call(origin, { op: 'read', roomId: run.roomId, after: 0 }, run.token);
   const agents = room.members.filter(m => m.kind === 'ai' && !m.removed);
@@ -135,7 +135,12 @@ async function respond({ home, waitSeconds, scenario, host, transcript }) {
     const page = await call(origin, { op: 'read', roomId: run.roomId, after, wait: Math.max(1, Math.min(25, Math.floor((deadline - Date.now()) / 1000))) }, run.token);
     answer = answerTo(probe, page.messages, agent.id); after = page.cursor;
   }
-  const evidence = host ? hostEvidence(host, transcript, before, nonce, answer) : undefined;
+  // Hosts write their log after the fact (Claude Code stamps a model turn when it starts but may
+  // write it seconds later), so a missing event or turn is re-read for a while before judging.
+  let evidence = host ? hostEvidence(host, transcript, before, nonce, answer) : undefined;
+  for (const until = Date.now() + graceSeconds * 1000; answer && evidence && !evidence.verdict.startsWith('宿主日志显示') && (!evidence.event || !evidence.turn) && Date.now() < until;) {
+    await new Promise(ok => setTimeout(ok, 2000)); evidence = hostEvidence(host, transcript, before, nonce, answer);
+  }
   const record = { n, runId, scenario, probeSeq: probe.seq, sentAt: probe.at, waitSeconds, answerSeq: answer?.seq, answeredAt: answer?.at,
     took: answer ? seconds(Date.parse(answer.at) - Date.parse(probe.at)) : undefined, driverMs: Math.round(performance.now() - started), ...(evidence ? { hostEvidence: evidence } : {}) };
   writePrivate(log, (existsSync(log) ? readPrivate(log) : '') + JSON.stringify(record) + '\n');
@@ -209,13 +214,13 @@ async function judge({ home }) {
 }
 
 try {
-  const { positionals: [command], values } = parseArgs({ allowPositionals: true, options: { origin: { type: 'string' }, home: { type: 'string' }, minutes: { type: 'string', default: '15' }, mode: { type: 'string', default: 'task' }, 'wait-seconds': { type: 'string', default: '600' }, scenario: { type: 'string', default: 'idle' }, host: { type: 'string' }, transcript: { type: 'string' } } });
+  const { positionals: [command], values } = parseArgs({ allowPositionals: true, options: { origin: { type: 'string' }, home: { type: 'string' }, minutes: { type: 'string', default: '15' }, mode: { type: 'string', default: 'task' }, 'wait-seconds': { type: 'string', default: '600' }, scenario: { type: 'string', default: 'idle' }, host: { type: 'string' }, transcript: { type: 'string' }, 'host-grace-seconds': { type: 'string' } } });
   const home = privateHome(values.home);
   if (command === 'setup') { if (!['task', 'listen'].includes(values.mode)) throw new Fail('--mode is task or listen'); await setup({ origin: checkOrigin(values.origin ?? ''), home, minutes: Number(values.minutes) || 15, mode: values.mode }); }
   else if (command === 'respond') {
     if (!scenarios.includes(values.scenario)) throw new Fail(`--scenario is one of ${scenarios.join(', ')}`);
     if (values.host && (!hosts[values.host] || !values.transcript?.startsWith('/'))) throw new Fail(`--host is one of ${Object.keys(hosts).join(', ')} and needs an absolute --transcript`);
-    await respond({ home, waitSeconds: Number(values['wait-seconds']) || 600, scenario: values.scenario, host: values.host, transcript: values.transcript });
+    await respond({ home, waitSeconds: Number(values['wait-seconds']) || 600, scenario: values.scenario, host: values.host, transcript: values.transcript, graceSeconds: Number(values['host-grace-seconds'] ?? 30) });
   }
   else if (command === 'judge') await judge({ home });
   else throw new Fail('usage: collaboration-blind setup --origin <https url> --home <dir> [--minutes 15] [--mode task|listen] | respond --home <dir> [--wait-seconds 600] | judge --home <dir>');

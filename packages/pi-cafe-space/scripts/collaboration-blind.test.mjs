@@ -118,10 +118,13 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
   const log = join(dir, 'session.jsonl'); writeFileSync(log, JSON.stringify({ type: 'user', origin: { kind: 'human' }, timestamp: new Date().toISOString(), message: { content: '开始监听' } }) + '\n', { mode: 0o600 });
   const line = entry => appendFileSync(log, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n');
   const run = async (scenario, onProbe) => { const stop = listen(roomId, me, true, onProbe);
-    const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log]); await stop(); return r.json(); };
+    const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log, '--host-grace-seconds', '5']); await stop(); return r.json(); };
   const wake = (m, nonce) => line({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><event>[msg #${m.seq}] ${nonce}</event></task-notification>` });
   const ok = await run('idle', async (m, nonce) => { wake(m, nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); });
   assert.match(ok.hostAutoWake, /^宿主日志显示/); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
+  // As in a real session: the turn is stamped when it starts but reaches the log after the reply.
+  const late = await run('idle', async (m, nonce) => { wake(m, nonce); const started = new Date().toISOString(); setTimeout(() => line({ type: 'assistant', timestamp: started, message: { content: [] } }), 3000); });
+  assert.match(late.hostAutoWake, /^宿主日志显示/);
   const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(prompted.hostAutoWake, '未验证：期间有 1 次人工输入');
   const typed = await run('quiet', async (m, nonce) => { line({ type: 'user', origin: { kind: 'human' }, message: { content: `回复 ${nonce}` } }); line({ type: 'assistant', message: { content: [] } }); });

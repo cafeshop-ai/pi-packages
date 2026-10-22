@@ -147,6 +147,32 @@ test('a write with an unknown result can be retried by a later run with the same
   assert.equal(agent(h, ['task', 'create', '--title', '跨进程恢复的任务', '--id', id]).json().id, created.id, 'the printed id is the one a re-run uses');
 });
 
+test('after a crash, a half-written inbox line is cut off and fetched again, never glued on or duplicated', { skip: !binary }, async () => {
+  const h = home('crash'); assert.equal(agent(h, ['join', '--name', 'Crash agent'], link).code, 0);
+  await api({ op: 'send', roomId: owner.roomId, id: 'crash-message-1', text: '崩溃前最后一条' }, owner.token);
+  assert.equal(agent(h, ['sync']).code, 0);
+  const lines = readFileSync(join(h, 'inbox.jsonl'), 'utf8').trim().split('\n'); const seqs = lines.map(l => JSON.parse(l).seq);
+  // The crash: the last line was half written, and the cursor never moved past several whole lines.
+  writeFileSync(join(h, 'inbox.jsonl'), lines.slice(0, -1).join('\n') + '\n{"seq":', { mode: 0o600 });
+  const state = JSON.parse(readFileSync(join(h, 'state.json'), 'utf8')); writeFileSync(join(h, 'state.json'), JSON.stringify({ ...state, fetched: seqs[0] }), { mode: 0o600 });
+  assert.equal(agent(h, ['sync']).code, 0);
+  const after = readFileSync(join(h, 'inbox.jsonl'), 'utf8'); assert(after.endsWith('\n'));
+  assert.deepEqual(after.trim().split('\n').map(l => JSON.parse(l).seq), seqs, 'every message once, in order, the cut-off one fetched again');
+  assert.equal(agent(h, ['next']).json().seq, seqs[0]);
+});
+
+test('a lock left by a process that died stops every writer until unlock', { skip: !binary }, () => {
+  const h = home('lock'); assert.equal(agent(h, ['join', '--name', 'Lock agent'], link).code, 0);
+  const dead = spawnSync(process.execPath, ['-e', '']).pid; const lock = join(h, 'state.lock');
+  writeFileSync(lock, `${dead} crashed\n`, { mode: 0o600 });
+  const started = Date.now(); const blocked = agent(h, ['next']);
+  assert.equal(blocked.code, 1); assert.match(blocked.err, /unlock/); assert(Date.now() - started < 5_000, 'fails at once instead of waiting');
+  writeFileSync(lock, `${process.pid} alive\n`, { mode: 0o600 });
+  assert.match(agent(h, ['unlock']).err, /still running/);
+  writeFileSync(lock, `${dead} crashed\n`, { mode: 0o600 });
+  assert.equal(agent(h, ['unlock']).json().unlocked, true); assert.equal(agent(h, ['next']).code, 0);
+});
+
 test('send retries safely, claims are idempotent and unknown updates are never replayed', { skip: !binary }, async () => {
   const a = home('claim-a'), b = home('claim-b');
   assert.equal(agent(a, ['join', '--name', 'Claimer A'], link).code, 0); assert.equal(agent(b, ['join', '--name', 'Claimer B'], link).code, 0);
