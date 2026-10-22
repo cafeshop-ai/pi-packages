@@ -173,6 +173,29 @@ test('a lock left by a process that died stops every writer until unlock', { ski
   assert.equal(agent(h, ['unlock']).json().unlocked, true); assert.equal(agent(h, ['next']).code, 0);
 });
 
+// Fault injection: writeSync may legally write less than asked (short), or nothing at all (zero).
+const faulty = mode => { const path = join(dir, `faulty-${mode}.mjs`); writeFileSync(path, `
+import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const original = fs.writeSync; const limit = ${mode === 'zero' ? 120 : 32};
+fs.writeSync = (fd, data, ...rest) => {
+  const bytes = typeof data === 'string' ? Buffer.from(data) : data; const [offset = 0, length = bytes.length - offset, position] = typeof data === 'string' ? [0, undefined, rest[0]] : rest;
+  if (length <= limit) return original(fd, bytes, offset, length, position);
+  return ${mode === 'zero' ? '0' : 'original(fd, bytes, offset, limit, position)'};
+};
+syncBuiltinESMExports();`); return path; };
+const agentWith = (preload, h, args) => { const r = spawnSync(process.execPath, ['--import', preload, client, '--home', h, ...args], { encoding: 'utf8', timeout: 60_000 }); outputs.push(r.stdout, r.stderr); return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }; };
+test('short writes are completed and a write that makes no progress never commits the cursor', { skip: !binary }, async () => {
+  const h = home('short'); assert.equal(agent(h, ['join', '--name', 'Short write agent'], link).code, 0);
+  await api({ op: 'send', roomId: owner.roomId, id: 'short-write-1', text: '这一条要完整落盘'.repeat(8) }, owner.token);
+  assert.equal(agentWith(faulty('short'), h, ['sync']).code, 0);
+  const lines = readFileSync(join(h, 'inbox.jsonl'), 'utf8').trim().split('\n'); assert(lines.every(l => JSON.parse(l).seq > 0));
+  assert(lines.some(l => l.includes('这一条要完整落盘')));
+  const z = home('zero'); assert.equal(agent(z, ['join', '--name', 'Zero write agent'], link).code, 0);
+  const stalled = agentWith(faulty('zero'), z, ['sync']); assert.equal(stalled.code, 1); assert.match(stalled.err, /no progress/);
+  assert.equal(agent(z, ['status']).json().fetched, 0, 'the cursor did not move past what the inbox holds');
+  assert.equal(agent(z, ['sync']).code, 0); assert.equal(agent(z, ['next']).code, 0); assert(agent(z, ['next']).json().seq > 0);
+});
+
 test('send retries safely, claims are idempotent and unknown updates are never replayed', { skip: !binary }, async () => {
   const a = home('claim-a'), b = home('claim-b');
   assert.equal(agent(a, ['join', '--name', 'Claimer A'], link).code, 0); assert.equal(agent(b, ['join', '--name', 'Claimer B'], link).code, 0);

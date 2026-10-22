@@ -53,10 +53,20 @@ function readPrivate(path, fallback) {
   if (!info.isFile() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${path} must be a file you own with mode 0600`);
   return readFileSync(path, 'utf8');
 }
+// writeSync may legally write fewer bytes than asked: keep going until all of it is written, and
+// treat a write that makes no progress as a failure rather than a finished file.
+function writeAll(fd, text, position = 0) {
+  const data = Buffer.from(text);
+  for (let done = 0; done < data.length;) {
+    const n = writeSync(fd, data, done, data.length - done, position + done);
+    if (n <= 0) throw new Fail(`write made no progress after ${done} of ${data.length} bytes`);
+    done += n;
+  }
+}
 function writePrivate(path, text) {
   const tmp = `${path}.${process.pid}.tmp`;
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  try { writeAll(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path); syncDirectory(dirname(path));
 }
 // A rename survives power loss only once the directory entry is on disk too.
@@ -147,7 +157,7 @@ function appendInbox(home, messages) {
   const lines = messages.filter(m => !known.has(m.seq)).map(m => JSON.stringify({ seq: m.seq, id: m.id, memberId: m.memberId, text: m.text, to: m.to, replyTo: m.replyTo, at: m.at }) + '\n').join('');
   if (complete.length === text.length && !lines) return;
   const fd = openSync(path, 'r+'); const at = Buffer.byteLength(complete);
-  try { ftruncateSync(fd, at); writeSync(fd, lines, at); fsyncSync(fd); } finally { closeSync(fd); }
+  try { ftruncateSync(fd, at); writeAll(fd, lines, at); fsyncSync(fd); } finally { closeSync(fd); }
 }
 /** The next message that needs the agent: own messages are recorded as skipped, never silently consumed. */
 function pending(home, m, state) {

@@ -99,16 +99,20 @@ test('listen mode: a reply quoting the nonce with the exact replyTo is one room 
   let stop = listen(roomId, me, true);
   const exact = await blindAsync(['respond', '--home', h, '--scenario', 'idle', '--wait-seconds', '20']); await stop();
   assert.equal(exact.code, 0); assert.equal(exact.json().responded, true); assert.match(exact.json().label, /^本次响应测试成功，耗时/); assert.match(exact.json().hostAutoWake, /^未验证/);
+  // A busy agent can answer after a whole long poll has passed without news.
+  stop = listen(roomId, me, true, () => sleep(27_000));
+  const late = await blindAsync(['respond', '--home', h, '--scenario', 'busy', '--wait-seconds', '60']); await stop();
+  assert.equal(late.code, 0); assert.equal(late.json().responded, true);
   // A reply that quotes the nonce without pointing at the test does not count.
   stop = listen(roomId, me, false);
   const sloppy = await blindAsync(['respond', '--home', h, '--scenario', 'quiet', '--wait-seconds', '4']); await stop();
   assert.equal(sloppy.code, 1); assert.equal(sloppy.json().label, '尚未确认响应，原因未知');
   const verdict = blind(['judge', '--home', h]); const checks = Object.fromEntries(verdict.json().checks.map(c => [c.check, c]));
-  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /2 次响应测试中 1 次/);
+  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /3 次响应测试中 2 次/);
   assert.equal(checks.roomNoIntervention.ok, true, 'the tests themselves are not intervention');
   assert(verdict.json().notCovered.some(n => n.startsWith('自动响应（宿主唤醒）：未验证')));
   const log = readFileSync(join(h, 'respond.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
+  assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'busy', true], [3, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
 });
 
 test('host evidence: a Claude Code log counts only a host event, then a model turn, then the reply, with no human input', { skip: !binary }, async () => {
@@ -120,11 +124,20 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
   const run = async (scenario, onProbe) => { const stop = listen(roomId, me, true, onProbe);
     const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log, '--host-grace-seconds', '5']); await stop(); return r.json(); };
   const wake = (m, nonce) => line({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><event>[msg #${m.seq}] ${nonce}</event></task-notification>` });
-  const ok = await run('idle', async (m, nonce) => { wake(m, nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); });
+  const ok = await run('idle', async (m, nonce) => { wake(m, nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }); });
   assert.match(ok.hostAutoWake, /^宿主日志显示/); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
   // As in a real session: the turn is stamped when it starts but reaches the log after the reply.
   const late = await run('idle', async (m, nonce) => { wake(m, nonce); const started = new Date().toISOString(); setTimeout(() => line({ type: 'assistant', timestamp: started, message: { content: [] } }), 3000); });
   assert.match(late.hostAutoWake, /^宿主日志显示/);
+  // Pi's counterexamples: an input of unknown origin, a line that does not parse, and a person's
+  // input stamped inside the window but written after the chain already looked complete.
+  const shell = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', message: { content: '<bash-input> curl …</bash-input>' } }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(shell.hostAutoWake, '未验证：期间有 1 个无法确认来源的输入条目');
+  const garbled = await run('busy', async (m, nonce) => { wake(m, nonce); appendFileSync(log, '{"type":"user","origin":\n'); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(garbled.hostAutoWake, '未验证：日志有 1 行无法解析');
+  const afterwards = await run('busy', async (m, nonce) => { const when = new Date().toISOString(); wake(m, nonce); line({ type: 'assistant', message: { content: [] } });
+    setTimeout(() => line({ type: 'user', origin: { kind: 'human' }, timestamp: when, message: { content: '我来回' } }), 2500); });
+  assert.equal(afterwards.hostAutoWake, '未验证：期间有 1 次人工输入');
   const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(prompted.hostAutoWake, '未验证：期间有 1 次人工输入');
   const typed = await run('quiet', async (m, nonce) => { line({ type: 'user', origin: { kind: 'human' }, message: { content: `回复 ${nonce}` } }); line({ type: 'assistant', message: { content: [] } }); });

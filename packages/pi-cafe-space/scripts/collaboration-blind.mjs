@@ -45,9 +45,19 @@ function privateHome(home) {
   if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${home} must be a directory you own with mode 0700`);
   return home;
 }
+// writeSync may legally write fewer bytes than asked: keep going until all of it is written, and
+// treat a write that makes no progress as a failure rather than a finished file.
+function writeAll(fd, text, position = 0) {
+  const data = Buffer.from(text);
+  for (let done = 0; done < data.length;) {
+    const n = writeSync(fd, data, done, data.length - done, position + done);
+    if (n <= 0) throw new Fail(`write made no progress after ${done} of ${data.length} bytes`);
+    done += n;
+  }
+}
 function writePrivate(path, text) {
   const tmp = `${path}.${process.pid}.tmp`; const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  try { writeAll(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path);
 }
 function readPrivate(path) {
@@ -61,7 +71,8 @@ function checkOrigin(origin) {
   return url.origin;
 }
 async function call(origin, body, token) {
-  const response = await fetch(origin + '/api/collaboration', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+  // A long poll may legitimately take its whole wait, so the deadline covers it.
+  const response = await fetch(origin + '/api/collaboration', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(((body.wait ?? 0) + 20) * 1000),
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
   const json = await response.json().catch(() => ({}));
   if (!response.ok) throw new Fail(`${body.op}: HTTP ${response.status} ${json.error ?? ''}`.trim());
@@ -94,30 +105,41 @@ const scenarios = ['idle', 'busy', 'network', 'restart', 'quiet'];
 // Host adapters read the log the host writes itself, outside the agent's tools, and only the part
 // appended during the test window; the earlier part must be unchanged. The chain must show, in
 // order: a host event carrying the nonce (the first place the nonce appears at all), then a model
-// turn, then the reply in the room, with no human input anywhere in the window.
+// turn, then the reply in the room. Every input entry stamped inside the window must be one the
+// adapter positively knows is not a person; anything unknown, and any line that does not parse,
+// leaves the result unverified. This is a bounded look at a log that keeps growing, never proof
+// that the log is complete.
 const hosts = {
   // Claude Code: session JSONL. Monitor output reaches the model as a queue-operation (when busy)
-  // or a user entry with origin.kind task-notification (when idle); a person's prompt is a user
-  // entry with origin.kind human.
-  'claude-code': (entries, nonce) => {
+  // or a user entry with origin.kind task-notification (when idle). Tool results are user entries
+  // whose content is only tool_result blocks. origin.kind human is a person; anything else that
+  // is a user entry (a `!` shell input, a hook or peer message) is unknown.
+  'claude-code': (entries, nonce, windowEnd) => {
     const first = entries.find(e => JSON.stringify(e).includes(nonce));
     const event = first && (first.type === 'queue-operation' || first.type === 'attachment' || first.origin?.kind === 'task-notification') ? first : undefined;
+    const inputs = entries.filter(e => e.type === 'user' && (!e.timestamp || !windowEnd || Date.parse(e.timestamp) <= Date.parse(windowEnd)));
+    const toolResult = e => Array.isArray(e.message?.content) && e.message.content.length > 0 && e.message.content.every(c => c?.type === 'tool_result');
     return { event: event && { at: event.timestamp, kind: event.type === 'user' ? 'task-notification' : event.type },
       firstNonceIn: first ? (first.origin?.kind ?? first.type) : 'absent',
       turn: event && entries.find(e => e.type === 'assistant' && Date.parse(e.timestamp) >= Date.parse(event.timestamp))?.timestamp,
-      humanInputs: entries.filter(e => e.type === 'user' && e.origin?.kind === 'human').length };
+      humanInputs: inputs.filter(e => e.origin?.kind === 'human').length,
+      unknownInputs: inputs.filter(e => e.origin?.kind !== 'human' && e.origin?.kind !== 'task-notification' && !toolResult(e)).length };
   },
 };
 function snapshot(path) { const data = readFileSync(path); return { size: data.length, head: createHash('sha256').update(data).digest('hex') }; }
 function hostEvidence(host, path, before, nonce, answer) {
   const data = readFileSync(path); const unchanged = data.length >= before.size && createHash('sha256').update(data.subarray(0, before.size)).digest('hex') === before.head;
-  const entries = data.subarray(before.size).toString('utf8').split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const found = hosts[host](entries, nonce);
-  const verified = unchanged && !!answer && !!found.event && !!found.turn && found.humanInputs === 0 && Date.parse(found.turn) <= Date.parse(answer.at);
-  return { host, appendOnly: unchanged, ...found,
-    verdict: verified ? '宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，期间人工输入 0 次'
-      : `未验证：${!unchanged ? '窗口前的日志被改动' : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件` : !found.turn ? '没有找到之后的模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : '回复早于模型回合'}` };
+  // Only newline-terminated lines: the host may be writing the last one right now.
+  const lines = data.subarray(before.size).toString('utf8').split('\n').slice(0, -1).filter(Boolean);
+  const entries = lines.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); const broken = lines.length - entries.length;
+  const found = hosts[host](entries, nonce, answer?.at);
+  const reason = !unchanged ? '窗口前的日志被改动' : broken ? `日志有 ${broken} 行无法解析` : !answer ? '房间里没有回复' : !found.event ? `nonce 首次出现于 ${found.firstNonceIn}，不是宿主事件`
+    : !found.turn ? '没有找到之后的模型回合' : found.humanInputs ? `期间有 ${found.humanInputs} 次人工输入` : found.unknownInputs ? `期间有 ${found.unknownInputs} 个无法确认来源的输入条目`
+    : Date.parse(found.turn) > Date.parse(answer.at) ? '回复早于模型回合' : '';
+  return { host, appendOnly: unchanged, brokenLines: broken, observedUntil: new Date().toISOString(), ...found,
+    verdict: reason ? `未验证：${reason}` : '宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次' };
 }
+
 const seconds = ms => { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`; };
 
 async function respond({ home, waitSeconds, scenario, host, transcript, graceSeconds }) {
@@ -135,12 +157,11 @@ async function respond({ home, waitSeconds, scenario, host, transcript, graceSec
     const page = await call(origin, { op: 'read', roomId: run.roomId, after, wait: Math.max(1, Math.min(25, Math.floor((deadline - Date.now()) / 1000))) }, run.token);
     answer = answerTo(probe, page.messages, agent.id); after = page.cursor;
   }
-  // Hosts write their log after the fact (Claude Code stamps a model turn when it starts but may
-  // write it seconds later), so a missing event or turn is re-read for a while before judging.
-  let evidence = host ? hostEvidence(host, transcript, before, nonce, answer) : undefined;
-  for (const until = Date.now() + graceSeconds * 1000; answer && evidence && !evidence.verdict.startsWith('宿主日志显示') && (!evidence.event || !evidence.turn) && Date.now() < until;) {
-    await new Promise(ok => setTimeout(ok, 2000)); evidence = hostEvidence(host, transcript, before, nonce, answer);
-  }
+  // Hosts write their log after the fact (Claude Code stamps an entry when it starts but may write
+  // it seconds later), so the verdict is taken only after watching the log for the whole grace
+  // period, whether or not the chain already looks complete.
+  if (host && answer) await new Promise(ok => setTimeout(ok, graceSeconds * 1000));
+  const evidence = host ? hostEvidence(host, transcript, before, nonce, answer) : undefined;
   const record = { n, runId, scenario, probeSeq: probe.seq, sentAt: probe.at, waitSeconds, answerSeq: answer?.seq, answeredAt: answer?.at,
     took: answer ? seconds(Date.parse(answer.at) - Date.parse(probe.at)) : undefined, driverMs: Math.round(performance.now() - started), ...(evidence ? { hostEvidence: evidence } : {}) };
   writePrivate(log, (existsSync(log) ? readPrivate(log) : '') + JSON.stringify(record) + '\n');
