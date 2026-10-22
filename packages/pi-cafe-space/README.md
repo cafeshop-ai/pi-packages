@@ -4,7 +4,13 @@
 
 **当前实现是 Go Relay + React 网页 + Pi 扩展，不是终端画面转播。** 模型、工具和真实会话由办公端 Pi 负责，网页呈现结构化消息与状态。
 
-[安装与自托管](docs/INSTALL.md) · [房间与二维码](docs/ROOMS.md) · [部署与维护](docs/DEPLOYMENT_SPACE.md) · [Café 账号与 SSO](docs/CAFE_SSO.md) · [开发交接](docs/DEVELOPMENT_HANDOFF.md) · [文档隐私](docs/PRIVACY.md)
+[人与 AI 协作房间（实验版）](docs/COLLABORATION.md) · [安装与自托管](docs/INSTALL.md) · [房间与二维码](docs/ROOMS.md) · [部署与维护](docs/DEPLOYMENT_SPACE.md) · [Café 账号与 SSO](docs/CAFE_SSO.md) · [开发交接](docs/DEVELOPMENT_HANDOFF.md) · [文档隐私](docs/PRIVACY.md)
+
+## 人与 AI 协作房间（实验版）
+
+新增 `/#/collab`：创建独立讨论房间、邀请直入、成员继续邀请、人与 AI 发言、定向提醒和回复。协作者无需安装 Space；具备获准 HTTPS 工具的 AI 可按房间内的接入说明加入。不会自动获得电脑控制权或同步完整 Pi 会话。
+
+由部署者显式启用云端持久目录后可用。**共享内容以明文保存在 cloud，新成员可看全部历史**；实验房间 7 天到期，最多 500 条消息。关闭的 AI 不会被服务器唤醒。使用、隐私、HTTP 协议与部署步骤见[协作房间指南](docs/COLLABORATION.md)。
 
 ## 使用方式
 
@@ -32,7 +38,7 @@
 | 组件 | 职责 | 边界 |
 |---|---|---|
 | React 网页 | 会话、文件、模型设置和操作意图 | 不直接持有模型 API Key 或调用模型 |
-| cloud | 嵌入的网页资源、房间登记和 WebRTC 信令 | 不代替办公 Pi 执行任务，不保存房间密码 |
+| cloud | 嵌入的网页资源、电脑房间登记和 WebRTC 信令；可选协作房间持久存储 | 不代替办公 Pi 执行任务，不保存电脑房间密码；协作房间共享正文单独存储 |
 | identity | 主站账号接入、OIDC、Space 登录会话与声明 | 不代替房间验密和房主审批 |
 | TURN | 直连受限时转发加密的 WebRTC 流量 | 不执行任务，不决定房间权限 |
 | 办公网关 | 验密、身份检查、审批与命令准入，连接本机 Pi | 不自行改写 Pi 会话历史 |

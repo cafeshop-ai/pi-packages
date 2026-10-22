@@ -3,6 +3,9 @@
 .brand { display: flex; align-items: baseline; gap: 14px; flex-shrink: 0; }
 .brand h1 { font: 400 21px/1.3 var(--cafe-serif); letter-spacing: -.035em; margin: 0; }
 .brand > span { display: none; }
+.collaborationBrand { flex-direction: column; align-items: flex-start; gap: 4px; }
+.collaborationLink { color: var(--cafe-accent); font-size: 12px; text-decoration: none; }
+.collaborationLink:hover { text-decoration: underline; }
 .room { max-width: 14rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 12px; color: var(--cafe-muted); border-left: 1px solid var(--cafe-line); font: 11px/1.6 var(--cafe-mono); }
 .utilities { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .language { display: flex; gap: 2px; }

@@ -35,6 +35,7 @@ import { Button, IconButton, Input } from '../components/ui/Controls';
 import { Drawer } from '../components/ui/Drawer';
 import { UiProvider } from '../components/ui/UiProvider';
 import { useMobileViewport } from '../components/ui/useMobileViewport';
+import { Collaboration } from '../features/collaboration/Collaboration';
 const defaultFactory = () => new AppOwner();
 function Workspace({ owner, roomBase, onNewSession }: { owner: AppOwner; roomBase: string; onNewSession: (trigger: HTMLElement) => void }) {
   const mode = useWorkspaceMode();
@@ -228,10 +229,14 @@ function PublicRoomHome({ owner }: { owner: AppOwner }) {
   const { i18n } = useTranslation();
   useEffect(() => { owner.logout(); }, [owner]);
   return <main className={styles.shell} data-theme="dark" data-surface="workspace"><UiProvider>
-    <header className={styles.header}><div className={styles.brand}><h1>Café Space</h1></div><nav className={`${styles.language} ${setupStyles.language}`}><Button variant="quiet" onClick={() => void i18n.changeLanguage('zh-CN')}>中文</Button><Button variant="quiet" onClick={() => void i18n.changeLanguage('en')}>English</Button></nav></header>
+    <header className={styles.header}><div className={`${styles.brand} ${styles.collaborationBrand}`}><h1>Café Space</h1><a className={styles.collaborationLink} href="#/collab">{i18n.language.startsWith("zh") ? "协作房间 · 人与 AI" : "People + AI rooms"}</a></div><nav className={`${styles.language} ${setupStyles.language}`}><Button variant="quiet" onClick={() => void i18n.changeLanguage('zh-CN')}>中文</Button><Button variant="quiet" onClick={() => void i18n.changeLanguage('en')}>English</Button></nav></header>
     <div className={`${styles.loginStage} ${setupStyles.stage}`}><RoomLanding owner={owner} /></div>
   </UiProvider></main>;
 }
+function AppEntry({ createOwner }: { createOwner: () => AppOwner }) {
+  const location = useLocation();
+  return location.pathname === "/collab" || location.pathname.startsWith("/collab/") ? <Collaboration /> : <OwnedApp createOwner={createOwner} />;
+}
 export function App({ createOwner = defaultFactory }: { createOwner?: () => AppOwner }) {
-  return <HashRouter><OwnedApp createOwner={createOwner} /></HashRouter>;
+  return <HashRouter><AppEntry createOwner={createOwner} /></HashRouter>;
 }

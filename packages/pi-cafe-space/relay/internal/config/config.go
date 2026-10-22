@@ -17,6 +17,7 @@ import (
 type Config struct {
 	CredentialsFile        string
 	RemoteConfig           string
+	CollaborationDirectory string
 	ManagedConfig          string
 	// Service must verify room mode before accepting user-chosen local tokens.
 	ManagedRoomCredentials bool
@@ -89,6 +90,10 @@ func Parse(env map[string]string) (Config, error) {
 	c.RemoteConfig = env["PI_CAFE_REMOTE_CONFIG"]
 	if len(c.RemoteConfig) > 4096 || strings.ContainsRune(c.RemoteConfig, 0) {
 		return Config{}, errors.New("Invalid remote configuration path")
+	}
+	c.CollaborationDirectory = env["PI_CAFE_COLLAB_DIRECTORY"]
+	if c.CollaborationDirectory != "" && (c.CredentialsFile != "" || c.RemoteConfig == "" || len(c.CollaborationDirectory) > 4096 || strings.ContainsRune(c.CollaborationDirectory, 0) || !filepath.IsAbs(c.CollaborationDirectory)) {
+		return Config{}, errors.New("Collaboration requires an absolute durable directory and explicit remote configuration")
 	}
 	c.ManagedConfig = env["PI_COLLAB_MANAGED_CONFIG"]
 	if len(c.ManagedConfig) > 4096 || strings.ContainsRune(c.ManagedConfig, 0) {

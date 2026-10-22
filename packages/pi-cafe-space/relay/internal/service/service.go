@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/auth"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/config"
+	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/collaboration"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/httpserver"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/hub"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/managed"
@@ -160,6 +161,12 @@ func New(cfg config.Config, options Options) (*Service, error) {
 			if s.managed != nil { s.managed.Close() }
 			h.Close(); cancel(); return nil, err
 		}
+	}
+	if directory := cfg.CollaborationDirectory; directory != "" {
+		if remoteConfig.Mode != "cloud" { h.Close(); cancel(); return nil, errors.New("collaboration requires cloud mode") }
+		store, storeErr := collaboration.New(directory, remoteConfig.PublicOrigin)
+		if storeErr != nil { h.Close(); cancel(); return nil, storeErr }
+		handler = store.Wrap(handler)
 	}
 	s.HTTP = httpserver.NewServer(handler)
 	return s, nil
