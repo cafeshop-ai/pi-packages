@@ -34,10 +34,11 @@
 .card { width: min(100% - 32px, 560px); margin: clamp(32px, 9vh, 96px) auto; padding: 32px; display: grid; gap: 18px; border: 1px solid var(--cafe-line); border-radius: var(--cafe-radius-panel); background: var(--cafe-surface); box-shadow: var(--cafe-shadow);
   h1 { font: 400 clamp(26px, 3vw, 32px)/1.25 var(--cafe-serif); letter-spacing: -.02em; } }
 .joinForm { display: grid; gap: 14px; button[type=submit] { min-height: 44px; } }
-.aiInvite { border-top: 1px solid var(--cafe-line); padding-top: 14px; display: grid; gap: 12px;
+.aiInvite { min-width: 0; max-width: 100%; border-top: 1px solid var(--cafe-line); padding-top: 14px; display: grid; gap: 12px;
   summary { cursor: pointer; color: var(--cafe-accent); font-size: 13px; font-weight: 500; }
   p { color: var(--cafe-muted); font-size: 12.5px; line-height: 1.7; margin-top: 10px; }
-  textarea { margin: 10px 0; font: 12px/1.7 var(--cafe-mono); background: var(--cafe-surface-secondary); } a { font-size: 13px; } }
+  // The shared Textarea sizes to its content; long instruction lines would widen the drawer.
+  textarea { width: 100%; max-width: 100%; field-sizing: fixed; margin: 10px 0; font: 12px/1.7 var(--cafe-mono); background: var(--cafe-surface-secondary); } a { font-size: 13px; } }
 
 // Avatars
 .avatar { --tone: var(--tone-0); position: relative; flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--cafe-sans);
