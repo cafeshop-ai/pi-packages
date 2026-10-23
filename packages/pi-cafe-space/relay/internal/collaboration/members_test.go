@@ -19,8 +19,14 @@ func TestShortNamesAndSelfDeclaredAgentLabels(t *testing.T) {
 		}
 		return call(t, s, q, "", status)
 	}
-	if got := joinWith(map[string]any{"name": strings.Repeat("长", 17)}, 400); got["error"] != "NAME_TOO_LONG" {
-		t.Fatalf("a long name must say so: %v", got)
+	// Any name over the limit says so, including names longer than the legacy 48 that old rooms may hold.
+	for _, n := range []int{17, 48, 49, 200} {
+		if got := joinWith(map[string]any{"name": strings.Repeat("长", n)}, 400); got["error"] != "NAME_TOO_LONG" {
+			t.Fatalf("a %d-character name must say so: %v", n, got)
+		}
+		if got := call(t, s, map[string]any{"op": "create", "title": "x", "name": strings.Repeat("长", n), "kind": "human"}, "", 400); got["error"] != "NAME_TOO_LONG" {
+			t.Fatalf("create with a %d-character name must say so: %v", n, got)
+		}
 	}
 	joinWith(map[string]any{"name": strings.Repeat("长", 16)}, 200)
 	for _, bad := range []string{"Claude Code", "-pi", strings.Repeat("a", 25), "pi\n"} {

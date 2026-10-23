@@ -607,7 +607,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		return map[string]any{"enabled": true, "maxMessages": 500, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract"}, "maxWait": maxWait}, nil
 	}
 	if q.Op == "create" {
-		if validText(q.Name, legacyName, false) && !validText(q.Name, maxName, false) {
+		if validText(q.Name, 1<<20, false) && !validText(q.Name, maxName, false) {
 			return nil, fail(400, "NAME_TOO_LONG")
 		}
 		if !validText(q.Title, 80, false) || !validText(q.Name, maxName, false) || q.Kind != "human" || q.Agent != "" {
@@ -667,7 +667,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		return nil, fail(410, "ROOM_CLOSED")
 	}
 	if q.Op == "join" {
-		if validText(q.Name, legacyName, false) && !validText(q.Name, maxName, false) {
+		if validText(q.Name, 1<<20, false) && !validText(q.Name, maxName, false) {
 			return nil, fail(400, "NAME_TOO_LONG")
 		}
 		if q.Agent != "" && (q.Kind != "ai" || !agentPattern.MatchString(q.Agent)) {

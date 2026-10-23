@@ -75,7 +75,8 @@ function Avatar({ member, fallback, presence, small }: { member?: Member; fallba
 }
 // Agent types are self-declared ids; known ones get their usual spelling, others show as given.
 const agentNames: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex', pi: 'Pi', 'gemini-cli': 'Gemini CLI', cursor: 'Cursor', opencode: 'OpenCode', aider: 'Aider' };
-export const agentLabel = (agent?: string) => agent ? agentNames[agent] ?? agent : 'AI';
+// Own properties only: an id such as constructor must not read something inherited from Object.
+export const agentLabel = (agent?: string) => !agent ? 'AI' : Object.hasOwn(agentNames, agent) ? agentNames[agent]! : agent;
 function AgentTag({ member }: { member: Member }) {
   return <span className={styles.badge} title={member.agent ? `自报的 AI 类型：${agentLabel(member.agent)}，未经验证` : 'AI 成员，未声明类型'}>{agentLabel(member.agent)}</span>;
 }

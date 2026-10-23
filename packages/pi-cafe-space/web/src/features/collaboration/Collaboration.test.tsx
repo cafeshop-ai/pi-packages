@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { fireEvent, render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { Collaboration, connectorState, deliveryOf, thinkingOf } from './Collaboration';
+import { agentLabel, Collaboration, connectorState, deliveryOf, thinkingOf } from './Collaboration';
 import { App } from '../../app/App';
 import { aiInstructions, collaboration, saveMembership, type Member } from './api';
 import { probeBlocked, probeDaily, probeOf, probesOf, probeText, probeWait } from './probe';
@@ -136,6 +136,10 @@ it('lets a human test an AI from the member list and shows the answer as one lin
   // A collapsed line breaks the run, so the next message from the same AI still names its author.
   expect(document.querySelector('#msg-3 header strong')?.textContent).toBe('同事的 AI');
 }, 15_000);
+it('labels agent types from its own table only, showing any other id as given', () => {
+  expect(agentLabel('claude-code')).toBe('Claude Code'); expect(agentLabel(undefined)).toBe('AI'); expect(agentLabel('my-bot')).toBe('my-bot');
+  for (const inherited of ['constructor', 'tostring', 'valueof']) expect(agentLabel(inherited)).toBe(inherited);
+});
 it('gives every AI its own face and a self-declared type tag; people keep their initial', async () => {
   saveMembership(auth); const ai = 'e'.repeat(32), other = 'f'.repeat(32);
   const members = [...snapshot.members.map(m => m.id === ai ? { ...m, name: '部署助手', agent: 'claude-code' } : m), { id: other, name: '无类型', kind: 'ai' }];
