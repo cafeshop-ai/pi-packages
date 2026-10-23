@@ -167,6 +167,10 @@ it('derives delivery of addressed messages from replies and connector reports on
   expect(thinkingOf([human, ai], [ask, answer], { [ai.id]: { fetched: 4, delivered: 4, heartbeatAt: live } })).toEqual([]);
   expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 2, heartbeatAt: live } })).toEqual([]);
   expect(thinkingOf([human, ai], [ask], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: '2020-01-01T00:00:00Z' } })).toEqual([]);
+  // An AI may rightly not answer: after five minutes the waiting hint goes away instead of lingering.
+  const old = { ...ask, at: new Date(Date.now() - 6 * 60_000).toISOString() };
+  expect(thinkingOf([human, ai], [old], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: live } })).toEqual([]);
+  expect(thinkingOf([human, ai], [{ ...old, at: new Date(Date.now() - 60_000).toISOString() }], { [ai.id]: { fetched: 3, delivered: 3, heartbeatAt: live } }).map(m => m.id)).toEqual([ai.id]);
 });
 it('shows an honest "delivered, waiting" hint and compact delivery marks for messages addressed to an AI', async () => {
   saveMembership(auth); const ai = 'e'.repeat(32);

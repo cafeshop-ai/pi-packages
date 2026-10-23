@@ -39,13 +39,16 @@ export function deliveryOf(message: Message, members: Member[], messages: Messag
   if (report.fetched >= message.seq) return { state: 'fetched', label: `${target.name} 的连接器已取到` };
   return { state: 'waiting', label: `等待 ${target.name} 的连接器` };
 }
-/** AIs whose connector delivered the latest message addressed to them and that have not answered since.
+// An AI may rightly decide not to answer (it was told no reply is needed, or nothing called for
+// one), so "waiting" is shown only for a while after the ask; the delivery mark stays.
+const waitWindow = 5 * 60_000;
+/** AIs whose connector delivered the latest message addressed to them, recently, and that have not answered since.
  * Delivery proves the connector handed the message on, not that the host woke up, so the UI says "waiting". */
 export function thinkingOf(members: Member[], messages: Message[], presence: Record<string, Presence> = {}, now = Date.now()): Member[] {
   return members.filter(m => {
     if (m.kind !== 'ai' || m.removed || connectorState(presence[m.id], now).tone !== 'online') return false;
     const ask = [...messages].reverse().find(x => x.to === m.id);
-    return !!ask && presence[m.id]!.delivered >= ask.seq && !messages.some(x => x.memberId === m.id && x.seq > ask.seq);
+    return !!ask && now - Date.parse(ask.at) < waitWindow && presence[m.id]!.delivered >= ask.seq && !messages.some(x => x.memberId === m.id && x.seq > ask.seq);
   });
 }
 const hash = (id: string) => [...id].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 2654435761) >>> 0, 2166136261);
