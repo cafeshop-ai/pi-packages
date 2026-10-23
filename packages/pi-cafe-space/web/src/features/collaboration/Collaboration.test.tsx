@@ -136,6 +136,20 @@ it('lets a human test an AI from the member list and shows the answer as one lin
   // A collapsed line breaks the run, so the next message from the same AI still names its author.
   expect(document.querySelector('#msg-3 header strong')?.textContent).toBe('同事的 AI');
 }, 15_000);
+it('gives every AI its own face and a self-declared type tag; people keep their initial', async () => {
+  saveMembership(auth); const ai = 'e'.repeat(32), other = 'f'.repeat(32);
+  const members = [...snapshot.members.map(m => m.id === ai ? { ...m, name: '部署助手', agent: 'claude-code' } : m), { id: other, name: '无类型', kind: 'ai' }];
+  const messages = [{ seq: 1, id: 'agent-says-hi', memberId: ai, text: '你好', at: '2030-01-01T00:00:00Z' }];
+  fetcher.mockImplementation(async () => response({ ...snapshot, members, messages, cursor: 1 }));
+  mount('/collab/' + roomId); await screen.findByText('你好');
+  const tag = screen.getAllByText('Claude Code')[0]!; expect(tag).toHaveAttribute('title', '自报的 AI 类型：Claude Code，未经验证');
+  fireEvent.click(screen.getByRole('tab', { name: /成员/ }));
+  expect(await screen.findByTitle('AI 成员，未声明类型')).toHaveTextContent('AI');
+  // An AI's avatar is a drawn face; a person's is an initial.
+  const avatars = [...document.querySelectorAll('[data-kind]')];
+  expect(avatars.filter(a => a.getAttribute('data-kind') === 'ai').every(a => a.querySelector('svg'))).toBe(true);
+  expect(avatars.some(a => a.getAttribute('data-kind') === 'human' && a.textContent === '创')).toBe(true);
+});
 it('derives delivery of addressed messages from replies and connector reports only', () => {
   const ai = { id: 'e'.repeat(32), name: '同事的 AI', kind: 'ai' as const, owner: false }, human = { id: memberId, name: '创建者', kind: 'human' as const, owner: true };
   const ask = { seq: 3, id: 'ask-ai', memberId, text: '请核对', to: ai.id, at: '2030-01-01T00:00:00Z' };

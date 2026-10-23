@@ -103,6 +103,10 @@
   &[data-presence=unknown]::after { display: none; } }
 @keyframes beacon { 0% { box-shadow: 0 0 0 0 rgb(134 211 173 / .6); } 70%, 100% { box-shadow: 0 0 0 6px rgb(134 211 173 / 0); } }
 .avatarSpacer { width: 36px; flex: none; }
+// An AI's face: thin white strokes on its gradient tile, nothing more.
+.persona { width: 100%; height: 100%; fill: none; stroke: rgb(255 255 255 / .95); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .25)); }
+.fill { fill: rgb(255 255 255 / .95); stroke: none; }
+.blush { fill: rgb(255 255 255 / .3); stroke: none; }
 
 // Room
 .room { height: 100dvh; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -172,8 +176,9 @@
 .bubble { max-width: 100%; padding: 10px 14px; border: 1px solid var(--cafe-line); border-radius: 6px 20px 20px 20px; background: var(--cafe-surface); box-shadow: 0 8px 22px -16px rgb(0 0 0 / .9); transition: box-shadow .2s var(--cafe-ease); }
 .message[data-continued=true]:not([data-own=true]) .bubble { border-top-left-radius: 20px; }
 .message[data-continued=true][data-own=true] .bubble { border-top-right-radius: 20px; }
-.badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 800; letter-spacing: .06em; color: #fff; background: var(--grad-ai); box-shadow: 0 2px 8px -2px rgb(124 104 240 / .7);
-  &::before { content: '✦'; font-size: 9px; } }
+// The agent type: a quiet outlined tag, self-declared and labelled as such on hover.
+.badge { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 12em; padding: 0 7px; border: 1px solid rgb(179 166 255 / .32); border-radius: 999px; font-size: 10.5px; font-weight: 600; line-height: 17px; letter-spacing: .01em; color: var(--ai); background: rgb(179 166 255 / .08); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+  &::before { content: '✦'; font-size: 8px; opacity: .85; } }
 .context { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 5px; font-size: 12px; }
 .quote { min-width: 0; max-width: 100%; padding: 2px 8px; border: 0; border-left: 2px solid currentColor; border-radius: 4px; background: rgb(0 0 0 / .14); color: var(--cafe-muted); font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; &:hover { color: var(--cafe-ink); } }
 .mention { padding: 1px 8px; border-radius: 999px; color: var(--cafe-accent); background: color-mix(in srgb, var(--cafe-accent) 15%, transparent); font-weight: 600; }

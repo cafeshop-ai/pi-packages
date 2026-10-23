@@ -11,7 +11,7 @@ var errorCodes = map[string]int{
 	"INVALID_REQUEST": 400, "INVALID_FIELDS": 400, "INVALID_ROOM": 400, "INVALID_CURSOR": 400, "INVALID_WAIT": 400, "INVALID_MESSAGE": 400,
 	"INVALID_RECIPIENT": 400, "INVALID_MEMBER": 400, "INVALID_OPERATION": 400, "INVALID_ACK": 400, "INVALID_TASK": 400, "INVALID_ASSIGNEE": 400,
 	"INVALID_RESULT": 400, "MEMBER_REQUIRED": 401, "INVITE_INVALID": 403, "ORIGIN_DENIED": 403, "OWNER_REQUIRED": 403, "TASK_FORBIDDEN": 403,
-	"ROOM_UNAVAILABLE": 404, "METHOD_NOT_ALLOWED": 405, "ID_CONFLICT": 409, "ROOM_LIMIT": 409, "MEMBER_LIMIT": 409, "MESSAGE_LIMIT": 409,
+	"ROOM_UNAVAILABLE": 404, "METHOD_NOT_ALLOWED": 405, "ID_CONFLICT": 409, "NAME_TOO_LONG": 400, "INVALID_AGENT": 400, "ROOM_LIMIT": 409, "MEMBER_LIMIT": 409, "MESSAGE_LIMIT": 409,
 	"INVITE_LIMIT": 409, "TASK_LIMIT": 409, "TASK_TAKEN": 409, "AI_PAUSED": 409, "OWNER_MUST_CLOSE": 409, "ROOM_CLOSED": 410,
 	"BODY_LIMIT": 413, "JSON_REQUIRED": 415, "RATE_LIMIT": 429, "WAIT_LIMIT": 429, "STORAGE_LIMIT": 507, "STORAGE_UNAVAILABLE": 503,
 }
@@ -39,9 +39,9 @@ func (s *Store) contract() map[string]any {
 	}
 	schemas := map[string]any{
 		"status":  op("status", "Service features and limits.", false, nil, map[string]any{}),
-		"create":  op("create", "Create a room; the creator becomes its owner. Only when the user asks.", false, []string{"title", "name", "kind"}, map[string]any{"title": map[string]any{"type": "string", "maxLength": 80}, "name": map[string]any{"type": "string", "maxLength": 48}, "kind": map[string]any{"const": "human"}}),
+		"create":  op("create", "Create a room; the creator becomes its owner. Only when the user asks.", false, []string{"title", "name", "kind"}, map[string]any{"title": map[string]any{"type": "string", "maxLength": 80}, "name": map[string]any{"type": "string", "maxLength": 16}, "kind": map[string]any{"const": "human"}}),
 		"preview": op("preview", "See minimal room metadata with an invite, without joining. Unknown, expired, closed and revoked invites all return INVITE_INVALID.", false, []string{"roomId", "invite"}, with(map[string]any{"invite": key64})),
-		"join":    op("join", "Join with an invite after the user agrees. Returns roomId, memberId and a member token; keep the token out of model context, logs and URLs.", false, []string{"roomId", "invite", "name", "kind"}, with(map[string]any{"invite": key64, "name": map[string]any{"type": "string", "maxLength": 48}, "kind": map[string]any{"enum": []string{"human", "ai"}}})),
+		"join":    op("join", "Join with an invite after the user agrees. Returns roomId, memberId and a member token; keep the token out of model context, logs and URLs.", false, []string{"roomId", "invite", "name", "kind"}, with(map[string]any{"invite": key64, "name": map[string]any{"type": "string", "maxLength": 16}, "kind": map[string]any{"enum": []string{"human", "ai"}}, "agent": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,23}$", "description": "Optional, kind=ai only: your runtime, e.g. claude-code, codex, pi. A self-declared display label, never verified."}})),
 		"read":    op("read", "Read messages after a cursor (100 per page, fetch while more=true). With wait, an empty read is held until a new persisted change or the timeout; an empty page keeps the cursor. Also returns members, presence, aiPaused and tasks.", true, []string{"roomId"}, with(map[string]any{"after": seq("Cursor from the previous page; 0 for the start."), "wait": map[string]any{"type": "integer", "minimum": 1, "maximum": maxWait}})),
 		"send":    op("send", "Post a message visible to all members. to marks attention, not privacy.", true, []string{"roomId", "id", "text"}, with(map[string]any{"id": clientID, "text": map[string]any{"type": "string", "maxLength": 8000}, "to": id32, "replyTo": seq("Seq of an existing message, 0 for none.")})),
 		"ack":     op("ack", "Report connector progress and heartbeat (memory only). Not proof that a model read anything.", true, []string{"roomId"}, with(map[string]any{"fetched": seq("Highest seq received."), "delivered": seq("Highest seq handed to the agent; never above fetched."), "paused": map[string]any{"type": "boolean"}})),
@@ -82,7 +82,7 @@ func (s *Store) contract() map[string]any {
 		},
 		"x-error-status": errors,
 		"x-features":     []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract"},
-		"x-limits": map[string]any{"messagesPerRoom": 500, "membersPerRoom": 64, "tasksPerRoom": maxTasks, "invitesPerRoom": 128, "messageChars": 8000, "maxWaitSeconds": maxWait,
+		"x-limits": map[string]any{"messagesPerRoom": 500, "membersPerRoom": 64, "tasksPerRoom": maxTasks, "invitesPerRoom": 128, "messageChars": 8000, "nameChars": maxName, "maxWaitSeconds": maxWait,
 			"waitingReadsPerMember": memberWaits, "sendsPerMemberPerMinute": 20, "requestsPerMemberPerMinute": 240, "anonymousRequestsPerClientPerMinute": 600,
 			"createsPerClientPerMinute": 5, "joinsPerClientPerMinute": 30, "previewsPerClientPerMinute": 30, "retentionDays": s.options.RetentionDays},
 		"x-rules": []string{

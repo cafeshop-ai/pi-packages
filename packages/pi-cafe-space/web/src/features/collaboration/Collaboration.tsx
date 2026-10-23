@@ -48,9 +48,33 @@ export function thinkingOf(members: Member[], messages: Message[], presence: Rec
     return !!ask && presence[m.id]!.delivered >= ask.seq && !messages.some(x => x.memberId === m.id && x.seq > ask.seq);
   });
 }
+const hash = (id: string) => [...id].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 2654435761) >>> 0, 2166136261);
+/** Every AI gets its own small face, derived from its member id: the same agent always looks the
+ * same, and two agents rarely look alike. People keep their initial, so the two read apart. */
+function Persona({ seed }: { seed: string }) {
+  const h = hash(seed); const eyes = h % 4, mouth = (h >>> 3) % 4, extra = (h >>> 6) % 4;
+  return <svg viewBox="0 0 36 36" className={styles.persona} aria-hidden="true">
+    {extra === 1 && <><path d="M18 8.5V5" /><circle cx="18" cy="4" r="1.6" className={styles.fill} /></>}
+    {extra === 2 && <><circle cx="10" cy="22.5" r="2" className={styles.blush} /><circle cx="26" cy="22.5" r="2" className={styles.blush} /></>}
+    {extra === 3 && <path d="M10.5 11.5h5M20.5 11.5h5" />}
+    {eyes === 0 && <><circle cx="13" cy="16.5" r="2.2" className={styles.fill} /><circle cx="23" cy="16.5" r="2.2" className={styles.fill} /></>}
+    {eyes === 1 && <><ellipse cx="13" cy="16.5" rx="1.7" ry="2.9" className={styles.fill} /><ellipse cx="23" cy="16.5" rx="1.7" ry="2.9" className={styles.fill} /></>}
+    {eyes === 2 && <path d="M10.5 17.5q2.5-3.2 5 0M20.5 17.5q2.5-3.2 5 0" />}
+    {eyes === 3 && <rect x="9" y="14" width="18" height="5" rx="2.5" className={styles.fill} />}
+    {mouth === 0 && <path d="M14.5 23.5q3.5 3 7 0" />}
+    {mouth === 1 && <path d="M15.5 24.5h5" />}
+    {mouth === 2 && <circle cx="18" cy="24.5" r="1.6" />}
+  </svg>;
+}
 function Avatar({ member, fallback, presence, small }: { member?: Member; fallback: string; presence?: string; small?: boolean }) {
-  const initial = [...(member?.name ?? fallback).trim()][0] ?? '?';
-  return <span className={styles.avatar} data-tone={tone(member?.id ?? fallback)} data-kind={member?.kind ?? 'human'} data-presence={presence} data-small={small} aria-hidden="true">{initial.toUpperCase()}</span>;
+  const id = member?.id ?? fallback; const initial = [...(member?.name ?? fallback).trim()][0] ?? '?';
+  return <span className={styles.avatar} data-tone={tone(id)} data-kind={member?.kind ?? 'human'} data-presence={presence} data-small={small} aria-hidden="true">{member?.kind === 'ai' ? <Persona seed={id} /> : initial.toUpperCase()}</span>;
+}
+// Agent types are self-declared ids; known ones get their usual spelling, others show as given.
+const agentNames: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex', pi: 'Pi', 'gemini-cli': 'Gemini CLI', cursor: 'Cursor', opencode: 'OpenCode', aider: 'Aider' };
+export const agentLabel = (agent?: string) => agent ? agentNames[agent] ?? agent : 'AI';
+function AgentTag({ member }: { member: Member }) {
+  return <span className={styles.badge} title={member.agent ? `自报的 AI 类型：${agentLabel(member.agent)}，未经验证` : 'AI 成员，未声明类型'}>{agentLabel(member.agent)}</span>;
 }
 /** A small anchored menu: focus moves into it, arrows move between items, Escape or an outside press closes it. */
 function RoomMenu({ label, disabled, buttonRef, children }: { label: string; disabled?: boolean; buttonRef: React.RefObject<HTMLButtonElement | null>; children: ReactNode }) {
@@ -74,7 +98,7 @@ function RoomMenu({ label, disabled, buttonRef, children }: { label: string; dis
 /** Decorative only: two people and two AIs mid-conversation, one of them typing. */
 function Gathering() {
   return <div className={styles.gathering} aria-hidden="true">
-    {(['林', 'C', '周', 'P'] as const).map((initial, i) => <span key={initial} className={styles.avatar} data-tone={[0, 5, 4, 2][i]} data-kind={i % 2 ? 'ai' : 'human'}>{initial}</span>)}
+    {(['林', 'pi-agent-face', '周', 'claude-agent-face'] as const).map((who, i) => <span key={who} className={styles.avatar} data-tone={[0, 5, 4, 2][i]} data-kind={i % 2 ? 'ai' : 'human'}>{i % 2 ? <Persona seed={who} /> : who}</span>)}
     <span className={styles.typingBubble}><Dots /></span>
   </div>;
 }
@@ -124,7 +148,7 @@ function Create() {
     })(); }}>
       <h2>新建房间</h2>
       <div className={styles.field}><Label htmlFor="collab-title">房间名称</Label><Input id="collab-title" value={title} onChange={e => setTitle(e.target.value)} maxLength={80} required placeholder="例如：Space 发布讨论" /></div>
-      <div className={styles.field}><Label htmlFor="collab-name">你的名称</Label><Input id="collab-name" value={name} onChange={e => setName(e.target.value)} maxLength={48} required autoComplete="nickname" placeholder="其他成员看到的称呼" /></div>
+      <div className={styles.field}><Label htmlFor="collab-name">你的名称</Label><Input id="collab-name" value={name} onChange={e => setName(e.target.value)} maxLength={16} required autoComplete="nickname" placeholder="简短的称呼，最多 16 个字" /></div>
       <p className={styles.note}>消息以明文保存在云端，{retention} 天后到期。请勿发送密钥或敏感资料。</p>
       <Button type="submit" variant="primary" className={styles.cta} loading={busy} disabled={enabled !== true}>创建协作房间</Button>
       {enabled === false && <p className={styles.formError} role="alert">协作服务暂不可用，请稍后再试；电脑房间不受影响。</p>}
@@ -145,7 +169,7 @@ function Room({ id, invite }: { id: string; invite: string }) {
       try { checkStorage(); const value = await collaboration<Membership>({ op: 'join', roomId: id, invite, name: name.trim(), kind: 'human' }); saveMembership(value); setAuth(value); navigate('/collab/' + id, { replace: true }); }
       catch (e) { setError(messageError(e)); } finally { setBusy(false); }
     })(); }}>
-      <div className={styles.field}><Label htmlFor="join-name">你的名称</Label><Input id="join-name" maxLength={48} value={name} onChange={e => setName(e.target.value)} required autoComplete="nickname" /></div>
+      <div className={styles.field}><Label htmlFor="join-name">你的名称</Label><Input id="join-name" maxLength={16} placeholder="简短的称呼，最多 16 个字" value={name} onChange={e => setName(e.target.value)} required autoComplete="nickname" /></div>
       <p className={styles.note}>不会连接或操作你的电脑。成员凭据只保存在当前浏览器，请不要在共用设备上加入。</p>
       <Button variant="primary" type="submit" className={styles.cta} loading={busy}>同意并加入</Button>
       {error && <p className={styles.formError} role="alert">{error}</p>}
@@ -298,7 +322,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
           <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
-            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? '（AI）' : ''}</option>)}</select>}
+            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select>}
           </span>
           {(owner || task.createdBy === auth.memberId) && <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>}
         </li>; })}</ul>
@@ -308,8 +332,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const people = (): ReactNode => <ul className={styles.people}>{active.map(m => { const state = m.kind === 'ai' ? connectorState(presence[m.id], now) : null; const report = presence[m.id]; return <li key={m.id}>
     <Avatar member={m} fallback={m.id} presence={presenceOf(m)} />
     <div className={styles.person}>
-      <p className={styles.personName}><strong>{m.name}</strong>{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
-      <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? 'AI' : '成员'}{state && <> · <span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
+      <p className={styles.personName}><strong>{m.name}</strong>{m.kind === 'ai' && <AgentTag member={m} />}{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
+      <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? '' : '成员'}{state && <>{m.owner ? ' · ' : ''}<span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
       {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 让我的 AI 加入 → 持续参与讨论”的说明启动监听。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
       {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
@@ -377,7 +401,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                 <article id={`msg-${message.seq}`} className={styles.message} data-own={mine} data-ai={author?.kind === 'ai'} data-addressed={message.to === auth.memberId} data-continued={continued} data-fresh={freshFrom.current !== null && message.seq > freshFrom.current} data-selected={selected === message.seq}>
                   {!mine && (continued ? <span className={styles.avatarSpacer} /> : <Avatar member={author} fallback={message.memberId} presence={author ? presenceOf(author) : undefined} />)}
                   <div className={styles.messageBody}>
-                    {!continued && <header>{!mine && <><strong>{nameOf(message.memberId)}</strong>{author?.kind === 'ai' && <span className={styles.badge}>AI</span>}</>}<time dateTime={message.at}>{clock(message.at)}</time></header>}
+                    {!continued && <header>{!mine && <><strong>{nameOf(message.memberId)}</strong>{author?.kind === 'ai' && <AgentTag member={author} />}</>}<time dateTime={message.at}>{clock(message.at)}</time></header>}
                     <div className={styles.bubble} onClick={event => { if (!(event.target as Element).closest('a, button')) setSelected(value => value === message.seq ? 0 : message.seq); }}>
                       {(quoted || message.to) && <p className={styles.context}>{quoted && <button type="button" className={styles.quote} onClick={() => jump(quoted.seq)}>↩ {nameOf(quoted.memberId)}：{excerpt(quoted.text, 40)}</button>}{message.to && <span className={styles.mention}>@{message.to === auth.memberId ? '你' : nameOf(message.to)}</span>}</p>}
                       <MessageText text={message.text} className={styles.text} />
@@ -402,7 +426,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             <Label htmlFor="collab-message" className="sr-only">消息</Label>
             <Textarea id="collab-message" value={text} onChange={e => setText(e.target.value)} onKeyDown={onComposerKey} maxLength={8000} rows={1} disabled={busy || terminal} placeholder={to ? `给 ${nameOf(to)} 的消息…` : '说点什么…'} required />
             <div className={styles.composerBar}>
-              <span className={styles.mentionPicker} title="提醒某位成员"><span aria-hidden="true">@</span><select aria-label="提醒谁" value={to} disabled={busy || terminal} onChange={e => setTo(e.target.value)}><option value="">所有成员</option>{active.filter(m => m.id !== auth.memberId).map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? '（AI）' : ''}</option>)}</select></span>
+              <span className={styles.mentionPicker} title="提醒某位成员"><span aria-hidden="true">@</span><select aria-label="提醒谁" value={to} disabled={busy || terminal} onChange={e => setTo(e.target.value)}><option value="">所有成员</option>{active.filter(m => m.id !== auth.memberId).map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select></span>
               {to && <span className={styles.mentionChip}>@{nameOf(to)}<button type="button" aria-label="取消提醒" onClick={() => setTo('')}><Icon name="close" /></button></span>}
               <Button variant="primary" type="submit" className={`${styles.send} ${styles.cta}`} disabled={terminal || !snapshot || !text.trim()} loading={busy}><Icon name="send" />发送</Button>
             </div>

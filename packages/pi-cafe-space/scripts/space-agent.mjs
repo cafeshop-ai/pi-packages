@@ -6,7 +6,7 @@
 // It never calls a model and never executes room content.
 //
 //   space-agent --home <private dir> preview            < invite link on stdin
-//   space-agent --home <dir> join --name <name> [--kind ai|human]   < invite link
+//   space-agent --home <dir> join --name <name, at most 16 chars> [--kind ai|human] [--agent claude-code|codex|pi|…]   < invite link
 //   space-agent --home <dir> status | read [--after N]
 //   space-agent --home <dir> sync [--wait 25]          fetch into the inbox, report ack
 //   space-agent --home <dir> next | done <seq> | skip <seq> --reason <text>
@@ -202,7 +202,7 @@ async function main(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
-    assignee: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (command === 'preview' || command === 'join') {
     const invite = parseInvite(stdin());
@@ -213,7 +213,7 @@ async function main(argv) {
     if (existsSync(join(home, 'member.json'))) throw new Fail('this home already holds a membership; use a new --home for another room');
     if (!values.name) throw new Fail('--name is required');
     let result;
-    try { result = await call(invite.origin, { op: 'join', roomId: invite.roomId, invite: invite.invite, name: values.name, kind: values.kind ?? 'ai' }); }
+    try { result = await call(invite.origin, { op: 'join', roomId: invite.roomId, invite: invite.invite, name: values.name, kind: values.kind ?? 'ai', ...(values.agent ? { agent: values.agent } : {}) }); }
     catch (error) { if (error instanceof Unknown) throw new Fail('join result unknown: a member may have been created; ask the room owner before joining again', 2); throw error; }
     if (result.status !== 200) throw failed(result);
     secrets.add(result.json.token);

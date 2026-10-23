@@ -185,7 +185,7 @@ fs.writeSync = (fd, data, ...rest) => {
 syncBuiltinESMExports();`); return path; };
 const agentWith = (preload, h, args) => { const r = spawnSync(process.execPath, ['--import', preload, client, '--home', h, ...args], { encoding: 'utf8', timeout: 60_000 }); outputs.push(r.stdout, r.stderr); return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }; };
 test('short writes are completed and a write that makes no progress never commits the cursor', { skip: !binary }, async () => {
-  const h = home('short'); assert.equal(agent(h, ['join', '--name', 'Short write agent'], link).code, 0);
+  const h = home('short'); assert.equal(agent(h, ['join', '--name', 'Short writer'], link).code, 0);
   await api({ op: 'send', roomId: owner.roomId, id: 'short-write-1', text: '这一条要完整落盘'.repeat(8) }, owner.token);
   assert.equal(agentWith(faulty('short'), h, ['sync']).code, 0);
   const lines = readFileSync(join(h, 'inbox.jsonl'), 'utf8').trim().split('\n'); assert(lines.every(l => JSON.parse(l).seq > 0));
