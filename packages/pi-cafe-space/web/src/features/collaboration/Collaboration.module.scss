@@ -289,6 +289,8 @@
     &:hover { background: rgb(255 236 214 / .04); border-color: var(--cafe-line); } } }
 .person { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .personName { display: flex; align-items: center; gap: 6px; strong { font-weight: 650; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
+// The real owner, as the server marks it; a member merely named "房主" gets no tag.
+.ownerTag { flex: none; padding: 0 7px; border: 1px solid rgb(239 180 122 / .4); border-radius: 999px; font-size: 10.5px; font-weight: 600; line-height: 17px; color: var(--cafe-accent); background: rgb(239 180 122 / .08); cursor: default; }
 .you { padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: var(--cafe-accent); background: rgb(239 180 122 / .14); }
 .meta { color: var(--cafe-muted); font-size: 12px; }
 .connector { &[data-tone=online] { color: var(--cafe-success); } &[data-tone=paused] { color: var(--cafe-warning); } }
