@@ -75,7 +75,7 @@ it('requires confirmation before revoking invitations and stops writes after mem
 });
 it('routes collaboration without initializing or controlling an office Pi', async () => {
   window.location.hash = '#/collab'; const createOwner = vi.fn(() => { throw Error('must not create office owner'); });
-  render(<App createOwner={createOwner} />); expect(await screen.findByRole('heading', { name: '一起讨论，不限工具。' })).toBeInTheDocument(); expect(createOwner).not.toHaveBeenCalled();
+  render(<App createOwner={createOwner} />); expect(await screen.findByRole('heading', { name: name => name.replace(/\s/g, '') === '一起讨论，不限工具。' })).toBeInTheDocument(); expect(createOwner).not.toHaveBeenCalled();
 });
 it('sends with Enter, keeps Shift+Enter for new lines and shows the reply target', async () => {
   saveMembership(auth);
@@ -189,6 +189,12 @@ it('runs a task board: add, advance, assign and turn a message into a task', asy
   fireEvent.click(screen.getByRole('button', { name: '转为任务' }));
   await waitFor(() => expect(sent().filter(v => v.op === 'task').at(-1)).toMatchObject({ action: 'create', title: '请整理发布清单并核对版本号', from: 1, assignee: ai }));
   expect(await screen.findByText('已加入任务板')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '来自 #1' })).toBeInTheDocument();
+});
+it('offers quick starts in an empty room: inviting opens the invitation', async () => {
+  saveMembership(auth); mount('/collab/' + roomId);
+  fireEvent.click(await screen.findByRole('button', { name: '邀请成员' }));
+  expect((await screen.findByLabelText('邀请链接') as HTMLInputElement).value).toContain(invite);
+  expect(screen.getByRole('button', { name: '从清单开始' })).toBeInTheDocument();
 });
 it('starts an empty board from a template with stable task ids, in order', async () => {
   saveMembership(auth); let tasks: Record<string, unknown>[] = []; let fail = 3;

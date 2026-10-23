@@ -71,8 +71,22 @@ function RoomMenu({ label, disabled, buttonRef, children }: { label: string; dis
     {open && <div role="menu" aria-label={label} className={styles.menu} onClick={event => { if ((event.target as Element).closest('[role=menuitem]')) setOpen(false); }}>{children}</div>}
   </div>;
 }
-function Steam() {
-  return <svg className={styles.steam} viewBox="0 0 30 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M8 16c-4-3 3-5-1-9" /><path d="M15 16c-4-3 3-5-1-9" /><path d="M22 16c-4-3 3-5-1-9" /></svg>;
+/** Decorative only: two people and two AIs mid-conversation, one of them typing. */
+function Gathering() {
+  return <div className={styles.gathering} aria-hidden="true">
+    {(['林', 'C', '周', 'P'] as const).map((initial, i) => <span key={initial} className={styles.avatar} data-tone={[0, 5, 4, 2][i]} data-kind={i % 2 ? 'ai' : 'human'}>{initial}</span>)}
+    <span className={styles.typingBubble}><Dots /></span>
+  </div>;
+}
+function Dots() {
+  return <span className={styles.dots} aria-hidden="true"><i /><i /><i /></span>;
+}
+/** The brand cup; its steam rises gently unless motion is reduced. */
+function Cup() {
+  return <svg className={styles.cup} viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <g className={styles.vapor}><path d="M11 9c-1.6-2 1.6-3 0-5" /><path d="M16 9c-1.6-2 1.6-3 0-5" /><path d="M21 9c-1.6-2 1.6-3 0-5" /></g>
+    <path d="M6 13h18v5a8 8 0 0 1-8 8h-2a8 8 0 0 1-8-8v-5Z" /><path d="M24 15h1.5a3.5 3.5 0 0 1 0 7H23" />
+  </svg>;
 }
 
 export function Collaboration() {
@@ -94,8 +108,9 @@ function Create() {
   useEffect(() => { const abort = new AbortController(); void collaboration<{ enabled: boolean; retentionDays?: number }>({ op: 'status' }, undefined, abort.signal).then(v => { setEnabled(v.enabled); if (Number.isInteger(v.retentionDays) && v.retentionDays! > 0) setRetention(v.retentionDays!); }, () => { if (!abort.signal.aborted) setEnabled(false); }); return () => abort.abort(); }, []);
   return <section className={styles.landing}>
     <div className={styles.pitch}>
+      <Gathering />
       <p className={styles.eyebrow}>PEOPLE + AI</p>
-      <h1>一起讨论，不限工具。</h1>
+      <h1>一起讨论，<span className={styles.glow}>不限工具</span>。</h1>
       <p className={styles.lead}>同事和各自的 AI 在同一个房间里讨论、分工、推进。AI 通过 HTTPS 加入，不需要安装 Space，也不开放任何人的电脑。</p>
       <ul className={styles.facts}>
         <li><Icon name="share" /><div><strong>邀请即加入</strong><span>链接发给同事或 AI，确认后直接进入。</span></div></li>
@@ -111,7 +126,7 @@ function Create() {
       <div className={styles.field}><Label htmlFor="collab-title">房间名称</Label><Input id="collab-title" value={title} onChange={e => setTitle(e.target.value)} maxLength={80} required placeholder="例如：Space 发布讨论" /></div>
       <div className={styles.field}><Label htmlFor="collab-name">你的名称</Label><Input id="collab-name" value={name} onChange={e => setName(e.target.value)} maxLength={48} required autoComplete="nickname" placeholder="其他成员看到的称呼" /></div>
       <p className={styles.note}>消息以明文保存在云端，{retention} 天后到期。请勿发送密钥或敏感资料。</p>
-      <Button type="submit" variant="primary" loading={busy} disabled={enabled !== true}>创建协作房间</Button>
+      <Button type="submit" variant="primary" className={styles.cta} loading={busy} disabled={enabled !== true}>创建协作房间</Button>
       {enabled === false && <p className={styles.formError} role="alert">协作服务暂不可用，请稍后再试；电脑房间不受影响。</p>}
       {error && <p className={styles.formError} role="alert">{error}</p>}
     </form>
@@ -132,7 +147,7 @@ function Room({ id, invite }: { id: string; invite: string }) {
     })(); }}>
       <div className={styles.field}><Label htmlFor="join-name">你的名称</Label><Input id="join-name" maxLength={48} value={name} onChange={e => setName(e.target.value)} required autoComplete="nickname" /></div>
       <p className={styles.note}>不会连接或操作你的电脑。成员凭据只保存在当前浏览器，请不要在共用设备上加入。</p>
-      <Button variant="primary" type="submit" loading={busy}>同意并加入</Button>
+      <Button variant="primary" type="submit" className={styles.cta} loading={busy}>同意并加入</Button>
       {error && <p className={styles.formError} role="alert">{error}</p>}
     </form>}
     {invite && <AiInvitation link={window.location.origin + '/#/collab/' + id + '?invite=' + invite} />}
@@ -245,6 +260,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const nameOf = (memberId: string) => memberOf(memberId)?.name ?? '已离开的成员';
   const now = Date.now(); const tasks = snapshot?.tasks ?? []; const openTasks = tasks.filter(t => t.status !== 'done').length;
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
+  const aiOnline = active.filter(m => presenceOf(m) === 'online').length;
   const thinking = thinkingOf(members, messages, presence, now);
   const probes = probesOf(messages, members, now);
   // Tests and bare answers to them collapse into one line each; an answer with more to say stays a message.
@@ -312,14 +328,16 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
 
   return <section className={styles.room}>
     <header className={styles.toolbar}>
+      <Link to="/collab" className={styles.homeMark} aria-label="协作首页"><Cup /></Link>
       <div className={styles.titleBlock}>
         <h1>{snapshot?.title ?? '正在读取房间…'}</h1>
-        {(!connected || terminal) && <p role="status" className={styles.connection}>{terminal ? '房间或成员已不可用' : '正在连接…'}</p>}
+        {(!connected || terminal) ? <p role="status" className={styles.connection}>{terminal ? '房间或成员已不可用' : '正在连接…'}</p>
+          : <p className={styles.subtitle}>{active.length} 位成员{aiOnline > 0 && <> · <span className={styles.live}>{aiOnline} 个 AI 在线</span></>}</p>}
       </div>
       <div className={styles.toolbarActions}>
         <button type="button" className={styles.stack} aria-label={`成员 · ${active.length}`} disabled={!snapshot} onClick={() => openSide('people')}>{active.slice(0, 4).map(m => <Avatar key={m.id} member={m} fallback={m.id} presence={presenceOf(m)} small />)}{active.length > 4 && <span className={styles.more}>+{active.length - 4}</span>}</button>
-        <Button ref={sideButton} className={styles.tasksToggle} disabled={!snapshot} onClick={() => openSide('tasks')}><Icon name="check" />任务{openTasks > 0 && ` · ${openTasks}`}</Button>
-        <Button ref={inviteButton} variant="primary" aria-label="邀请同事 / AI" disabled={busy || terminal || !snapshot} onClick={openInvite}><Icon name="plus" /><span className={styles.inviteLabel}>邀请</span></Button>
+        <Button ref={sideButton} className={styles.tasksToggle} aria-label={`任务${openTasks > 0 ? ` · ${openTasks}` : ''}`} disabled={!snapshot} onClick={() => openSide('tasks')}><Icon name="check" /><span className={styles.tasksLabel}>任务</span>{openTasks > 0 && <span className={styles.count}>{openTasks}</span>}</Button>
+        <Button ref={inviteButton} variant="primary" className={styles.cta} aria-label="邀请同事 / AI" disabled={busy || terminal || !snapshot} onClick={openInvite}><Icon name="plus" /><span className={styles.inviteLabel}>邀请</span></Button>
         <RoomMenu label="房间菜单" disabled={!snapshot} buttonRef={menuButton}>
           {snapshot && <p className={styles.menuInfo}>{new Date(snapshot.expires).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 到期</p>}
           {owner && <button type="button" role="menuitem" className={styles.menuItem} disabled={terminal} onClick={() => setConfirm(snapshot?.aiPaused ? { op: 'pause', fields: { paused: false }, label: '恢复 AI 发言？各 AI 会在下一次读取时看到。', action: '恢复' } : { op: 'pause', fields: { paused: true }, label: '暂停所有 AI 发言？AI 仍可读取，但服务端会拒绝其发帖和改动任务；这不移除任何成员。', action: '暂停' })}>{snapshot?.aiPaused ? '恢复 AI 发言' : '暂停所有 AI 发言'}</button>}
@@ -338,7 +356,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         {snapshot?.aiPaused && !terminal && <p className={styles.paused} role="status">AI 发言已暂停</p>}
         <div className={styles.timeline} role="log" aria-label="房间消息" aria-live="polite" onScroll={event => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; }}>
           <div className={styles.timelineInner}>
-            {snapshot && messages.length === 0 && <div className={styles.empty}><Steam /><p>开始讨论吧</p><span>提一个问题，或邀请同事和他们的 AI 加入。</span></div>}
+            {snapshot && messages.length === 0 && <div className={styles.empty}><div className={styles.emptyCup}><Cup /></div><p>开始讨论吧</p><span>提一个问题，或邀请同事和他们的 AI 加入。</span>
+              <div className={styles.quickActions}>
+                <button type="button" disabled={busy || terminal} onClick={openInvite}><Icon name="plus" />邀请成员</button>
+                <button type="button" disabled={terminal} onClick={() => openSide('tasks')}><Icon name="check" />从清单开始</button>
+              </div></div>}
             {messages.map((message, index) => {
               const previous = messages[index - 1]; const author = memberOf(message.memberId); const mine = message.memberId === auth.memberId;
               const newDay = !previous || day(previous.at) !== day(message.at);
@@ -369,7 +391,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                 </article>
               </div>;
             })}
-            {thinking.length > 0 && <div className={styles.thinking} role="status"><Steam /><span>已送达 {thinking.map(m => m.name).join('、')} · 等待回复</span></div>}
+            {thinking.length > 0 && <div className={styles.thinking} role="status"><span className={styles.thinkers}>{thinking.slice(0, 3).map(m => <Avatar key={m.id} member={m} fallback={m.id} small />)}</span><Dots /><span>已送达 {thinking.map(m => m.name).join('、')} · 等待回复</span></div>}
             <div ref={bottom} />
           </div>
         </div>
@@ -382,7 +404,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             <div className={styles.composerBar}>
               <span className={styles.mentionPicker} title="提醒某位成员"><span aria-hidden="true">@</span><select aria-label="提醒谁" value={to} disabled={busy || terminal} onChange={e => setTo(e.target.value)}><option value="">所有成员</option>{active.filter(m => m.id !== auth.memberId).map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? '（AI）' : ''}</option>)}</select></span>
               {to && <span className={styles.mentionChip}>@{nameOf(to)}<button type="button" aria-label="取消提醒" onClick={() => setTo('')}><Icon name="close" /></button></span>}
-              <Button variant="primary" type="submit" className={styles.send} disabled={terminal || !snapshot || !text.trim()} loading={busy}><Icon name="send" />发送</Button>
+              <Button variant="primary" type="submit" className={`${styles.send} ${styles.cta}`} disabled={terminal || !snapshot || !text.trim()} loading={busy}><Icon name="send" />发送</Button>
             </div>
           </div>
         </form>
