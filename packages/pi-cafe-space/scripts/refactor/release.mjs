@@ -10,6 +10,7 @@ export function releaseFiles(tags) {
  if (!tags.length || tags.some(tag=>!platforms.includes(tag))) throw Error('Invalid release platforms');
  return ['package.json','README.md','INSTALL.md','AI_INSTALL.md','LICENSE','THIRD-PARTY-NOTICES.txt','dist/relay/build.json',
   ...['index','connection-warning','file-commands','private-json','local-relay','local-relay-go','cafe','cafe-actions','cafe-client','cafe-render','cafe-approvals','cafe-owner-client','thinking-capability','execution-tracker'].map(name=>`dist/extension/${name}.js`),'dist/protocol/index.js','dist/protocol/execution.js',
+  ...['client','extension','listener'].map(name=>`dist/collaboration/${name}.js`),
   ...tags.map(tag=>`dist/relay/bin/${tag}/pi-cafe-relay${tag.startsWith('windows')?'.exe':''}`),
   ...runtimeScripts.map(name=>`scripts/${name}`),...remoteScripts.map(name=>`scripts/remote/${name}`),...['build.mjs','assets.mjs','hash-router-only.mjs'].map(name=>`scripts/build-tools/${name}`),'scripts/build-tools/licenses/metadata-only.json'].sort();
 }
@@ -56,7 +57,7 @@ export async function stageRelease(requireAll = false, selectedTags) {
   await rm(target, { recursive: true });
  } catch (error) { if (error.code !== 'ENOENT') throw error; }
  await mkdir(target); await writeFile(join(target, '.candidate-owned'), 'pi-cafe-candidate-v1');
- for (const folder of ['extension', 'protocol']) await cp(join(base, 'ts', folder), join(target, 'dist', folder), { recursive: true, dereference: false });
+ for (const folder of ['extension', 'protocol', 'collaboration']) await cp(join(base, 'ts', folder), join(target, 'dist', folder), { recursive: true, dereference: false });
  for (const [platform] of Object.entries(records)) {
   const filename = platform.startsWith('windows') ? 'pi-cafe-relay.exe' : 'pi-cafe-relay'; const directory = join(target, 'dist/relay/bin', platform); await mkdir(directory, { recursive: true }); await copyFile(join(base, 'bin', platform, filename), join(directory, filename));
  }
@@ -86,7 +87,7 @@ export async function stageRelease(requireAll = false, selectedTags) {
  const roomGuide = await readFile(join(root, 'docs/ROOMS.md'), 'utf8');
  const remoteGuide = (await readFile(join(root, 'docs/REMOTE_ACCESS.md'), 'utf8')).replaceAll('(refactor/REMOTE_ACCEPTANCE.md)', '(#remote-acceptance)');
  const acceptance = await readFile(join(root, 'docs/refactor/REMOTE_ACCEPTANCE.md'), 'utf8');
- await writeFile(join(target, 'README.md'), (await readFile(join(target, 'README.md'), 'utf8')) + '\n\n## Install\n\nRead [INSTALL.md](INSTALL.md), or give [AI_INSTALL.md](AI_INSTALL.md) and this verified package to your installation assistant. Choose the public service or your own Docker server.\n\n---\n\n' + roomGuide + '\n---\n\n## Legacy remote mode and local setup\n\n' + remoteGuide + '\n\n## Remote acceptance\n\n' + acceptance);
+ await writeFile(join(target, 'README.md'), (await readFile(join(target, 'README.md'), 'utf8')) + '\n\n## Optional AI discussion bridge (no computer gateway)\n\nLoad only `<absolute package directory>/dist/collaboration/extension.js` as an explicit Pi extension, not the package default `dist/extension/index.js`. Do not register the whole package if you only want this bridge: the existing default starts the computer gateway. After local-user approval, connect once with `/cafe-collab connect <absolute private membership JSON path>`; later use `/cafe-collab resume` in that same session. Loading, reloading and status do not connect. Use `/cafe-collab pause` to stop listening. No membership, credential or model changes are made by loading the bridge. Discussion does not authorize local commands, file access or deployment. Continuous automatic responses may incur ongoing model/tool costs.\n\n## Install\n\nRead [INSTALL.md](INSTALL.md), or give [AI_INSTALL.md](AI_INSTALL.md) and this verified package to your installation assistant. Choose the public service or your own Docker server.\n\n---\n\n' + roomGuide + '\n---\n\n## Legacy remote mode and local setup\n\n' + remoteGuide + '\n\n## Remote acceptance\n\n' + acceptance);
  return { target, metadata };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) console.log(JSON.stringify(await stageRelease(process.argv.includes('--require-all'))));

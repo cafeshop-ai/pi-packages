@@ -28,15 +28,19 @@ async function boundedFile(path, max = MAX_FILE_BYTES) {
   if (info.size < 0 || info.size > max) throw Error('asset file budget exceeded');
   if (!equalPath(await realpath(path), resolve(path))) throw Error('noncanonical asset file');
   const file = await open(path, 'r');
+  let directory;
   try {
+    // Windows path stat may omit dev; a parent HANDLE supplies the real volume, as in private-json.
+    if (process.platform === 'win32') directory = await open(dirname(path), 'r');
+    const volume = directory ? (await directory.stat()).dev : info.dev;
     const opened = await file.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size) throw Error('asset changed before open');
+    if (!opened.isFile() || opened.dev !== volume || (info.dev !== 0 && opened.dev !== info.dev) || opened.ino !== info.ino || opened.size !== info.size) throw Error('asset changed before open');
     const buffer = Buffer.alloc(info.size + 1); let length = 0;
     while (length < buffer.length) { const { bytesRead } = await file.read(buffer, length, buffer.length - length, null); if (!bytesRead) break; length += bytesRead; }
     const after = await file.stat(); const linked = await lstat(path);
     if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || linked.isSymbolicLink() || linked.dev !== info.dev || linked.ino !== info.ino) throw Error('asset changed during read');
     return Buffer.from(buffer.subarray(0, length));
-  } finally { await file.close(); }
+  } finally { try { await file.close(); } finally { await directory?.close(); } }
 }
 function text(body) { return new TextDecoder('utf-8', { fatal: true }).decode(body); }
 function references(name, body) {

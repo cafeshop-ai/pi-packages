@@ -15,18 +15,17 @@ export class RoomListener {
   private polling: Promise<number> | undefined;
   private awaitingReceipt = false;
   private dispatchedAt = 0;
-  private readonly sent = new Set<number>();
-  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number) {
-    if (!Number.isInteger(cursor) || cursor < 0 || cursor > 500) throw new RoomError('INVALID_CURSOR');
+  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0) {
+    if (!Number.isInteger(cursor) || cursor < 0 || cursor > 500 || !Number.isInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor) throw new RoomError('INVALID_CURSOR');
     this.cursor = cursor;
   }
   get undispatched(): Message | undefined { return this.awaitingReceipt ? undefined : this.pending; }
-  recordReply(sequence: number) { this.sent.add(sequence); }
   pause() { this.state = 'paused'; this.abort.abort(); }
   acknowledge(sequence: number) {
     if (!this.awaitingReceipt || this.pending?.seq !== sequence) return;
     // Only the host's actual message event acknowledges dispatch, never sendMessage() returning void.
     this.commit(sequence);
+    this.deliveredCursor = Math.max(this.deliveredCursor, sequence);
     this.pending = undefined;
     this.awaitingReceipt = false;
     if (this.state !== 'paused') this.state = 'listening';
@@ -59,13 +58,14 @@ export class RoomListener {
       if (!this.pending) {
         for (const message of snapshot.messages) {
           if (message.seq <= this.cursor) continue;
-          const allowed = active.has(message.memberId) && this.client.membership.allowMembers.includes(message.memberId);
-          const addressed = message.to === me || !message.to && this.sent.has(message.replyTo);
-          if (message.memberId !== me && allowed && addressed) { this.pending = message; break; }
+          if (message.memberId !== me && active.has(message.memberId)) { this.pending = message; break; }
           this.commit(message.seq);
         }
       }
       this.error = undefined;
+      // Only the running background listener advertises presence, never a manual read or a reply.
+      if (deliver && this.client.supportsPresence) await this.client.ack({ fetched: snapshot.cursor, delivered: this.deliveredCursor, paused: snapshot.aiPaused === true }, this.abort.signal);
+      if (this.abort.signal.aborted) return 5000;
       if (snapshot.aiPaused) { this.state = 'room-paused'; return 5000; }
       if (!this.awaitingReceipt) this.state = 'listening';
       if (deliver && this.pending && !this.awaitingReceipt) {

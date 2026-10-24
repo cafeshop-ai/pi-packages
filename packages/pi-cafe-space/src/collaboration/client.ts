@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { readPrivateJSON } from '../extension/private-json.js';
 
-export interface Membership { origin: string; roomId: string; memberId: string; token: string; allowMembers: string[] }
+export interface Membership { origin: string; roomId: string; memberId: string; token: string }
 export interface Member { id: string; name: string; kind: 'human' | 'ai'; removed: boolean }
 export interface Message { seq: number; id: string; memberId: string; text: string; to: string; replyTo: number }
 export interface Snapshot { roomId: string; memberId: string; cursor: number; more: boolean; members: Member[]; messages: Message[]; aiPaused?: boolean }
@@ -20,8 +20,8 @@ export function readMembership(path: string): Membership {
   if (typeof origin !== 'string') throw new RoomError('INVALID_ROOM_CONFIG');
   const url = new URL(origin);
   if (url.origin !== origin || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)))) throw new RoomError('INVALID_ROOM_ORIGIN');
-  if (typeof value.roomId !== 'string' || !id.test(value.roomId) || typeof value.memberId !== 'string' || !id.test(value.memberId) || typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token) || !Array.isArray(value.allowMembers) || value.allowMembers.length < 1 || value.allowMembers.length > 64 || value.allowMembers.some(v => typeof v !== 'string' || !id.test(v) || v === value.memberId)) throw new RoomError('INVALID_ROOM_CONFIG');
-  return { origin, roomId: value.roomId, memberId: value.memberId, token: value.token, allowMembers: [...new Set(value.allowMembers)] as string[] };
+  if (typeof value.roomId !== 'string' || !id.test(value.roomId) || typeof value.memberId !== 'string' || !id.test(value.memberId) || typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new RoomError('INVALID_ROOM_CONFIG');
+  return { origin, roomId: value.roomId, memberId: value.memberId, token: value.token };
 }
 export function parseMessage(value: unknown): Message {
   if (!object(value) || !integer(value.seq, 1, 500) || typeof value.id !== 'string' || !messageId.test(value.id) || typeof value.memberId !== 'string' || !id.test(value.memberId) || !text(value.text, 8000) || (value.to !== undefined && (typeof value.to !== 'string' || !id.test(value.to))) || (value.replyTo !== undefined && !integer(value.replyTo, 0, value.seq - 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
@@ -40,6 +40,7 @@ export function parseSnapshot(value: unknown, auth: Membership, after: number): 
   return { roomId: auth.roomId, memberId: auth.memberId, cursor: value.cursor, more: value.more, members, messages, aiPaused: value.aiPaused === true };
 }
 export class RoomClient {
+  supportsPresence = false;
   constructor(readonly membership: Membership, private readonly request: typeof fetch = fetch) {}
   private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const combined = AbortSignal.any([AbortSignal.timeout(20_000), ...(signal ? [signal] : [])]);
@@ -65,10 +66,19 @@ export class RoomClient {
   }
   async read(after: number, signal?: AbortSignal): Promise<Snapshot> {
     if (!integer(after, 0, 500)) throw new RoomError('INVALID_CURSOR');
-    return parseSnapshot(await this.post({ op: 'read', after }, signal), this.membership, after);
+    const value = await this.post({ op: 'read', after }, signal);
+    const snapshot = parseSnapshot(value, this.membership, after);
+    // Presence is returned by relays that support ack; old read/send relays keep working.
+    this.supportsPresence = object(value) && object(value.presence);
+    return snapshot;
+  }
+  async ack(progress: { fetched: number; delivered: number; paused: boolean }, signal?: AbortSignal): Promise<void> {
+    if (!integer(progress.fetched, 0, 500) || !integer(progress.delivered, 0, progress.fetched) || typeof progress.paused !== 'boolean') throw new RoomError('INVALID_ACK');
+    const value = await this.post({ op: 'ack', ...progress }, signal);
+    if (!object(value) || value.ok !== true) throw new RoomError('INVALID_ROOM_RESPONSE');
   }
   async reply(input: { id: string; text: string; to: string; replyTo: number }, signal?: AbortSignal): Promise<Message> {
-    if (!messageId.test(input.id) || !text(input.text, 8000) || input.text.trim() !== input.text || !this.membership.allowMembers.includes(input.to) || !integer(input.replyTo, 1, 500)) throw new RoomError('INVALID_REPLY');
+    if (!messageId.test(input.id) || !text(input.text, 8000) || input.text.trim() !== input.text || !id.test(input.to) || input.to === this.membership.memberId || !integer(input.replyTo, 1, 500)) throw new RoomError('INVALID_REPLY');
     // This preflight respects pause on old relays; only a server-side check can close the read/send race.
     if ((await this.read(input.replyTo, signal)).aiPaused) throw new RoomError('ROOM_AI_PAUSED');
     // Never retry a write here: callers reconcile unknown outcomes with the same ID and body.

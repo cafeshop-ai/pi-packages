@@ -54,7 +54,7 @@
     "room:bootstrap": "node scripts/remote/room-bootstrap.mjs",
     "room:install:test": "node --test scripts/remote/install-tools.test.mjs scripts/remote/room-setup.test.mjs",
     "remote:test": "node --test scripts/remote/setup.test.mjs scripts/refactor/matrix.test.mjs",
-    "refactor:build:test": "node --test --test-concurrency=1 scripts/refactor/candidate.test.mjs scripts/refactor/source-build.test.mjs",
+    "refactor:build:test": "node --test --test-concurrency=1 scripts/refactor/collaboration-package.test.mjs scripts/refactor/candidate.test.mjs scripts/refactor/source-build.test.mjs",
     "refactor:launcher:test": "node --test scripts/refactor/launcher.test.mjs",
     "refactor:integration:test": "node scripts/refactor/integration.mjs",
     "relay": "node scripts/run-built.mjs",
@@ -84,7 +84,8 @@
     "ws": "8.21.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",

@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { RoomClient, RoomError, parseSnapshot, type Membership, type Message, type Snapshot } from './client.js';
 import { RoomListener, type ListenerHost } from './listener.js';
 const me = 'a'.repeat(32), peer = 'b'.repeat(32), stranger = 'c'.repeat(32);
-const auth: Membership = { origin: 'https://space.example.test', roomId: 'd'.repeat(32), memberId: me, token: 'e'.repeat(64), allowMembers: [peer] };
+const auth: Membership = { origin: 'https://space.example.test', roomId: 'd'.repeat(32), memberId: me, token: 'e'.repeat(64) };
 const message = (seq: number, patch: Partial<Message> = {}): Message => ({ seq, id: 'message-' + seq, memberId: peer, text: 'external data', to: me, replyTo: 0, ...patch });
 const snapshot = (messages: Message[], after = 0): Snapshot => ({ roomId: auth.roomId, memberId: me, cursor: after + messages.length, more: false, members: [me, peer, stranger].map(id => ({ id, name: id, kind: 'ai', removed: false })), messages });
 function fixture(messages = [message(1)]) {
@@ -29,13 +29,18 @@ it('delivers queued input when the current session becomes idle', async () => {
   const { listener, host } = fixture(); vi.mocked(host.isIdle).mockReturnValueOnce(false);
   await listener.poll(); await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(1); expect(listener.pending?.seq).toBe(1);
 });
-it('a mention alone does not authorize a stranger, and neither self echoes nor broadcasts wake the agent', async () => {
-  const { listener, host } = fixture([message(1, { memberId: stranger }), message(2, { memberId: me }), message(3, { to: '' }), message(4)]);
-  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(4)); expect(listener.cursor).toBe(3);
+it('delivers all active members’ room messages without a sender list or mention, but skips self echoes', async () => {
+  const messages = [message(1, { memberId: me }), message(2, { memberId: stranger, to: '' }), message(3, { to: '' }), message(4, { to: stranger }), message(5)];
+  const { listener, host } = fixture(messages);
+  vi.mocked(host.deliver).mockImplementation(m => listener.acknowledge(m.seq));
+  for (let i = 0; i < 5; i++) await listener.poll();
+  expect(vi.mocked(host.deliver).mock.calls.map(([m]) => m)).toEqual(messages.slice(1));
+  expect(listener.cursor).toBe(5);
 });
-it('recognizes replies to its own room posts without waking on messages addressed elsewhere', async () => {
-  const { listener, host } = fixture([message(1, { to: stranger, replyTo: 100 }), message(2, { to: '', replyTo: 100 })]);
-  listener.recordReply(100); await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(2, { to: '', replyTo: 100 }));
+it('does not deliver messages from removed members', async () => {
+  const { listener, host, read } = fixture();
+  const changed = snapshot([message(1, { memberId: stranger, to: '' }), message(2)]); changed.members[2]!.removed = true; read.mockResolvedValue(changed);
+  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(2)); expect(listener.cursor).toBe(1);
 });
 it('does not inject a late read result after cancellation or start overlapping polls', async () => {
   const { listener, host, read } = fixture(); let resolve!: (s: Snapshot) => void;
@@ -75,13 +80,13 @@ it('recovers from transient failure without requiring user renewal', async () =>
   read.mockRejectedValueOnce(new RoomError('NETWORK_RESULT_UNKNOWN', true));
   await listener.poll(); await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(1);
 });
-it('manual reads and consumption share the filtered inbox without starting a turn', async () => {
-  const { listener, host } = fixture([message(1, { memberId: stranger }), message(2, { memberId: me }), message(3, { to: '' }), message(4), message(5)]);
-  await listener.poll(false); expect(listener.undispatched?.seq).toBe(4); expect(listener.cursor).toBe(3); expect(host.deliver).not.toHaveBeenCalled();
-  expect(() => listener.consume(5)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
-  listener.consume(4); expect(host.checkpoint).toHaveBeenCalledWith(4, true);
-  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(5));
-  expect(() => listener.consume(5)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+it('manual reads and consumption share the room inbox without starting a turn', async () => {
+  const { listener, host } = fixture([message(1, { memberId: me }), message(2, { memberId: stranger, to: '' }), message(3)]);
+  await listener.poll(false); expect(listener.undispatched?.seq).toBe(2); expect(listener.cursor).toBe(1); expect(host.deliver).not.toHaveBeenCalled();
+  expect(() => listener.consume(3)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  listener.consume(2); expect(host.checkpoint).toHaveBeenCalledWith(2, true);
+  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(3));
+  expect(() => listener.consume(3)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
   expect(listener.undispatched).toBeUndefined();
 });
 it('joining an in-flight read shares its result without another fetch or cursor', async () => {
@@ -95,6 +100,40 @@ it('owner pause holds delivery until a later snapshot resumes it', async () => {
   const { listener, host, read } = fixture(); read.mockResolvedValueOnce({ ...snapshot([message(1)]), aiPaused: true });
   await listener.poll(); expect(listener.state).toBe('room-paused'); expect(host.deliver).not.toHaveBeenCalled();
   await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(1);
+});
+it('reports fetched separately from persisted host delivery, even while busy', async () => {
+  const { listener, host, client } = fixture([message(1), message(2)]);
+  client.supportsPresence = true; const ack = vi.spyOn(client, 'ack').mockResolvedValue();
+  vi.mocked(host.isIdle).mockReturnValue(false); await listener.poll();
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 0, paused: false }, expect.any(AbortSignal));
+  vi.mocked(host.isIdle).mockReturnValue(true); await listener.poll();
+  await listener.poll(); expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 0, paused: false }, expect.any(AbortSignal));
+  listener.acknowledge(1); await listener.poll();
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 1, paused: false }, expect.any(AbortSignal));
+  expect(host.deliver).toHaveBeenCalledTimes(2);
+});
+it('manual reads and consumption do not advertise background presence or automatic delivery', async () => {
+  const { listener, client } = fixture(); client.supportsPresence = true;
+  const ack = vi.spyOn(client, 'ack').mockResolvedValue();
+  await listener.poll(false); listener.consume(1); expect(ack).not.toHaveBeenCalled();
+  await listener.poll(); expect(ack).toHaveBeenLastCalledWith({ fetched: 1, delivered: 0, paused: false }, expect.any(AbortSignal));
+  listener.pause(); await listener.poll(); expect(ack).toHaveBeenCalledTimes(1);
+});
+it('keeps old relays working and reports owner pause without starting a model', async () => {
+  const { listener, client, read, host } = fixture(); const ack = vi.spyOn(client, 'ack').mockResolvedValue();
+  await listener.poll(); expect(ack).not.toHaveBeenCalled();
+  listener.acknowledge(1); client.supportsPresence = true;
+  read.mockResolvedValue({ ...snapshot([], 1), aiPaused: true }); await listener.poll();
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 1, delivered: 1, paused: true }, expect.any(AbortSignal));
+  expect(host.deliver).toHaveBeenCalledTimes(1);
+});
+it('backs off failed heartbeats without advancing delivery or bypassing cancellation', async () => {
+  const { listener, client, host } = fixture(); client.supportsPresence = true;
+  const ack = vi.spyOn(client, 'ack').mockRejectedValueOnce(new RoomError('ROOM_HTTP_429', true, 60000)).mockResolvedValue();
+  expect(await listener.poll()).toBe(60000); expect(listener.cursor).toBe(0); expect(host.deliver).not.toHaveBeenCalled();
+  let resolve!: () => void; ack.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  const running = listener.poll(); await Promise.resolve(); listener.pause(); resolve(); await running;
+  expect(host.deliver).not.toHaveBeenCalled();
 });
 it('validates room, member, cursor continuity and response fields before host delivery', () => {
   expect(() => parseSnapshot({ ...snapshot([message(1)]), roomId: 'f'.repeat(32) }, auth, 0)).toThrow();

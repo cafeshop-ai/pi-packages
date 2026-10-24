@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateAssets, stageAssets } from './assets.mjs';
@@ -23,6 +23,12 @@ test('validates exact reachable assets, hashes and stages a private manifest', (
   const manifest = JSON.parse(await readFile(join(target, 'asset-manifest.json'), 'utf8'));
   assert.deepEqual(manifest, checked.manifest);
   assert.equal(manifest.entries.some(e => e.name === 'asset-manifest.json'), false);
+}));
+test('Windows file identity uses its parent volume even when path stat omits dev', { skip: process.platform !== 'win32' }, () => fixture(async ({ source }) => {
+  const directory = await open(source, 'r'); const file = await open(join(source, 'index.html'), 'r');
+  try { assert.equal((await file.stat()).dev, (await directory.stat()).dev); }
+  finally { try { await file.close(); } finally { await directory.close(); } }
+  assert.equal((await validateAssets(source)).manifest.entries.length, 5);
 }));
 test('rejects missing, empty, unrecognized or orphan assets and invalid references', () => fixture(async ({ source, target }) => {
   await assert.rejects(validateAssets(join(source, 'missing')));

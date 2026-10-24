@@ -26,7 +26,14 @@ test('candidate matrix/platform/checksum and self-contained scripts', async () =
  } else {
   await stageRelease(true);
  }
- const manifest = JSON.parse(await readFile(join(target, 'package.json'), 'utf8')); assert.equal(manifest.private, true); assert.equal(manifest.engines.node, '>=22.19.0');assert.deepEqual(manifest.dependencies,{ws:'8.21.3'});assert.equal(manifest.devDependencies['@assistant-ui/core'],'0.3.17');
+ for (const part of ['client', 'extension', 'listener']) await readFile(join(target, 'dist/collaboration', part + '.js'));
+ assert.match(await readFile(join(target, 'README.md'), 'utf8'), /dist\/collaboration\/extension\.js/);
+ const listenerPath = join(target, 'dist/collaboration/listener.js'), listenerBytes = await readFile(listenerPath);
+ try { await rm(listenerPath); assert.throws(() => run(process.execPath, [join(target, 'scripts/verify-artifacts.mjs')]), /ENOENT/); }
+ finally { await writeFile(listenerPath, listenerBytes); }
+ const manifest = JSON.parse(await readFile(join(target, 'package.json'), 'utf8'));
+ assert.deepEqual(manifest.pi.extensions, ['./dist/extension/index.js']); assert.equal(manifest.peerDependencies.typebox, '*');
+ assert.equal(manifest.private, true); assert.equal(manifest.engines.node, '>=22.19.0');assert.deepEqual(manifest.dependencies,{ws:'8.21.3'});assert.equal(manifest.devDependencies['@assistant-ui/core'],'0.3.17');
  for (const name of ['build-source.mjs','verify-artifacts.mjs','run-relay.mjs','start-relay.ps1','stop-relay.ps1','start-pi.ps1','remote/setup.mjs','remote/run.mjs']) await readFile(join(target,'scripts',name));
  assert.match(run(process.execPath,[join(target,'scripts/remote/setup.mjs'),'--help']),/--output/);
  assert.match(run(process.execPath,[join(target,'scripts/remote/run.mjs'),'--help']),/--profile/);
