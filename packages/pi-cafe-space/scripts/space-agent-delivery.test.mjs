@@ -16,11 +16,12 @@ async function fixture(t, text = 'external data') {
   const home = await mkdtemp(join(tmpdir(), 'space-delivery-')); chmodSync(home, 0o700);
   const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64);
   const messages = [{ seq: 1, id: 'message-1', memberId: 'd'.repeat(32), text, at: new Date().toISOString() }];
-  const acks = [], wake = new Set(), children = new Set(); let paused = false;
+  const acks = [], wake = new Set(), children = new Set(); let paused = false, revoked = false;
   const server = createServer(async (req, res) => {
     let body = ''; for await (const part of req) body += part;
     const q = JSON.parse(body); assert.equal(req.headers.authorization, 'Bearer ' + token);
     res.setHeader('Content-Type', 'application/json');
+    if (revoked) { res.statusCode = 401; res.end('{"error":"MEMBER_REQUIRED"}'); return; }
     if (q.op === 'ack') { acks.push(q); res.end('{}'); return; }
     assert.equal(q.op, 'read');
     const reply = () => res.end(JSON.stringify({ cursor: messages.at(-1)?.seq ?? 0, messages: messages.filter(m => m.seq > q.after), more: false, aiPaused: paused }));
@@ -55,6 +56,7 @@ async function fixture(t, text = 'external data') {
   });
   return { home, roomId, memberId, token, messages, acks, state, received, handler, start, stop,
     pause(value) { paused = value; for (const ready of [...wake]) ready(); },
+    revoke() { revoked = true; },
     notify() { for (const ready of [...wake]) ready(); } };
 }
 
@@ -68,6 +70,7 @@ test('generic handler receives full untrusted JSON, never a credential; acceptan
   assert.equal(event.untrusted, true); assert.equal(event.message.text, text);
   assert(!JSON.stringify(event).includes(f.token)); assert.equal(f.acks.at(-1).delivered, 1);
   await f.stop(first);
+  assert.equal(f.state().deliveryWatcher, undefined, 'graceful stop releases the inbox owner');
   const second = f.start(['watch', '--handler', path]); await until(() => f.acks.length >= 3); await sleep(100);
   await f.stop(second); assert.equal(f.received().length, 1, 'confirmed events must not be replayed');
 });
@@ -131,7 +134,7 @@ test('a SIGKILLed watcher cannot hide an orphan receiver from explicit recovery'
 test('heartbeat continues while a hook is busy; timeout and cancellation never confirm an event', async t => {
   const f = await fixture(t), preload = join(f.home, 'timers.mjs');
   writeFileSync(preload, `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';const original=cp.execFile;cp.execFile=(file,args,options,cb)=>{if(options.timeout!==30000)throw Error('missing bounded delivery deadline');return original(file,args,{...options,timeout:160},cb);};syncBuiltinESMExports();const interval=globalThis.setInterval;globalThis.setInterval=(fn,ms,...args)=>interval(fn,ms===20000?20:ms,...args);`);
-  const path = f.handler('await new Promise(()=>{});');
+  const path = f.handler('setInterval(()=>{},1000);await new Promise(()=>{});');
   const result = await f.start(['watch', '--handler', path], ['--import', preload]).done;
   assert.equal(result.code, 2); assert.equal(f.state().consumed, 0); assert(f.acks.length >= 3);
   assert(f.acks.every(a => a.delivered === 0));
@@ -147,4 +150,15 @@ test('only a local-owned absolute executable is allowed, never a shell string or
   assert.notEqual((await f.start(['watch', '--handler', link]).done).code, 0);
   chmodSync(path, 0o777); assert.notEqual((await f.start(['watch', '--handler', path]).done).code, 0);
   assert.equal(f.received().length, 0);
+});
+
+test('revoked membership stops the listener, releases its owner and keeps uncertain delivery unconfirmed', async t => {
+  const f = await fixture(t), preload = join(f.home, 'heartbeat.mjs');
+  writeFileSync(preload, 'const original=setInterval;globalThis.setInterval=(fn,ms,...args)=>original(fn,ms===20000?20:ms,...args);');
+  const path = f.handler('setInterval(()=>{},1000);await new Promise(()=>{});');
+  const run = f.start(['watch', '--handler', path], ['--import', preload]);
+  await until(() => f.received().length === 1); f.revoke();
+  const result = await run.done;
+  assert.equal(result.code, 3, result.err); assert.equal(f.state().consumed, 0);
+  assert.equal(f.state().deliveryWatcher, undefined); assert.equal(f.state().delivery.seq, 1);
 });

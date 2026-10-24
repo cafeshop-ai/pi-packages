@@ -186,23 +186,28 @@ function checkHandler(path) {
 }
 async function watchHandler(home, path) {
   checkHandler(path);
-  const m = member(home); let child; let reporting = false;
+  const m = member(home); let child; let reporting = false; let stopping = false;
   const watcher = { pid: process.pid, id: randomUUID() };
   await transact(home, state => {
     if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('a handler watch already owns this inbox; stop it before starting another', 2);
     if (state.delivery) throw new Fail(`delivery #${state.delivery.seq} may already have reached the host; resolve it before restarting`, 2);
     state.deliveryWatcher = watcher;
   });
-  const stop = () => { child?.kill('SIGKILL'); process.exit(0); };
   const killChild = () => child?.kill('SIGKILL');
-  process.once('SIGINT', stop); process.once('SIGTERM', stop); process.once('exit', killChild);
+  const release = () => transact(home, state => { if (state.deliveryWatcher?.id === watcher.id) delete state.deliveryWatcher; });
+  const stop = (code = 0) => {
+    if (stopping) return; stopping = true; killChild();
+    void release().then(() => process.exit(code), () => process.exit(2));
+  };
+  const signalStop = () => stop();
+  process.once('SIGINT', signalStop); process.once('SIGTERM', signalStop); process.once('exit', killChild);
   const report = async () => {
     if (reporting) return;
     reporting = true;
     try {
       const state = loadState(home);
       const result = await call(m.origin, { op: 'ack', roomId: m.roomId, fetched: state.fetched, delivered: state.consumed, paused: !!state.aiPaused }, m.token);
-      if ([401, 403, 404, 410].includes(result.status)) { process.stderr.write('membership unavailable; stopping handler watch\n'); killChild(); process.exit(3); }
+      if ([401, 403, 404, 410].includes(result.status)) { process.stderr.write('membership unavailable; stopping handler watch\n'); stop(3); }
     } catch {} finally { reporting = false; }
   };
   const heartbeat = setInterval(() => void report(), 20_000);
@@ -214,7 +219,7 @@ async function watchHandler(home, path) {
       if (next) state.delivery = { seq: next.seq, id: `${m.roomId}:${next.seq}`, pid: process.pid };
       return next;
     });
-    if (!message) return null;
+    if (!message || stopping) return null;
     const event = { protocol: 'cafe-space-delivery-v1', id: `${m.roomId}:${message.seq}`, origin: m.origin, roomId: m.roomId, memberId: m.memberId, untrusted: true, message };
     // The executable is local configuration, never room content; no shell, token or text arguments.
     const response = new Promise((ok, no) => {
@@ -243,6 +248,7 @@ async function watchHandler(home, path) {
   };
   try {
     for (let first = true, backoff = 0; ;) {
+      if (stopping) return;
       try {
         await sync(home, first ? 0 : 20); first = false; backoff = 0;
         let accepted;
@@ -254,8 +260,8 @@ async function watchHandler(home, path) {
       }
     }
   } finally {
-    clearInterval(heartbeat); killChild(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('exit', killChild);
-    await transact(home, state => { if (state.deliveryWatcher?.id === watcher.id) delete state.deliveryWatcher; });
+    clearInterval(heartbeat); killChild(); await release();
+    process.removeListener('SIGINT', signalStop); process.removeListener('SIGTERM', signalStop); process.removeListener('exit', killChild);
   }
 }
 async function sync(home, wait) {
