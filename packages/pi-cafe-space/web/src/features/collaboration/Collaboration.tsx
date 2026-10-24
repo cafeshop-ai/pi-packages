@@ -182,25 +182,29 @@ function Room({ id, invite }: { id: string; invite: string }) {
   </section>;
 }
 
-function CopyButton({ text, label, done }: { text: string; label: string; done: string }) {
-  const [copied, setCopied] = useState(false);
-  return <Button onClick={() => { setCopied(false); void navigator.clipboard?.writeText(text).then(() => setCopied(true)).catch(() => setCopied(false)); }}><Icon name={copied ? 'check' : 'copy'} />{copied ? done : label}</Button>;
+function CopyButton({ text, label, done, primary }: { text: string; label: string; done: string; primary?: boolean }) {
+  const [copiedText, setCopiedText] = useState(''); const copied = copiedText === text;
+  return <Button variant={primary ? 'primary' : undefined} onClick={() => { setCopiedText(''); void navigator.clipboard?.writeText(text).then(() => setCopiedText(text)).catch(() => setCopiedText('')); }}><Icon name={copied ? 'check' : 'copy'} />{copied ? done : label}</Button>;
 }
 function AiInvitation({ link, tasks = [], me }: { link: string; tasks?: Task[]; me?: { id: string; name: string } }) {
   const [mode, setMode] = useState<AiMode>('listen'); const [reply, setReply] = useState<AiReply>('everyone'); const [taskId, setTaskId] = useState(0);
   // Only unassigned open tasks can be claimed by someone who has not joined yet.
   const open = tasks.filter(t => t.status !== 'done' && !t.assignee); const chosen = open.some(t => t.id === taskId) ? taskId : 0;
   const text = aiInstructions(link, mode, { reply, me, taskId: chosen || undefined });
-  return <details className={styles.aiInvite}><summary>让我的 AI 加入 · 无需安装</summary>
+  return <section className={styles.panelSection} aria-label="邀请 AI">
+    <p className={styles.note}>把整段邀请直接发给你的 AI，即授权它自行加入和参与讨论，无需再手动执行接入命令。Pi、Codex 等均可通过 HTTP 接入，不要求安装插件。不会授权它修改项目或分享本机资料。</p>
+    <CopyButton text={text} label="复制邀请与接入说明" done="邀请与说明已复制" primary />
+    <details className={styles.aiInvite}><summary>接入选项与说明</summary>
     <div className={styles.hosts} role="radiogroup" aria-label="你的 AI 怎样参与">
       {([['listen', '持续参与讨论'], ['task', '完成一项任务']] as const).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={mode === value} className={styles.host} onClick={() => setMode(value)}>{label}</button>)}
     </div>
-    <p>{mode === 'listen' ? '需要能在后台运行任务、有新消息时唤醒 AI 的客户端，例如 Claude Code；接通后成员列表显示“在线”。其他客户端只在你提醒时读取房间。' : '适合任何能发 HTTPS JSON 请求的 AI：加入、完成你指定的任务、交付结果后结束，不需要后台监听。'}</p>
+    <p>{mode === 'listen' ? '先通过 HTTP 加入，再由 AI 检查后台接收能力。能在新消息到达时唤醒 AI 才能持续监听；否则仍可加入，但只在会话执行期间或你提醒时读取。' : '适合任何能发 HTTPS JSON 请求的 AI：加入、完成你指定的任务、交付结果后结束，不需要后台监听。'}</p>
     {mode === 'listen' && <label className={styles.inviteChoice}>自动回复<select value={reply} onChange={e => setReply(e.target.value as AiReply)}><option value="everyone">回答所有人，操作只听我</option>{me && <option value="me">只回复我</option>}<option value="ask">先问我</option></select></label>}
     {mode === 'task' && open.length > 0 && <label className={styles.inviteChoice}>交给它的任务<select value={chosen} onChange={e => setTaskId(Number(e.target.value))}><option value={0}>先向我报告，再由我指定</option>{open.map(t => <option key={t.id} value={t.id}>#{t.id} {excerpt(t.title, 28)}</option>)}</select></label>}
     <Textarea aria-label="AI 接入说明" value={text} readOnly rows={7} />
-    <div className={styles.row}><CopyButton text={text} label="复制 AI 接入说明" done="说明已复制" /><a href="/api/collaboration/guide" target="_blank" rel="noreferrer">查看 HTTP 协议</a></div>
-  </details>;
+    <a href="/api/collaboration/guide" target="_blank" rel="noreferrer">查看 HTTP 协议</a>
+    </details>
+  </section>;
 }
 
 const statusOrder: [TaskStatus, string][] = [['doing', '进行中'], ['todo', '待办'], ['done', '已完成']];
@@ -338,7 +342,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     <div className={styles.person}>
       <p className={styles.personName}><strong>{m.name}</strong>{m.kind === 'ai' && <AgentTag member={m} />}{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
       <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? '' : '成员'}{state && <>{m.owner ? ' · ' : ''}<span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
-      {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 让我的 AI 加入 → 持续参与讨论”的说明启动监听。</p>}
+      {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 接入选项与说明 → 持续参与讨论”的说明检查后台接收能力。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
       {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
         return (last || own?.kind === 'human') && <p className={styles.probe}>
@@ -442,11 +446,13 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     {sideOpen && <Drawer label={tab === 'tasks' ? '任务' : '成员'} closeLabel="关闭" restoreFocusTo={sideButton.current} onClose={() => setSideOpen(false)}><div className={styles.drawerBody}>{side()}</div></Drawer>}
     {inviteOpen && <Drawer room label="邀请同事或 AI" closeLabel="收起邀请" restoreFocusTo={inviteButton.current} onClose={() => setInviteOpen(false)}>
       <div className={styles.drawerBody}>
-        <section className={styles.panelSection} aria-label="分享邀请">
-          <p className={styles.note}>收到链接的人确认后即可加入，能看到全部历史并继续邀请。请勿公开发布。</p>
-          {link ? <><Input aria-label="邀请链接" readOnly value={link} onFocus={e => e.currentTarget.select()} /><CopyButton text={link} label="复制邀请链接" done="邀请已复制" /></> : <p className={styles.note} role="status">{busy ? '正在生成邀请…' : '未能生成邀请，请关闭后重试。'}</p>}
-        </section>
-        {link && <AiInvitation link={link} tasks={tasks} me={own ? { id: own.id, name: own.name } : undefined} />}
+        {link ? <>
+          <AiInvitation link={link} tasks={tasks} me={own ? { id: own.id, name: own.name } : undefined} />
+          <section className={styles.panelSection} aria-label="分享邀请链接">
+            <p className={styles.note}>发给同事也可以仅复制链接，由对方在网页确认加入。新成员能看到全部历史并继续邀请，请勿公开发布。</p>
+            <Input aria-label="邀请链接" readOnly value={link} onFocus={e => e.currentTarget.select()} /><CopyButton text={link} label="仅复制链接" done="链接已复制" />
+          </section>
+        </> : <p className={styles.note} role="status">{busy ? '正在生成邀请…' : '未能生成邀请，请关闭后重试。'}</p>}
       </div>
     </Drawer>}
     {confirm && <Drawer compact label="确认操作" closeLabel="取消" restoreFocusTo={menuButton.current} onClose={() => setConfirm(null)}>

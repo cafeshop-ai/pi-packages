@@ -29,6 +29,21 @@ func contractFrom(t *testing.T, s *Store) map[string]any {
 	return doc
 }
 
+func TestGuideAndContractOfferDirectHTTPJoiningWithoutPluginCommands(t *testing.T) {
+	s := store(t)
+	doc, err := json.Marshal(contractFrom(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"guide": s.guide(), "contract": string(doc)} {
+		for _, want := range []string{"/cafe-collab", "optional Pi extension", "Codex", "without asking again", "manually run connection commands", "private credential storage", "not consent", "analysis", "host's"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s must explain %q", name, want)
+			}
+		}
+	}
+}
+
 func TestContractMatchesTheImplementation(t *testing.T) {
 	s := store(t)
 	doc := contractFrom(t, s)

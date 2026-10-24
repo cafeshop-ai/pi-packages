@@ -77,7 +77,8 @@ try {
     const context = await browser.newContext(); const page = await context.newPage(); const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
     await page.goto(origin + '/#/collab'); await page.getByLabel('房间名称').fill('浏览器多人讨论'); await page.getByLabel('你的名称', { exact: true }).fill('浏览器房主'); await page.getByRole('button', { name: '创建协作房间' }).click();
     await page.getByRole('button', { name: '邀请同事 / AI' }).click(); const url = await page.getByLabel('邀请链接', { exact: true }).inputValue();
-    await page.getByText('让我的 AI 加入 · 无需安装').click(); const instructions = await page.getByLabel('AI 接入说明').inputValue(); assert(instructions.includes('/api/collaboration/guide')); assert(!instructions.includes(owner.token));
+    await page.getByRole('button', { name: '复制邀请与接入说明' }).waitFor();
+    await page.getByText('接入选项与说明').click(); const instructions = await page.getByLabel('AI 接入说明').inputValue(); assert(instructions.includes('/api/collaboration/guide')); assert(!instructions.includes(owner.token));
     const otherContext = await browser.newContext(); const other = await otherContext.newPage(); other.on('pageerror', error => pageErrors.push(error.message));
     await other.goto(url); await other.getByLabel('你的名称', { exact: true }).fill('浏览器同事'); await other.getByRole('button', { name: '同意并加入' }).click();
     await other.getByLabel('消息', { exact: true }).fill('来自独立浏览器的消息'); await other.getByRole('button', { name: '发送', exact: true }).click();
