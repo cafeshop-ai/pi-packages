@@ -219,3 +219,42 @@ test('send retries safely, claims are idempotent and unknown updates are never r
   const tasks = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).tasks;
   assert.equal(tasks.find(t => t.id === task.id).status, 'doing', 'the unknown update was not replayed');
 });
+
+test('Goal CLI controls and notifications survive restart without consuming chat or replaying stale controls', { skip: !binary }, async () => {
+  const room = await api({ op: 'create', title: 'Goal CLI', name: 'Goal owner', kind: 'human' });
+  const invitation = await api({ op: 'invite', roomId: room.roomId }, room.token);
+  const admin = home('goal-owner'), worker = home('goal-worker');
+  writeFileSync(join(admin, 'member.json'), JSON.stringify({ ...room, origin }), { mode: 0o600 });
+  assert.equal(agent(worker, ['join', '--name', 'Goal worker'], invitation.url).code, 0);
+  const criteria = join(dir, 'goal-criteria.txt'); writeFileSync(criteria, 'The linked task is done and the owner reviews its evidence.');
+  const create = agent(admin, ['goal', 'create', '--title', 'Verify Goal', '--criteria-file', criteria, '--reviewer', room.memberId, '--revision', '0']);
+  assert.equal(create.code, 0, create.err); assert.equal(create.json().goal.status, 'active');
+  assert.equal(agent(worker, ['sync']).code, 0);
+  const event = agent(worker, ['next']).json(); assert.equal(event.type, 'goal'); assert.equal(event.revision, 1);
+  assert.equal(agent(worker, ['next']).json().revision, 1, 'a new process replays the unconfirmed Goal state');
+  assert.equal(agent(worker, ['done-goal', '1']).code, 0); assert.equal(agent(worker, ['next']).out, '');
+  assert.equal(agent(worker, ['status']).json().consumed, 0);
+  assert.equal(agent(worker, ['goal', 'pause', '1', '--revision', '1']).code, 1, 'AI cannot pause the room Goal');
+  assert.equal(agent(admin, ['goal', 'pause', '1', '--revision', '1']).json().goal.status, 'paused');
+  assert.equal(agent(admin, ['goal', 'resume', '1', '--revision', '1']).code, 1, 'stale revision is refused');
+  assert.equal(agent(admin, ['goal', 'resume', '1', '--revision', '2']).json().goal.status, 'active');
+  agent(worker, ['sync']); assert.equal(agent(worker, ['next']).json().revision, 3);
+  assert.equal(agent(worker, ['done-goal', '2']).code, 1); assert.equal(agent(worker, ['done-goal', '3']).code, 0);
+  const task = agent(worker, ['task', 'create', '--title', 'Verify result', '--goal-id', '1']).json(); assert.equal(task.goalId, 1);
+  assert.equal(agent(worker, ['task', 'update', String(task.id), '--status', 'done']).code, 0);
+  const evidence = join(dir, 'goal-evidence.txt'); writeFileSync(evidence, 'Result verified.');
+  const sent = agent(worker, ['send', '--text-file', evidence]).json();
+  assert.equal(agent(worker, ['goal', 'submit', '1', '--revision', '3', '--result', String(sent.seq)]).json().goal.status, 'review');
+  assert.equal(agent(worker, ['goal', 'accept', '1', '--revision', '4']).code, 1);
+  assert.equal(agent(admin, ['goal', 'accept', '1', '--revision', '4']).json().goal.status, 'done');
+  await stopRelay();
+  const unknown = agent(admin, ['goal', 'delete', '1', '--revision', '5']);
+  assert.equal(unknown.code, 2); assert.equal(unknown.json().unknown, true);
+  await startRelay();
+  assert.equal(agent(admin, ['goal', 'read']).json().goal.status, 'done', 'unknown Goal writes are not replayed');
+  assert.equal(agent(admin, ['goal', 'delete', '1', '--revision', '5']).json().goal, null);
+  agent(worker, ['sync']); const deleted = agent(worker, ['next']).json(); assert.equal(deleted.type, 'goal'); assert.equal(deleted.goal, null);
+  assert.equal(agent(worker, ['done-goal', '6']).code, 0);
+  const view = agent(worker, ['goal', 'read']).json(); assert.equal(view.goal, null); assert.equal(view.tasks.length, 1);
+  for (const text of outputs) { assert(!text.includes(room.token)); assert(!text.includes(invitation.invite)); }
+});

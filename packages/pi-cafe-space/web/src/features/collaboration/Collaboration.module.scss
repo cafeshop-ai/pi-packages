@@ -236,6 +236,16 @@
 .panelSection { display: grid; gap: 12px; }
 
 .board { display: grid; gap: 16px; }
+.goal { min-width: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--cafe-line); border-radius: 16px; background: var(--cafe-surface); overflow-wrap: anywhere;
+  h3, h4 { margin: 0; font-size: 14px; font-weight: 600; }
+  summary { cursor: pointer; color: var(--cafe-accent); font-size: 12px; }
+  input, textarea, select { min-width: 0; max-width: 100%; }
+  textarea { field-sizing: fixed; }
+  .inviteChoice { flex-wrap: wrap; }
+}
+.goalHead { display: flex; justify-content: space-between; gap: 8px; span { font-size: 12px; color: var(--cafe-accent); } }
+.goalCriteria { white-space: pre-wrap; font-size: 13px; line-height: 1.7; max-height: 200px; overflow: auto; }
+.goalForm { display: grid; gap: 8px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--cafe-line); p { font-size: 12px; } }
 .boardHead { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--cafe-line); border-radius: 16px; background: linear-gradient(135deg, rgb(239 180 122 / .1), rgb(134 211 173 / .06));
   p { color: var(--cafe-muted); font-size: 12.5px; strong { color: var(--cafe-ink); font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; } }
   progress { width: 100%; height: 8px; appearance: none; border: 0; border-radius: 999px; background: rgb(0 0 0 / .3); overflow: hidden;

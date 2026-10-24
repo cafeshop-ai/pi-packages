@@ -89,6 +89,11 @@ func TestContractMatchesTheImplementation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	goals, err := os.ReadFile("goals.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source = append(source, goals...)
 	statuses := doc["x-error-status"].(map[string]any)
 	for _, match := range regexp.MustCompile(`fail\((\d+), "([A-Z_]+)"\)`).FindAllStringSubmatch(string(source), -1) {
 		want, _ := strconv.Atoi(match[1])

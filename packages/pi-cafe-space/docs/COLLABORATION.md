@@ -15,6 +15,10 @@
 7. 任务板为空时可以从“代码评审 / 故障排查 / 工作交接”清单开始；重复点击不会产生重复任务。
 8. 成员列表里，人类成员可以对 AI 点“测试响应”：发出一条点名该 AI、以“【响应测试】”开头并带 4 位验证码的普通消息。该 AI 之后发出的含验证码的消息（如带 replyTo 须指向这条测试）即为回复，所有成员都从房间历史得出同一结果：“本次响应测试成功，耗时 X”；10 分钟内没有回复则显示“尚未确认响应，原因未知”（可能忙碌、暂停、额度用尽或未在监听）。成功只说明这一次在房间里往返，不代表持续在线或后台自动处理。为免消耗对方额度，页面按房间历史限制每个 AI 10 分钟一次、24 小时最多 6 次；这是页面礼让而非服务端限额，绕过页面发消息仍受成员配额约束，房主可暂停 AI 或移除成员。
 
+## Goal
+
+每房间一个当前 Goal，复用任务板；房主可暂停、Resume、确认删除，由指定人类验收人确认完成。HTTP、通用客户端通知、状态权限与 **version=2 数据升级/回退限制**见 [房间 Goal](COLLABORATION_GOAL.md)。Goal 不是新的本机操作授权，也不保证没有唤醒接口的 Agent 自动继续。
+
 ## 数据与安全
 
 - 房间与消息以**明文**持久保存在 cloud 的显式私有目录，不是端到端加密。需要信任发布者、服务器及其备份管理员。不要分享秘密或未经许可的项目资料。
@@ -37,10 +41,11 @@
 | create | title, name（≤16 字）, kind="human" | 无；用户明确发起；返回roomId/memberId/token；名称过长返回 400 NAME_TOO_LONG |
 | preview | roomId, invite | 持有效邀请；不创建成员，只返回房间名、自声明邀请人、成员数、到期与加入后可见/可做的范围；无效/过期/撤销/不存在一律 403 INVITE_INVALID |
 | join | roomId, invite, name（≤16 字）, kind="human"或"ai"；可选 agent（仅 kind=ai，运行时类型如 claude-code / codex / pi，小写字母、数字、点和连字符，≤24） | 有效邀请；名称过长 400 NAME_TOO_LONG，agent 不合规 400 INVALID_AGENT；返回独立成员凭据（读到原始响应的工具即能看到 token，应由能私密保存的客户端完成加入） |
-| read | roomId, after=0；可选 wait（1–50秒） | 成员；返回title/members/messages/cursor/more/expires/presence/aiPaused；带wait且无新消息时等到新消息或超时（超时为空页、cursor不变） |
+| read | roomId, after=0；可选 wait（1–50秒） | 成员；返回title/members/messages/cursor/more/expires/presence/aiPaused/tasks/goal/goalRevision；带wait且无新消息时等到持久状态变化或超时（空页的cursor不变，Goal变化看独立revision） |
 | ack | roomId；可选 fetched、delivered（序号）、paused | 成员；只更新自己的连接器进度和心跳，仅内存保存 |
-| pause | roomId, paused=true/false | 房主；暂停/恢复房间内 AI 发言（服务端同时拒绝 AI 发帖和改动任务） |
-| task | roomId, action=create（id, title；可选 assignee, from, status）/ update（taskId；title/status/assignee/resultSeq 任一，可选 onlyIfUnassigned）/ delete（taskId） | 成员；创建按“成员+id”幂等，按原始创建请求（标题、来源、负责人、状态）的指纹识别重试，任务之后被改过也返回它的当前状态，同 id 不同请求体返回 409 ID_CONFLICT（指纹上线前创建的旧任务仍与当前标题和来源比较；回滚到 fbf6f81 之前的版本仍能加载带指纹的任务，但该版本保存房间时会丢弃指纹，再升级后这些任务按无指纹旧数据处理）；任何成员可把未认领任务原子认领给自己（带 onlyIfUnassigned 时已被认领返回 409 TASK_TAKEN，纯认领重试返回现状）；状态与负责人只由负责人、创建者、房主修改，标题限创建者或房主；resultSeq 必须是提交者本人的消息，记录为“已提交结果”（result/resultBy），改派或重开后保留为历史；删除限创建者或房主；每房间最多200个任务，与发送共用每分钟20次额度 |
+| pause | roomId, paused=true/false | 房主；暂停/恢复房间内 AI 发言（服务端同时拒绝 AI 发帖、改动任务和 Goal） |
+| task | roomId, action=create（id, title；可选 assignee, from, status, goalId）/ update（taskId；title/status/assignee/resultSeq 任一，可选 onlyIfUnassigned）/ delete（taskId） | 成员；创建按“成员+id”幂等，按原始创建请求（标题、来源、负责人、状态）的指纹识别重试，任务之后被改过也返回它的当前状态，同 id 不同请求体返回 409 ID_CONFLICT（指纹上线前创建的旧任务仍与当前标题和来源比较；仅对从未使用 Goal 的 v1 房间，回滚到 fbf6f81 之前的版本仍能加载带指纹的任务，但该版本保存房间时会丢弃指纹，再升级后这些任务按无指纹旧数据处理）；任何成员可把未认领任务原子认领给自己（带 onlyIfUnassigned 时已被认领返回 409 TASK_TAKEN，纯认领重试返回现状）；状态与负责人只由负责人、创建者、房主修改，标题限创建者或房主；resultSeq 必须是提交者本人的消息，记录为“已提交结果”（result/resultBy），改派或重开后保留为历史；删除限创建者或房主；每房间最多200个任务，与发送共用每分钟20次额度 |
+| goal | roomId、action、goalRevision；非 create 另带 goalId；其余见 [Goal 契约](COLLABORATION_GOAL.md) | 房主管理生命周期，任意成员提交自己的证据，仅指定人类验收人 accept/reject；旧 revision 拒绝 |
 | send | roomId, id, text；可选 to（成员ID）、replyTo（序号） | 成员；返回已持久化消息 |
 | invite | roomId | 成员；返回invite/url；仅用户要求时转发 |
 | leave | roomId | 非房主成员 |
@@ -70,7 +75,7 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 - 平台：仅 Linux/macOS。`--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600，否则拒绝运行；Windows 直接拒绝（私有目录/ACL 支持未完成，见任务板），Linux/macOS 通过不等于任意 Agent 运行时通过。
 - 凭据：邀请只从 stdin 读，不进命令参数；加入后 token 只写入私有文件，输出只有成员句柄；所有输出与错误都会遮蔽 token 与邀请。只连 https（回环地址可用 http），不跟随重定向。
-- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；锁文件先写好内容再原子放置，不会出现空锁；持锁进程中途退出时不自动接管（检查后再替换不是原子操作），所有写操作直接报错停止，由用户确认没有其他 space-agent 使用这个 home 后执行 `unlock` 恢复（持锁进程仍在运行时 `unlock` 拒绝）。写文件时按实际写入字节数循环直到写完，没有进展即报错；收件箱完整写入并落盘后才提交 fetched；崩溃留下的半行在下次写入前截掉并重新获取，已有的消息不会重复追加。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
+- 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 优先给出未确认的最新 Goal 状态（用 `done-goal <revision>` 单独确认），否则给出最早未确认的消息；只有 `done <seq>` 按顺序确认（consumed），跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；锁文件先写好内容再原子放置，不会出现空锁；持锁进程中途退出时不自动接管（检查后再替换不是原子操作），所有写操作直接报错停止，由用户确认没有其他 space-agent 使用这个 home 后执行 `unlock` 恢复（持锁进程仍在运行时 `unlock` 拒绝）。写文件时按实际写入字节数循环直到写完，没有进展即报错；收件箱完整写入并落盘后才提交 fetched；崩溃留下的半行在下次写入前截掉并重新获取，已有的消息不会重复追加。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
 - 请求时限覆盖长轮询的整个等待时间，安静的房间不算失败。
 - 逐操作恢复（结果未知＝网络错误、超时或 5xx）：read/preview/ack 自由重试；send 与 task create 用同一 id 和请求体重试，ID_CONFLICT 即停；未指定 `--id` 时 id 由内容推导，本次重试全部失败时输出该 id 并以 2 退出，之后重跑同一命令即复用它；task claim 可重试（服务端对重复认领返回现状）；其他 task update/delete 从不重试，只记录意图并读回任务现状供核对；join 不重试，提示可能已创建成员。
 - 测试：`PI_CAFE_RELAY_BINARY=/abs/pi-cafe-relay node --test scripts/space-agent.test.mjs`，覆盖权限错误、非 https、重定向、凭据不出现在任何输出、乱序确认、显式跳过、重启重放、手动查看后不重复投递、发送重试、认领幂等与未知更新不重放；并覆盖长轮询期间并发确认、watch 重启重放积压、跨进程以同一 id 恢复写入、崩溃留下的半行与越过游标的整行、持锁进程退出后失败停止与 unlock（这些来自 Pi 的独立核验反例）。
@@ -138,7 +143,7 @@ services:
 
 这个片段是对现有服务的**精确合并示意**，不能覆盖原environment/volumes。在 Cloudflare + 本机反向代理之后上线时，另加 `PI_CAFE_COLLAB_TRUSTED_PROXIES`（cloud 实际看到的代理地址，例如 Docker 网桥网关 `192.168.48.1`，用容器网络命名空间里的 `ss` 核对）与 `PI_CAFE_COLLAB_CLIENT_IP_HEADER: CF-Connecting-IP`，否则所有访客共用一份匿名配额；按需设置 `PI_CAFE_COLLAB_MAX_ROOMS`、`PI_CAFE_COLLAB_RETENTION_DAYS`、`PI_CAFE_COLLAB_MAX_STORE_MB`。功能只在cloud模式启用，缺省关闭；不能放到用户办公网关。持久挂载必须可写且归实际cloud UID所有，原cloud配置文件的所有者/只读权限不得丢失。
 
-4. 验证Compose后只更新cloud服务。不要重建TURN、身份服务或主站，不重启Docker、不全局prune。单进程JSON存储不支持新旧cloud同时写同一目录；先关闭旧写者，再切换。失败恢复旧镜像与Compose，保留新持久目录用于排查，不删除数据。
+4. 验证Compose后只更新cloud服务。不要重建TURN、身份服务或主站，不重启Docker、不全局prune。单进程JSON存储不支持新旧cloud同时写同一目录；先关闭旧写者，再切换。失败回退前先核对存储版本：未使用 Goal 的 v1 数据可恢复旧镜像与Compose；首次使用 Goal 后的 v2 数据不能交给不支持 v2 的旧镜像，按 [Goal 回退限制](COLLABORATION_GOAL.md#存储升级和回退) 处理。保留持久目录用于排查，不删除或擅自改写数据。
 5. 从公网确认 `POST /api/collaboration {"op":"status"}` enabled=true、guide可读、新JS/CSS匹配。用**新建的临时测试房间**验证网页创建、两浏览器加入、HTTP AI加入/发言/继续邀请、定向回复、移除/撤销/关闭，以及cloud重启后恢复。用合成内容，勿重放用户任务或调用真实模型。核查原电脑房间入口与账号入口未回归。记录是否真的执行了目标平台/公网/手机验收；仅healthz=200不够。
 
 房间入口为本站 `/#/collab`。使用者在房间里点击“邀请同事 / AI”，把“AI 接入说明”交给自己的客户端即可。

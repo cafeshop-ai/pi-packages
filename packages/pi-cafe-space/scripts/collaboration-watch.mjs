@@ -11,6 +11,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { mergeGoal, pendingGoal } from './collaboration-goal.mjs';
 
 const { values } = parseArgs({ options: { credentials: { type: 'string' }, state: { type: 'string' }, cursor: { type: 'string' }, authorized: { type: 'string' }, origin: { type: 'string' } } });
 if (!values.credentials) throw Error('--credentials <member.json> is required');
@@ -33,6 +34,7 @@ try { features = (await call({ op: 'status' })).json.features ?? []; } catch {}
 const wait = features.includes('wait'), ack = features.includes('ack');
 say(`[watch] room ${roomId.slice(0, 6)} after #${cursor}; ${wait ? 'long-poll wait' : 'polling'}${ack ? ', reporting ack' : ''}`);
 
+const goal = {};
 const names = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
 // Brief outages (a restart) recover in seconds; longer ones back off to 30s.
 const retry = async () => { backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff); };
@@ -47,6 +49,9 @@ for (;;) {
   if (result.status !== 200) { say(`[watch] stopped: HTTP ${result.status} ${result.json.error ?? ''}`); process.exit(1); }
   backoff = 0;
   const page = result.json;
+  mergeGoal(goal, page);
+  const goalEvent = pendingGoal(goal);
+  if (goalEvent) { say(JSON.stringify(goalEvent)); goal.goalConsumed = goalEvent.revision; } // Output only, not model processing or Goal completion.
   for (const m of page.members) names.set(m.id, m.name);
   if (members) for (const m of page.members) {
     const old = members.get(m.id);

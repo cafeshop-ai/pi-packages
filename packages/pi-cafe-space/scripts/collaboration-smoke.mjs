@@ -43,7 +43,7 @@ try {
   let snapshot = await api({ op: 'read', roomId: owner.roomId }, colleague.token);
   assert.equal(snapshot.messages.length, 2); assert.equal(snapshot.members.length, 3); assert(!JSON.stringify(snapshot).includes(owner.token)); checks.push('three independent HTTP members, forwarded invitation, addressed reply and idempotent delivery');
   await api({ op: 'read', roomId: owner.roomId }, undefined, 401); await api({ op: 'status' }, undefined, 403, 'https://untrusted.example'); checks.push('anonymous reads and cross-origin writes denied');
-  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause', 'tasks', 'preview', 'claim', 'contract']);
+  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause', 'tasks', 'preview', 'claim', 'contract', 'goal']);
   const board = await api({ op: 'task', roomId: owner.roomId, action: 'create', id: 'smoke-task-0001', title: '核对接口版本', assignee: ai.memberId, from: 1 }, owner.token);
   await api({ op: 'task', roomId: owner.roomId, action: 'update', taskId: board.id, status: 'done' }, ai.token);
   assert.equal((await api({ op: 'read', roomId: owner.roomId }, colleague.token)).tasks.find(t => t.id === board.id)?.status, 'done'); checks.push('task board: create with assignee and source message, AI completes it over HTTP');
@@ -54,7 +54,7 @@ try {
   assert.equal((await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId].delivered, 3);
   const credentials = join(temporary, 'member.json'); await writeFile(credentials, JSON.stringify({ roomId: owner.roomId, memberId: ai.memberId, token: ai.token }), { mode: 0o600 });
   const watcher = spawn(process.execPath, [fileURLToPath(new URL('./collaboration-watch.mjs', import.meta.url)), '--credentials', credentials, '--origin', origin, '--cursor', '3', '--authorized', owner.memberId], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  const lines = []; watcher.stdout.on('data', b => lines.push(...String(b).split('\n').filter(Boolean)));
+  const lines = []; let lineBuffer = ''; watcher.stdout.on('data', b => { const parts = (lineBuffer + String(b)).split('\n'); lineBuffer = parts.pop(); lines.push(...parts.filter(Boolean)); });
   try {
     for (let i = 0; i < 50 && !lines.some(l => l.startsWith('[watch]')); i++) await sleep(100);
     assert(lines.some(l => l.includes('long-poll wait') && l.includes('reporting ack')), 'watcher did not detect wait/ack');
@@ -66,6 +66,15 @@ try {
     assert(!lines.join('\n').includes(ai.token), 'watcher printed a credential');
     let delivered = 0; for (let i = 0; i < 30 && delivered < 5; i++) { delivered = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).presence[ai.memberId]?.delivered ?? 0; if (delivered < 5) await sleep(100); }
     assert.equal(delivered, 5, 'watcher did not ack delivery');
+    let goalRevision = 0, goalId;
+    for (const action of ['create', 'pause', 'resume', 'delete']) {
+      const changed = await api({ op: 'goal', roomId: owner.roomId, action, goalRevision, ...(action === 'create' ? { title: 'Goal 通知验证', criteria: '状态变化无需聊天消息也能送达', reviewer: owner.memberId } : { goalId }) }, owner.token);
+      goalRevision = changed.goalRevision; goalId ??= changed.goal?.id;
+      for (let i = 0; i < 60 && !lines.some(line => line.startsWith('{') && JSON.parse(line).type === 'goal' && JSON.parse(line).revision === goalRevision); i++) await sleep(100);
+      assert(lines.some(line => line.startsWith('{') && JSON.parse(line).type === 'goal' && JSON.parse(line).revision === goalRevision), 'watcher missed Goal ' + action);
+    }
+    assert.equal((await api({ op: 'read', roomId: owner.roomId }, owner.token)).cursor, 5, 'Goal controls must not consume chat capacity');
+    checks.push('Goal create/pause/resume/delete wake a generic watcher independently of chat messages');
   } finally { watcher.kill(); }
   checks.push('background watcher: long-poll wake-up, out-of-scope marking, ack delivered, no credential output');
   await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token, 403); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
@@ -84,12 +93,42 @@ try {
     await other.getByLabel('消息', { exact: true }).fill('来自独立浏览器的消息'); await other.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByText('来自独立浏览器的消息', { exact: true }).waitFor({ timeout: 15000 });
     await page.getByRole('button', { name: '收起邀请', exact: true }).click();
+    await page.getByRole('button', { name: '设置 Goal', exact: true }).click();
+    await page.getByLabel('目标', { exact: true }).fill('验证 Goal 暂停、Resume 与指定验收');
+    await page.getByLabel('验收条件与限制').fill('任务完成且证据可读；保留聊天和数据。');
+    await page.getByLabel('Goal 验收人').selectOption({ label: '浏览器同事' });
+    await page.getByRole('button', { name: '启动 Goal', exact: true }).click();
+    await page.getByLabel('新任务', { exact: true }).fill('检查 Goal 状态'); await page.getByLabel('新任务', { exact: true }).press('Enter');
+    const advance = page.getByRole('button', { name: '开始「检查 Goal 状态」', exact: true }); await advance.waitFor();
+    await page.getByRole('button', { name: '暂停 Goal', exact: true }).click(); await page.getByRole('button', { name: 'Resume Goal', exact: true }).waitFor();
+    assert(await advance.isDisabled(), 'paused Goal task must be frozen');
+    await page.getByRole('button', { name: 'Resume Goal', exact: true }).click(); await page.getByRole('button', { name: '暂停 Goal', exact: true }).waitFor();
+    await advance.click(); await page.getByRole('button', { name: '完成「检查 Goal 状态」', exact: true }).click();
+    await page.getByLabel('消息', { exact: true }).fill('Goal 验收证据：暂停与 Resume 已核对。'); await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.getByLabel('完成证据消息').selectOption({ index: 1 }); await page.getByRole('button', { name: '提交 Goal 验收', exact: true }).click();
+    await other.getByRole('button', { name: '验收通过', exact: true }).waitFor({ timeout: 15000 });
+    assert.equal(await page.getByRole('button', { name: '验收通过', exact: true }).count(), 0, 'owner cannot accept for the reviewer');
+    await other.getByRole('button', { name: '验收通过', exact: true }).click();
+    await page.getByRole('button', { name: '新建下一个 Goal', exact: true }).waitFor({ timeout: 15000 });
     const out = resolve(values.out ?? '.refactor/collaboration-browser'); await mkdir(out, { recursive: true });
     for (const [width, height] of [[1440, 900], [1280, 720], [390, 844], [320, 700]]) {
       await page.setViewportSize({ width, height }); await sleep(100);
+      if (width < 760) await page.getByRole('button', { name: '任务', exact: true }).click();
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `horizontal overflow at ${width}`);
-      await page.screenshot({ path: join(out, `discussion-${width}.png`), fullPage: true });
+      await page.screenshot({ path: join(out, `discussion-${width}.png`), fullPage: true, animations: 'disabled' });
+      if (width < 760) await page.getByRole('button', { name: '关闭', exact: true }).click();
     }
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.getByRole('button', { name: '删除 Goal', exact: true }).click(); await page.getByRole('button', { name: '确认删除 Goal', exact: true }).click();
+    await page.getByRole('button', { name: '设置 Goal', exact: true }).waitFor();
+    assert.equal(await page.getByText('检查 Goal 状态', { exact: true }).count(), 1, 'Goal deletion must retain the task');
+    await page.getByRole('button', { name: '设置 Goal', exact: true }).click();
+    await page.getByLabel('验收条件与限制').fill('https://example.test/' + 'evidence'.repeat(200));
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.getByRole('button', { name: '任务', exact: true }).click();
+    assert(await page.getByRole('region', { name: '房间 Goal' }).evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'long criteria must not widen the mobile Goal form');
+    await page.screenshot({ path: join(out, 'goal-create-320.png'), fullPage: true, animations: 'disabled' });
+    checks.push('browser Goal lifecycle: create, linked task, pause/resume fence, designated human acceptance, delete preserving tasks');
     await other.reload(); await other.getByRole('heading', { name: '浏览器多人讨论', exact: true }).waitFor(); assert.deepEqual(pageErrors, []);
     const home = await context.newPage(); await home.setViewportSize({ width: 320, height: 700 }); await home.goto(origin + '/');
     await home.getByRole('button', { name: '中文', exact: true }).click(); await home.getByRole('link', { name: '协作房间 · 人与 AI' }).waitFor();

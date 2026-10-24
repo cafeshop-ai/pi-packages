@@ -7,6 +7,7 @@ import { Drawer } from '../../components/ui/Drawer';
 import { Icon } from '../../components/ui/Icon';
 import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiMode, type AiReply, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
+import { GoalPanel } from './GoalPanel';
 import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
 import styles from './Collaboration.module.scss';
@@ -229,7 +230,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       let delay = 5000;
       try {
         const value = await collaboration<Snapshot>({ op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, abort.signal);
-        if (stopped) return; setSnapshot(value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
+        if (stopped) return; setSnapshot(old => (old?.goalRevision ?? 0) > (value.goalRevision ?? 0) ? { ...value, goal: old?.goal, goalRevision: old?.goalRevision, tasks: old?.tasks } : value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
         setMessages(old => { const seen = new Set(old.map(m => m.seq)); return [...old, ...value.messages.filter(m => !seen.has(m.seq))].sort((a, b) => a.seq - b.seq); });
         if (value.more) delay = 0;
       } catch (e) {
@@ -258,7 +259,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const taskAct = async (fields: Record<string, unknown>, done?: string) => {
     setError('');
     try {
-      const value = await call<Task | { ok: true }>({ op: 'task', ...fields });
+      const value = await call<Task | { ok: true }>({ op: 'task', ...(fields.action === 'create' && snapshot?.goal?.status === 'active' ? { goalId: snapshot.goal.id } : {}), ...fields });
       setSnapshot(old => {
         if (!old) return old; const tasks = old.tasks ?? [];
         if (fields.action === 'delete') return { ...old, tasks: tasks.filter(t => t.id !== fields.taskId) };
@@ -290,7 +291,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const own = members.find(m => m.id === auth.memberId); const owner = !!own?.owner;
   const memberOf = (memberId?: string) => members.find(m => m.id === memberId);
   const nameOf = (memberId: string) => memberOf(memberId)?.name ?? '已离开的成员';
-  const now = Date.now(); const tasks = snapshot?.tasks ?? []; const openTasks = tasks.filter(t => t.status !== 'done').length;
+  const now = Date.now(); const tasks = snapshot?.tasks ?? []; const goalFrozen = !!snapshot?.goal && snapshot.goal.status !== 'active'; const openTasks = tasks.filter(t => t.status !== 'done').length;
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
   const aiOnline = active.filter(m => presenceOf(m) === 'online').length;
   const thinking = thinkingOf(members, messages, presence, now);
@@ -303,7 +304,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const addTask = (event: FormEvent) => { event.preventDefault(); const title = draft.trim(); if (!title) return; void taskAct({ action: 'create', id: crypto.randomUUID(), title }).then(ok => { if (ok) setDraft(''); }); };
   const applyTemplate = async (template: Template) => {
     setApplying(template.key); let added = 0;
-    for (const [index, title] of template.tasks.entries()) { if (!await taskAct({ action: 'create', id: templateTaskId(template, index), title })) break; added++; }
+    for (const [index, title] of template.tasks.entries()) { if (!await taskAct({ action: 'create', id: templateTaskId(template, index) + (snapshot?.goal?.status === 'active' ? `-goal-${snapshot.goal.id}` : ''), title })) break; added++; }
     setApplying(''); if (added === template.tasks.length) setNotice(`已添加「${template.label}」的 ${added} 项任务`);
   };
   const fromMessage = (message: Message) => void taskAct({ action: 'create', id: crypto.randomUUID(), title: excerpt(message.text, 80), from: message.seq, ...(memberOf(message.to)?.kind === 'ai' ? { assignee: message.to } : {}) }, '已加入任务板').then(ok => { if (ok) setTab('tasks'); });
@@ -311,28 +312,30 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const board = (): ReactNode => {
     const done = tasks.filter(t => t.status === 'done').length;
     return <div className={styles.board}>
+      {snapshot && <GoalPanel key={snapshot.goal?.id ?? 'none'} snapshot={snapshot} auth={auth} messages={messages} disabled={terminal} onJump={jump} onChange={value => setSnapshot(old => old && value.goalRevision >= (old.goalRevision ?? 0) ? { ...old, ...value } : old)} />}
       <div className={styles.boardHead}><p><strong>{done}</strong> / {tasks.length} 已完成</p><progress aria-label="任务完成度" value={done} max={Math.max(tasks.length, 1)} /></div>
-      <form className={styles.addTask} onSubmit={addTask}><Icon name="plus" /><Input aria-label="新任务" placeholder="添加任务，回车保存" value={draft} maxLength={200} disabled={terminal || !snapshot} onChange={e => setDraft(e.target.value)} /></form>
+      <form className={styles.addTask} onSubmit={addTask}><Icon name="plus" /><Input aria-label="新任务" placeholder="添加任务，回车保存" value={draft} maxLength={200} disabled={terminal || !snapshot || goalFrozen} onChange={e => setDraft(e.target.value)} /></form>
       {tasks.length === 0 && <div className={styles.boardEmpty}><p>还没有任务。把讨论里的事项“转为任务”，或从一套清单开始：</p>
-        <div className={styles.templates}>{templates.map(t => <button key={t.key} type="button" className={styles.template} disabled={terminal || !snapshot || !!applying} aria-busy={applying === t.key} onClick={() => void applyTemplate(t)}><strong>{t.label}</strong><span>{t.hint}</span></button>)}</div>
+        <div className={styles.templates}>{templates.map(t => <button key={t.key} type="button" className={styles.template} disabled={terminal || !snapshot || !!applying || goalFrozen} aria-busy={applying === t.key} onClick={() => void applyTemplate(t)}><strong>{t.label}</strong><span>{t.hint}</span></button>)}</div>
       </div>}
       {statusOrder.map(([status, label]) => { const items = tasks.filter(t => t.status === status); return items.length > 0 && <section key={status} className={styles.taskGroup} data-status={status}>
         <h3>{label}<span>{items.length}</span></h3>
         <ul>{items.map(task => {
           // Mirrors the server: status belongs to the assignee, creator and owner; anyone may claim an unassigned task.
           const assignee = memberOf(task.assignee); const privileged = owner || task.createdBy === auth.memberId; const mineTask = task.assignee === auth.memberId;
-          const canMove = privileged || mineTask; const canClaim = !task.assignee && !canMove;
+          const frozen = goalFrozen && task.goalId === snapshot?.goal?.id;
+          const canMove = !frozen && (privileged || mineTask); const canClaim = !frozen && !task.assignee && !canMove;
           const choices = privileged ? active : mineTask || !task.assignee ? active.filter(m => m.id === auth.memberId) : [];
           return <li key={task.id} className={styles.task} data-status={task.status}>
           <button type="button" className={styles.check} data-status={task.status} aria-label={canClaim ? `认领「${task.title}」` : `${statusAction[task.status]}「${task.title}」`} title={!canMove && !canClaim ? `由 ${assignee?.name ?? '负责人'} 推进` : undefined} disabled={terminal || (!canMove && !canClaim)}
             onClick={() => void taskAct(canClaim ? { action: 'update', taskId: task.id, assignee: auth.memberId, status: 'doing', onlyIfUnassigned: true } : { action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
-          <div className={styles.taskMain}><p>{task.title}</p>
+          <div className={styles.taskMain}><p>{task.title}</p>{task.goalId && <span className={styles.meta}>Goal #{task.goalId}{frozen ? ' · 已停止推进' : ''}</span>}
             {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
           <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
-            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select>}
+            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal || frozen} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select>}
           </span>
-          {(owner || task.createdBy === auth.memberId) && <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>}
+          {(owner || task.createdBy === auth.memberId) && <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal || frozen} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>}
         </li>; })}</ul>
       </section>; })}
     </div>;
@@ -418,7 +421,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                   </div>
                   <div className={styles.messageActions}>
                     <IconButton label={`回复 #${message.seq}`} variant="quiet" disabled={terminal} onClick={() => { setReply(message.seq); setTo(mine ? to : message.memberId); setSelected(0); }}><Icon name="back" /></IconButton>
-                    <IconButton label="转为任务" variant="quiet" disabled={terminal} onClick={() => { fromMessage(message); setSelected(0); }}><Icon name="check" /></IconButton>
+                    <IconButton label="转为任务" variant="quiet" disabled={terminal || goalFrozen} onClick={() => { fromMessage(message); setSelected(0); }}><Icon name="check" /></IconButton>
                   </div>
                 </article>
               </div>;

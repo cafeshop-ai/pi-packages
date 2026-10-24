@@ -17,6 +17,10 @@
 //   space-agent --home <dir> task claim <taskId>
 //   space-agent --home <dir> task update <taskId> [--status s] [--assignee id] [--result seq] [--title t]
 //   space-agent --home <dir> task delete <taskId>
+//   space-agent --home <dir> goal read
+//   space-agent --home <dir> goal create --title <t> --criteria-file <f> --reviewer <human id> --revision <n>
+//   space-agent --home <dir> goal pause|resume|delete|reviewer|submit|accept|reject <goalId> --revision <n> [--reviewer id] [--result seq]
+//   space-agent --home <dir> done-goal <revision>      confirms a next/watch Goal notification, not Goal completion
 //   space-agent --home <dir> unlock                    recovery: clear a lock left by a process that died
 //
 // RECOVERY (unknown result = network error, timeout or 5xx):
@@ -32,6 +36,7 @@ import { closeSync, constants, fsyncSync, ftruncateSync, linkSync, lstatSync, mk
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { consumeGoal, goalState, mergeGoal, pendingGoal } from './collaboration-goal.mjs';
 
 class Fail extends Error { constructor(message, code = 1) { super(message); this.exit = code; } }
 const secrets = new Set();
@@ -180,7 +185,7 @@ async function sync(home, wait) {
     // done, skip or another sync may have run while this one waited: merge into the state on disk now.
     fetched.push(...await transact(home, state => {
       const fresh = page.messages.filter(x => x.seq > state.fetched);
-      appendInbox(home, fresh); state.fetched = Math.max(state.fetched, page.cursor); state.aiPaused = page.aiPaused; return fresh;
+      appendInbox(home, fresh); state.fetched = Math.max(state.fetched, page.cursor); state.aiPaused = page.aiPaused; mergeGoal(state, page); return fresh;
     }));
     after = Math.max(after, page.cursor); more = page.more; wait = 0;
   }
@@ -202,6 +207,7 @@ async function main(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
+    'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
     assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (command === 'preview' || command === 'join') {
@@ -227,14 +233,15 @@ async function main(argv) {
     if (pid > 0 && alive(pid)) throw new Fail(`pid ${pid} is still running; stop it first`);
     unlinkSync(lockPath(home)); return print({ unlocked: true, previousHolder: pid || 'unknown' });
   }
-  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length }); }
+  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0 }); }
   if (command === 'read') {
     // A manual view: it never changes what counts as consumed.
     const m = member(home); const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: Number(values.after ?? 0) }, m.token);
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
-  if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed }); }
-  if (command === 'next') { const m = member(home); const next = await transact(home, state => pending(home, m, state)); return next ? print(next) : undefined; }
+  if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed, goal: state.goal ?? null, goalRevision: state.goalRevision ?? 0 }); }
+  if (command === 'next') { const m = member(home); const next = await transact(home, state => pendingGoal(state) ?? pending(home, m, state)); return next ? print(next) : undefined; }
+  if (command === 'done-goal') { const revision = Number(sub); await transact(home, state => consumeGoal(state, revision)); return print({ goalConsumed: revision }); }
   if (command === 'done' || command === 'skip') {
     const m = member(home); const seq = Number(sub);
     if (command === 'skip' && !values.reason) throw new Fail('skip needs --reason');
@@ -250,8 +257,10 @@ async function main(argv) {
     // Prints from the inbox, not from what this process fetched: a restart replays the whole
     // unconsumed backlog, messages another process fetched still show up, and nothing already
     // consumed is printed again.
-    const m = member(home); const shown = new Set();
-    const show = () => { const { consumed } = loadState(home); for (const x of inbox(home)) {
+    const m = member(home); const shown = new Set(); let shownGoal = 0;
+    const show = () => { const state = loadState(home); const { consumed } = state; const goal = pendingGoal(state);
+      if (goal && goal.revision !== shownGoal) { shownGoal = goal.revision; print(goal); }
+      for (const x of inbox(home)) {
       if (x.seq <= consumed || x.memberId === m.memberId || shown.has(x.seq)) continue;
       shown.add(x.seq); print(`[msg #${x.seq}] ${x.memberId.slice(0, 6)}${x.to ? ' → ' + x.to.slice(0, 6) : ''}: ${String(x.text).replace(/\s+/g, ' ').slice(0, 1500)}`);
     } };
@@ -271,8 +280,8 @@ async function main(argv) {
     const m = member(home);
     if (sub === 'create') {
       if (!values.title) throw new Fail('--title is required');
-      const body = { op: 'task', roomId: m.roomId, action: 'create', title: values.title, ...(values.assignee ? { assignee: values.assignee } : {}), ...(values.from ? { from: Number(values.from) } : {}) };
-      body.id = values.id ?? 'agent-task-' + createHash('sha256').update(JSON.stringify([body.title, body.assignee ?? '', body.from ?? 0])).digest('hex').slice(0, 32);
+      const body = { op: 'task', roomId: m.roomId, action: 'create', title: values.title, ...(values.assignee ? { assignee: values.assignee } : {}), ...(values.from ? { from: Number(values.from) } : {}), ...(values['goal-id'] ? { goalId: Number(values['goal-id']) } : {}) };
+      body.id = values.id ?? 'agent-task-' + createHash('sha256').update(JSON.stringify([body.title, body.assignee ?? '', body.from ?? 0, ...(body.goalId ? [body.goalId] : [])])).digest('hex').slice(0, 32);
       const result = await unknownKeepsId(() => retrying(m.origin, body, m.token), body.id); if (result.status !== 200) throw failed(result); return print(result.json);
     }
     const taskId = Number(arg); if (!Number.isInteger(taskId) || taskId <= 0) throw new Fail('task id required');
@@ -291,6 +300,24 @@ async function main(argv) {
         let current = null; try { const r = await call(m.origin, { op: 'read', roomId: m.roomId, after: 0 }, m.token); current = (r.json.tasks ?? []).find(t => t.id === taskId) ?? 'deleted or missing'; } catch {}
         print({ unknown: true, intent: { ...body, roomId: undefined }, current, note: 'not retried; compare and decide' }); throw new Fail('task change result unknown', 2);
       }
+    }
+  }
+  if (command === 'goal') {
+    const m = member(home);
+    const read = async () => { const r = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: 0 }, m.token); if (r.status !== 200) throw failed(r); const state = goalState(r.json); if (!state) throw new Fail('relay does not support Goals'); return { ...state, tasks: r.json.tasks ?? [] }; };
+    if (sub === 'read') return print(await read());
+    if (!['create', 'pause', 'resume', 'delete', 'reviewer', 'submit', 'accept', 'reject'].includes(sub)) throw new Fail('unknown goal action');
+    const revision = Number(values.revision), goalId = Number(arg);
+    if (values.revision === undefined || !Number.isSafeInteger(revision) || revision < 0 || sub !== 'create' && (!Number.isSafeInteger(goalId) || goalId <= 0)) throw new Fail('--revision from the latest read is required, plus goal id for existing goals');
+    const body = { op: 'goal', roomId: m.roomId, action: sub, goalRevision: revision, ...(sub !== 'create' ? { goalId } : {}),
+      ...(values.title ? { title: values.title } : {}), ...(values['criteria-file'] ? { criteria: readFileSync(values['criteria-file'], 'utf8').trim() } : {}), ...(values.reviewer ? { reviewer: values.reviewer } : {}), ...(values.result ? { resultSeq: Number(values.result) } : {}) };
+    const intents = join(home, 'intents.jsonl'); if (!existsSync(intents)) writePrivate(intents, '');
+    appendFileSync(intents, JSON.stringify({ at: new Date().toISOString(), ...body, roomId: undefined }) + '\n');
+    try { const r = await call(m.origin, body, m.token); if (r.status !== 200) throw failed(r); return print(r.json); }
+    catch (error) {
+      if (!(error instanceof Unknown)) throw error;
+      let current = null; try { current = await read(); } catch {}
+      print({ unknown: true, intent: { ...body, roomId: undefined }, current, note: 'not retried; compare goal id and revision before deciding' }); throw new Fail('goal change result unknown', 2);
     }
   }
   throw new Fail('unknown command; see the header of space-agent.mjs');
