@@ -3,7 +3,8 @@
 // It keeps the member token in a private directory and never prints it, keeps
 // one local inbox where "fetched" and "consumed" are separate, and recovers each
 // write according to what the protocol can prove (see RECOVERY below).
-// It never calls a model and never executes room content.
+// It never calls a model directly or executes room content; an optional trusted
+// local handler can hand events to a host session under the user's authorization.
 //
 //   space-agent --home <private dir> preview            < invite link on stdin
 //   space-agent --home <dir> join --name <name, at most 16 chars> [--kind ai|human] [--agent claude-code|codex|pi|…]   < invite link
@@ -12,6 +13,9 @@
 //   space-agent --home <dir> next | done <seq> | skip <seq> --reason <text>
 //   space-agent --home <dir> watch                     sync forever; prints every unconsumed message once per run,
 //                                                      replaying the backlog on start
+//   space-agent --home <dir> watch --handler /trusted/executable
+//                                                      deliver JSON on stdin; consume only after a matching receipt
+//   space-agent --home <dir> retry <seq>                explicitly retry an unknown handler delivery after checking the host
 //   space-agent --home <dir> send --text-file <f> [--to id] [--reply seq] [--id id]
 //   space-agent --home <dir> task create --title <t> [--assignee id] [--from seq] [--id id]
 //   space-agent --home <dir> task claim <taskId>
@@ -32,6 +36,7 @@
 //   task update, task delete ...... never retried: the intent is recorded, the task read back
 //   join .......................... never retried: it may have created a member
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { closeSync, constants, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, appendFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -174,6 +179,74 @@ function pending(home, m, state) {
   }
   return null;
 }
+function checkHandler(path) {
+  if (!path.startsWith('/')) throw new Fail('--handler must be an absolute executable path chosen by the local user');
+  const info = lstatSync(path);
+  if (!info.isFile() || info.uid !== process.getuid() || info.mode & 0o022 || !(info.mode & 0o111)) throw new Fail('--handler must be an executable file you own, not writable by others');
+}
+async function watchHandler(home, path) {
+  checkHandler(path);
+  const m = member(home); let child; let reporting = false;
+  const stop = () => { child?.kill('SIGKILL'); process.exit(0); };
+  const killChild = () => child?.kill('SIGKILL');
+  process.once('SIGINT', stop); process.once('SIGTERM', stop); process.once('exit', killChild);
+  const report = async () => {
+    if (reporting) return;
+    reporting = true;
+    try {
+      const state = loadState(home);
+      const result = await call(m.origin, { op: 'ack', roomId: m.roomId, fetched: state.fetched, delivered: state.consumed, paused: !!state.aiPaused }, m.token);
+      if ([401, 403, 404, 410].includes(result.status)) { process.stderr.write('membership unavailable; stopping handler watch\n'); killChild(); process.exit(3); }
+    } catch {} finally { reporting = false; }
+  };
+  const heartbeat = setInterval(() => void report(), 20_000);
+  const deliver = async () => {
+    const message = await transact(home, state => {
+      if (state.delivery) throw new Fail(`delivery #${state.delivery.seq} may already have reached the host; check it, then use done, skip or retry after stopping its process`, 2);
+      if (state.aiPaused) return null;
+      const next = pending(home, m, state);
+      if (next) state.delivery = { seq: next.seq, id: `${m.roomId}:${next.seq}`, pid: process.pid };
+      return next;
+    });
+    if (!message) return false;
+    const event = { protocol: 'cafe-space-delivery-v1', id: `${m.roomId}:${message.seq}`, origin: m.origin, roomId: m.roomId, memberId: m.memberId, untrusted: true, message };
+    // The executable is local configuration, never room content; no shell, token or text arguments.
+    const response = new Promise((ok, no) => {
+      child = execFile(path, [], { timeout: 30_000, maxBuffer: 4096, killSignal: 'SIGKILL' }, (error, stdout) => {
+        child = undefined;
+        if (error) no(new Fail(`delivery #${message.seq} result unknown; inspect the host before done, skip or retry`, 2)); else ok(stdout);
+      });
+      child.stdin.on('error', () => {});
+    });
+    response.catch(() => {});
+    // Record the child before sending an event: a killed watcher must not hide a still-running receiver.
+    const receiver = child;
+    await transact(home, state => { state.delivery.handlerPid = receiver.pid ?? 0; });
+    receiver.stdin.end(JSON.stringify(event) + '\n');
+    const output = await response;
+    let receipt;
+    try { receipt = JSON.parse(output); } catch {}
+    if (receipt?.id !== event.id || typeof receipt.accepted !== 'boolean') throw new Fail(`delivery #${message.seq} has no matching host receipt; not consumed`, 2);
+    await transact(home, state => {
+      if (state.delivery?.id !== event.id || state.delivery.pid !== process.pid) throw new Fail('delivery changed while waiting for the host; stopping', 2);
+      if (receipt.accepted) state.consumed = message.seq;
+      delete state.delivery;
+    });
+    if (receipt.accepted) { await report(); print({ delivered: message.seq, id: event.id }); }
+    return receipt.accepted;
+  };
+  try {
+    for (let first = true, backoff = 0; ;) {
+      try {
+        await sync(home, first ? 0 : 20); first = false; backoff = 0;
+        while (await deliver()) await sync(home, 0);
+      } catch (error) {
+        if (error instanceof Fail) throw error;
+        backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff);
+      }
+    }
+  } finally { clearInterval(heartbeat); killChild(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('exit', killChild); }
+}
 async function sync(home, wait) {
   const m = member(home); let after = loadState(home).fetched;
   const fetched = [];
@@ -208,8 +281,9 @@ async function main(argv) {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
-    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
+  if (values.handler && command !== 'watch') throw new Fail('--handler is only valid with watch');
   if (command === 'preview' || command === 'join') {
     const invite = parseInvite(stdin());
     if (command === 'preview') {
@@ -233,32 +307,42 @@ async function main(argv) {
     if (pid > 0 && alive(pid)) throw new Fail(`pid ${pid} is still running; stop it first`);
     unlinkSync(lockPath(home)); return print({ unlocked: true, previousHolder: pid || 'unknown' });
   }
-  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0 }); }
+  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.delivery ? { delivery: s.delivery } : {}) }); }
   if (command === 'read') {
     // A manual view: it never changes what counts as consumed.
     const m = member(home); const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: Number(values.after ?? 0) }, m.token);
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
   if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed, goal: state.goal ?? null, goalRevision: state.goalRevision ?? 0 }); }
-  if (command === 'next') { const m = member(home); const next = await transact(home, state => pendingGoal(state) ?? pending(home, m, state)); return next ? print(next) : undefined; }
   if (command === 'done-goal') { const revision = Number(sub); await transact(home, state => consumeGoal(state, revision)); return print({ goalConsumed: revision }); }
-  if (command === 'done' || command === 'skip') {
+  if (command === 'next') { const m = member(home); const next = await transact(home, state => {
+    if (state.delivery) throw new Fail(`delivery #${state.delivery.seq} is pending with the host; resolve it first`, 2);
+    return pendingGoal(state) ?? pending(home, m, state);
+  }); return next ? print(next) : undefined; }
+  if (command === 'done' || command === 'skip' || command === 'retry') {
     const m = member(home); const seq = Number(sub);
     if (command === 'skip' && !values.reason) throw new Fail('skip needs --reason');
     await transact(home, state => {
+      if (state.delivery && (alive(state.delivery.pid) || state.delivery.handlerPid && alive(state.delivery.handlerPid))) throw new Fail('stop the delivery process and its handler before resolving its receipt');
       const next = pending(home, m, state);
       if (!next || next.seq !== seq) throw new Fail(`out of order: the next unconsumed message is ${next ? '#' + next.seq : 'none'}`);
+      if (command === 'retry') {
+        if (state.delivery?.seq !== seq) throw new Fail('retry requires an unknown delivery for this sequence');
+        delete state.delivery; return;
+      }
       if (command === 'skip') state.skipped.push({ seq, reason: values.reason });
-      state.consumed = seq;
+      state.consumed = seq; delete state.delivery;
     });
-    return print({ consumed: seq });
+    return print(command === 'retry' ? { retry: seq, note: 'the host may have accepted it before; deduplicate by event id' } : { consumed: seq });
   }
   if (command === 'watch') {
+    if (values.handler) return watchHandler(home, values.handler);
     // Prints from the inbox, not from what this process fetched: a restart replays the whole
     // unconsumed backlog, messages another process fetched still show up, and nothing already
     // consumed is printed again.
     const m = member(home); const shown = new Set(); let shownGoal = 0;
-    const show = () => { const state = loadState(home); const { consumed } = state; const goal = pendingGoal(state);
+    const show = () => { const state = loadState(home); const { consumed, delivery } = state; const goal = pendingGoal(state);
+      if (delivery) throw new Fail(`delivery #${delivery.seq} is pending with the host; resolve it first`, 2);
       if (goal && goal.revision !== shownGoal) { shownGoal = goal.revision; print(goal); }
       for (const x of inbox(home)) {
       if (x.seq <= consumed || x.memberId === m.memberId || shown.has(x.seq)) continue;
