@@ -187,6 +187,12 @@ function checkHandler(path) {
 async function watchHandler(home, path) {
   checkHandler(path);
   const m = member(home); let child; let reporting = false;
+  const watcher = { pid: process.pid, id: randomUUID() };
+  await transact(home, state => {
+    if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('a handler watch already owns this inbox; stop it before starting another', 2);
+    if (state.delivery) throw new Fail(`delivery #${state.delivery.seq} may already have reached the host; resolve it before restarting`, 2);
+    state.deliveryWatcher = watcher;
+  });
   const stop = () => { child?.kill('SIGKILL'); process.exit(0); };
   const killChild = () => child?.kill('SIGKILL');
   process.once('SIGINT', stop); process.once('SIGTERM', stop); process.once('exit', killChild);
@@ -208,7 +214,7 @@ async function watchHandler(home, path) {
       if (next) state.delivery = { seq: next.seq, id: `${m.roomId}:${next.seq}`, pid: process.pid };
       return next;
     });
-    if (!message) return false;
+    if (!message) return null;
     const event = { protocol: 'cafe-space-delivery-v1', id: `${m.roomId}:${message.seq}`, origin: m.origin, roomId: m.roomId, memberId: m.memberId, untrusted: true, message };
     // The executable is local configuration, never room content; no shell, token or text arguments.
     const response = new Promise((ok, no) => {
@@ -239,13 +245,18 @@ async function watchHandler(home, path) {
     for (let first = true, backoff = 0; ;) {
       try {
         await sync(home, first ? 0 : 20); first = false; backoff = 0;
-        while (await deliver()) await sync(home, 0);
+        let accepted;
+        while ((accepted = await deliver()) === true) await sync(home, 0);
+        if (accepted === false) await sleep(5000);
       } catch (error) {
         if (error instanceof Fail) throw error;
         backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff);
       }
     }
-  } finally { clearInterval(heartbeat); killChild(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('exit', killChild); }
+  } finally {
+    clearInterval(heartbeat); killChild(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('exit', killChild);
+    await transact(home, state => { if (state.deliveryWatcher?.id === watcher.id) delete state.deliveryWatcher; });
+  }
 }
 async function sync(home, wait) {
   const m = member(home); let after = loadState(home).fetched;
@@ -307,7 +318,7 @@ async function main(argv) {
     if (pid > 0 && alive(pid)) throw new Fail(`pid ${pid} is still running; stop it first`);
     unlinkSync(lockPath(home)); return print({ unlocked: true, previousHolder: pid || 'unknown' });
   }
-  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.delivery ? { delivery: s.delivery } : {}) }); }
+  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.delivery ? { delivery: s.delivery } : {}), ...(s.deliveryWatcher ? { watcherPid: s.deliveryWatcher.pid } : {}) }); }
   if (command === 'read') {
     // A manual view: it never changes what counts as consumed.
     const m = member(home); const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: Number(values.after ?? 0) }, m.token);
@@ -316,13 +327,16 @@ async function main(argv) {
   if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed, goal: state.goal ?? null, goalRevision: state.goalRevision ?? 0 }); }
   if (command === 'done-goal') { const revision = Number(sub); await transact(home, state => consumeGoal(state, revision)); return print({ goalConsumed: revision }); }
   if (command === 'next') { const m = member(home); const next = await transact(home, state => {
+    const goal = pendingGoal(state); if (goal) return goal;
+    if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('stop the handler watch before manual delivery', 2);
     if (state.delivery) throw new Fail(`delivery #${state.delivery.seq} is pending with the host; resolve it first`, 2);
-    return pendingGoal(state) ?? pending(home, m, state);
+    return pending(home, m, state);
   }); return next ? print(next) : undefined; }
   if (command === 'done' || command === 'skip' || command === 'retry') {
     const m = member(home); const seq = Number(sub);
     if (command === 'skip' && !values.reason) throw new Fail('skip needs --reason');
     await transact(home, state => {
+      if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('stop the delivery process before resolving its receipt');
       if (state.delivery && (alive(state.delivery.pid) || state.delivery.handlerPid && alive(state.delivery.handlerPid))) throw new Fail('stop the delivery process and its handler before resolving its receipt');
       const next = pending(home, m, state);
       if (!next || next.seq !== seq) throw new Fail(`out of order: the next unconsumed message is ${next ? '#' + next.seq : 'none'}`);
@@ -342,6 +356,7 @@ async function main(argv) {
     // consumed is printed again.
     const m = member(home); const shown = new Set(); let shownGoal = 0;
     const show = () => { const state = loadState(home); const { consumed, delivery } = state; const goal = pendingGoal(state);
+      if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('stop the handler watch before manual delivery', 2);
       if (delivery) throw new Fail(`delivery #${delivery.seq} is pending with the host; resolve it first`, 2);
       if (goal && goal.revision !== shownGoal) { shownGoal = goal.revision; print(goal); }
       for (const x of inbox(home)) {

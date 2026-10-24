@@ -11,7 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const client = fileURLToPath(new URL('./space-agent.mjs', import.meta.url));
-const until = async check => { for (let i = 0; i < 150; i++) { if (check()) return; await sleep(20); } throw Error('condition timed out'); };
+const until = async (check, timeout = 3000) => { for (let i = 0; i < timeout / 20; i++) { if (check()) return; await sleep(20); } throw Error('condition timed out'); };
 async function fixture(t, text = 'external data') {
   const home = await mkdtemp(join(tmpdir(), 'space-delivery-')); chmodSync(home, 0o700);
   const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64);
@@ -94,7 +94,15 @@ test('pause and an explicit busy receipt keep the message pending instead of pre
   assert.equal(f.received().length, 0); assert.equal(f.state().consumed, 0);
   f.pause(false); await until(() => f.received().length === 1 && !f.state().delivery);
   assert.equal(f.state().consumed, 0);
-  f.handler(); f.notify(); await until(() => f.state().consumed === 1); await f.stop(run);
+  writeFileSync(join(f.home, 'state.json'), JSON.stringify({ ...f.state(), goalRevision: 1, goal: null }), { mode: 0o600 });
+  assert.equal(JSON.parse((await f.start(['next']).done).out).type, 'goal', 'Goal notifications retain their independent cursor');
+  assert.equal((await f.start(['done-goal', '1']).done).code, 0);
+  assert.equal(f.state().consumed, 0, 'Goal acknowledgement must not consume the pending chat');
+  assert.equal((await f.start(['next']).done).code, 2, 'a busy handler watch still owns the inbox');
+  assert.equal((await f.start(['watch', '--handler', path]).done).code, 2);
+  f.notify(); await sleep(150); assert.equal(f.received().length, 1, 'a busy receipt must not cause a tight retry loop');
+  f.handler(); const wakeAfterBackoff = setTimeout(() => f.notify(), 5200); wakeAfterBackoff.unref();
+  await until(() => f.state().consumed === 1, 10000); clearTimeout(wakeAfterBackoff); await f.stop(run);
   assert.equal(f.received().length, 2);
 });
 
