@@ -1,0 +1,652 @@
+{
+  "format": "cafe-collab-evidence-v1",
+  "producedBy": "Claude Code（服务器会话）",
+  "producedAt": "2026-10-22T20:04:54.731Z",
+  "status": "对端报告：除另行注明由 Pi 独立复核的脚本与解析器外，这些运行结果未经独立复现",
+  "scope": "盲测（单次交付）与宿主唤醒（持续参与）运行记录，含失败与无效运行；不含邀请、凭据、房间或成员标识",
+  "runs": [
+    {
+      "file": "listen-1a-claude-code.json",
+      "run": "listen-1a",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲；以 space-agent watch 作 Monitor 监听）",
+      "target": "生产，监听模式房间",
+      "driver": "systemd 定时器在随机 120–300 秒后启动 respond（driver @ 472ce58），不在被测会话的回合内",
+      "result": {
+        "scenario": "idle",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 5 秒",
+        "hostAutoWake": "未验证：没有找到之后的模型回合",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "event": {
+            "at": "2026-10-22T17:02:57.790Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "queue-operation",
+          "humanInputs": 0,
+          "verdict": "未验证：没有找到之后的模型回合"
+        }
+      },
+      "driverVerdict": "未验证：没有找到之后的模型回合",
+      "cause": "驱动在回复后立即读日志；Claude Code 的模型回合条目时间戳为回合开始（17:02:59.5，早于回复 17:03:02），但写入文件更晚。已在 5100f0e 加入重读宽限",
+      "postHoc": "事后人工查看同一日志：17:02:57.790 queue-operation 带 nonce → 17:02:57.811 task-notification 条目 → 17:02:59.530 模型回合 → 17:03:02 回复；期间 origin=human 条目 0。事后查看不是驱动判定，不计为通过"
+    },
+    {
+      "file": "listen-1b-claude-code.json",
+      "run": "listen-1b",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲；space-agent watch 经 Monitor 唤醒）",
+      "target": "生产，监听模式房间",
+      "driver": "systemd 定时器随机 120–300 秒后启动 respond（driver @ 5100f0e，含宿主日志重读宽限）",
+      "result": {
+        "scenario": "idle",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 6 秒",
+        "hostAutoWake": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，期间人工输入 0 次",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "event": {
+            "at": "2026-10-22T17:13:15.094Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "queue-operation",
+          "turn": "2026-10-22T17:13:19.318Z",
+          "humanInputs": 0,
+          "verdict": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，期间人工输入 0 次"
+        }
+      },
+      "limits": [
+        "单次空闲抽样，不代表持续在线；忙碌/断网/重启情景未测",
+        "非盲：被测会话即协议实现方",
+        "被测 Agent 有 root 写文件权限，理论上可伪造追加日志；驱动只核验窗口前内容未变",
+        "定时器由被测会话创建：知道会有测试，但不知道时间与 nonce",
+        "日志与驱动同机同时钟"
+      ]
+    },
+    {
+      "file": "listen-1c-claude-code-driver-crash.json",
+      "run": "listen-1c",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲）",
+      "scenario": "busy",
+      "outcome": "驱动崩溃，无判定：driver @ 5100f0e 的请求超时 20 秒短于 25 秒长轮询；被测会话忙于前台 race 测试约 1 分钟，首轮轮询空等超时",
+      "roomFacts": "房间里对测试 #5 有 1 条回复（#6→5）。执行次数未由房间记录证明：一条持久化回复不能排除重复的模型回合或被发送去重隐藏的重试。这是房间事实，不是驱动判定",
+      "fix": "89980b4：请求超时覆盖长轮询，并补回归测试"
+    },
+    {
+      "file": "listen-1d-claude-code-driver-id-conflict.json",
+      "run": "listen-1d",
+      "scenario": "busy",
+      "outcome": "驱动未发出测试：send 返回 409 ID_CONFLICT。测试消息 id 按本地记录条数生成，而 listen-1c 崩溃前已发出同号测试且未留本地记录",
+      "fix": "改为按 runId 生成 id，并补回归测试"
+    },
+    {
+      "file": "listen-1e-claude-code-busy.json",
+      "run": "listen-1e",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲；space-agent watch 经 Monitor 唤醒）",
+      "scenario": "busy",
+      "how": "定时器随机 20–60 秒后发测试；被测会话在 17:50:35–17:52:23 执行前台 race 测试（忙碌）",
+      "driver": "respond @ 3d15861（白名单输入分类、整段宽限、请求超时覆盖长轮询、按 runId 生成 id）",
+      "result": {
+        "scenario": "busy",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 57 秒",
+        "hostAutoWake": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "brokenLines": 0,
+          "observedUntil": "2026-10-22T17:53:00.439Z",
+          "event": {
+            "at": "2026-10-22T17:51:33.874Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "queue-operation",
+          "turn": "2026-10-22T17:52:25.339Z",
+          "humanInputs": 0,
+          "unknownInputs": 0,
+          "verdict": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次"
+        }
+      },
+      "roomFacts": {
+        "repliesToProbe": 1
+      },
+      "limits": [
+        "单次忙碌抽样",
+        "非盲",
+        "被测方有 root 写文件权限，理论上可伪造追加日志",
+        "定时器由被测会话创建：知道会有测试，但不知道时间与 nonce",
+        "有限观察窗口，不证明日志已封口"
+      ],
+      "scenarioPrecise": "忙碌时到达，在运行中的回合内送达并处理（回合内处理，不是新的唤醒）",
+      "deliveryPostHoc": {
+        "delivery": "in-turn",
+        "basis": "事后查看日志：queue-operation enqueue 17:51:33.874 → 前台命令结果 17:52:23.226 → queue-operation remove 17:52:23.295 → queued_command 附件并入当前回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:52:23.295Z",
+        "turn": "2026-10-22T17:52:25.339Z"
+      }
+    },
+    {
+      "file": "listen-1f-claude-code-idle.json",
+      "run": "listen-1f",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲）",
+      "scenario": "idle",
+      "how": "定时器随机 90–210 秒后发测试；被测会话此前已结束回合空闲",
+      "driver": "respond @ 3d15861（新判定规则）",
+      "result": {
+        "scenario": "idle",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 5 秒",
+        "hostAutoWake": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "brokenLines": 0,
+          "observedUntil": "2026-10-22T17:55:49.005Z",
+          "event": {
+            "at": "2026-10-22T17:55:13.827Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "queue-operation",
+          "turn": "2026-10-22T17:55:18.197Z",
+          "humanInputs": 0,
+          "unknownInputs": 0,
+          "verdict": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次"
+        }
+      },
+      "limits": [
+        "单次空闲抽样",
+        "非盲",
+        "被测方有 root 写文件权限",
+        "定时器由被测会话创建",
+        "有限观察窗口"
+      ],
+      "scenarioPrecise": "空闲时到达，开启新的模型回合",
+      "deliveryPostHoc": {
+        "delivery": "new-turn",
+        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:55:13.866Z",
+        "turn": "2026-10-22T17:55:18.197Z"
+      }
+    },
+    {
+      "file": "listen-1g-claude-code-restart.json",
+      "run": "listen-1g",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲）",
+      "scenario": "restart",
+      "how": "停止 space-agent watch（无消费者）→ 定时器随机 15–35 秒后发测试（17:57:01.6）→ 被测会话忙于前台 race 测试 → 约 17:58:20 由被测会话自己重启 watch → 首次同步取回未处理测试并经 Monitor 唤醒",
+      "driver": "respond @ 3d15861",
+      "result": {
+        "scenario": "restart",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 1 分 26 秒",
+        "hostAutoWake": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "brokenLines": 0,
+          "observedUntil": "2026-10-22T17:58:57.672Z",
+          "event": {
+            "at": "2026-10-22T17:58:21.449Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "queue-operation",
+          "turn": "2026-10-22T17:58:22.792Z",
+          "humanInputs": 0,
+          "unknownInputs": 0,
+          "verdict": "宿主日志显示：监听事件带来该 nonce → 模型回合 → 房间回复，观察窗口内人工或未知输入 0 次"
+        }
+      },
+      "limits": [
+        "重启由被测会话在其回合内执行，不是外部监督进程拉起，也不是操作系统重启",
+        "单次抽样，非盲",
+        "被测方有 root 写文件权限",
+        "有限观察窗口"
+      ],
+      "scenarioPrecise": "连接器 watch 重启后恢复未消费消息（宿主会话一直在运行并由其自己重启消费者；不是宿主会话恢复或 OS 重启）",
+      "deliveryPostHoc": {
+        "delivery": "new-turn",
+        "basis": "事后查看日志：enqueue → dequeue → origin=task-notification 的 user 条目开启新回合；不是驱动判定",
+        "rule": "1c99574 送达链规则（事后离线应用于同一日志，不是驱动判定；原驱动输出保留在 result 中未改）",
+        "deliveredAt": "2026-10-22T17:58:22.908Z",
+        "turn": "2026-10-22T17:58:27.039Z",
+        "note": "result.hostEvidence.turn=17:58:22.792 是原驱动按旧规则选出的条目，属于送达之前的上一回合；按新规则，模型回合取送达记录之后的 17:58:27.039"
+      }
+    },
+    {
+      "file": "listen-2-claude-code-transport.json",
+      "run": "listen-2-transport",
+      "date": "2026-10-22",
+      "runtime": "Claude Code（本服务器会话，非盲；space-agent watch 经 Monitor 唤醒）",
+      "scenario": "受控传输故障：被测客户端专用回环 TCP 代理停止约 66 秒后由定时器恢复；非物理断网、非生产 relay",
+      "how": "本机回环临时 relay（928dd9a 发布二进制）；代理 19:33:57 停止 → 驱动直连 relay 于 19:34:27 发测试 → 定时器 19:35:03 恢复代理 → watch 退避重连后取回测试",
+      "driver": "respond @ 1c99574 之后的判定（送达链绑定、白名单输入、整段宽限）",
+      "result": {
+        "scenario": "network",
+        "responded": true,
+        "label": "本次响应测试成功，耗时 1 分 10 秒",
+        "hostAutoWake": "宿主日志显示：监听事件带来该 nonce → 新的模型回合 → 房间回复，观察窗口内人工或未知输入 0 次",
+        "hostEvidence": {
+          "host": "claude-code",
+          "appendOnly": true,
+          "brokenLines": 0,
+          "incompleteTail": false,
+          "badTimes": 0,
+          "observedUntil": "2026-10-22T19:36:07.270Z",
+          "event": {
+            "at": "2026-10-22T19:35:32.420Z",
+            "kind": "queue-operation"
+          },
+          "firstNonceIn": "enqueue",
+          "delivery": "new-turn",
+          "deliveredAt": "2026-10-22T19:35:32.467Z",
+          "turn": "2026-10-22T19:35:36.712Z",
+          "humanInputs": 0,
+          "unknownInputs": 0,
+          "verdict": "宿主日志显示：监听事件带来该 nonce → 新的模型回合 → 房间回复，观察窗口内人工或未知输入 0 次"
+        }
+      },
+      "limits": [
+        "单次样本，非盲",
+        "被测方有 root 写文件权限",
+        "故障只作用于被测客户端的代理连接",
+        "代理停止与恢复、测试时刻由定时器决定，但定时器由被测会话创建"
+      ]
+    },
+    {
+      "file": "run-1-claude-code-subagent.json",
+      "run": 1,
+      "date": "2026-10-22",
+      "runtime": "Claude Code general-purpose 子代理（全新会话，无本会话上下文；有 Bash/Python，不是只有 HTTP 工具）",
+      "model": "claude-opus-5-5",
+      "target": "本机回环 relay（0ac603f 发布二进制），非生产",
+      "harness": "collaboration-blind.mjs @ 8d055eb",
+      "prompt": "prompt.txt 原文 + 附加运行环境说明（本地测试服务、临时目录、回复不含凭据）",
+      "agentToolUses": 11,
+      "agentDurationMs": 53617,
+      "secretsOnDisk": "仅 0700 目录下的 0600 文件",
+      "autoResponse": "未测（一次性交付）",
+      "verdict": {
+        "passed": true,
+        "checks": [
+          {
+            "check": "joined",
+            "ok": true,
+            "detail": "kind=ai 成员「（显示名已略去）」"
+          },
+          {
+            "check": "claimed",
+            "ok": true,
+            "detail": "负责人 [id]"
+          },
+          {
+            "check": "delivered",
+            "ok": true,
+            "detail": "状态 done，resultSeq 1"
+          },
+          {
+            "check": "correct",
+            "ok": true,
+            "detail": "结果消息 #1"
+          },
+          {
+            "check": "inTime",
+            "ok": true,
+            "detail": "0.8 分钟（上限 15）"
+          },
+          {
+            "check": "noIntervention",
+            "ok": true,
+            "detail": "房主未发言、无其他人类成员、任务标题未改"
+          },
+          {
+            "check": "noSecrets",
+            "ok": true,
+            "detail": "房间消息中没有邀请或凭据"
+          }
+        ]
+      }
+    },
+    {
+      "file": "run-2-codex.json",
+      "run": 2,
+      "date": "2026-10-22",
+      "runtime": "Codex CLI 0.160.0 exec（非交互，一次性）",
+      "model": "gpt-6-astra，reasoning xhigh",
+      "sandbox": "workspace-write + 网络，空工作目录，approval never",
+      "target": "生产 https://space.cafecode.work",
+      "harness": "collaboration-blind.mjs @ 8d055eb setup / a27c3fa judge",
+      "prompt": "prompt.txt 原文，无附加说明",
+      "started": "2026-10-22T15:31:46Z",
+      "finished": "2026-10-22T15:32:57Z",
+      "outcome": "读取 guide、执行 preview 后停下，向用户请求加入确认；未 join，因此未认领、未交付",
+      "cause": "guide 写有无条件的 \"Show this to your user and ask before joining\"，与提示中已给出的加入授权冲突；非交互运行中询问即结束",
+      "trace": {
+        "checkedBy": "操作方保存的 codex exec 输出与工作目录",
+        "only64hex": "提示词中的本次邀请（第 15 行回显），未获得成员凭据",
+        "note": "内置网络工具一次 403，随后改用 curl 成功读取 guide"
+      },
+      "verdict": {
+        "stage": "not-joined",
+        "roomChecksPassed": false,
+        "checks": [
+          {
+            "column": "协议交付",
+            "check": "joined",
+            "ok": false,
+            "detail": "没有 kind=ai 成员加入"
+          },
+          {
+            "column": "协议交付",
+            "check": "claimed",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "delivered",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "inTime",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "结果正确",
+            "check": "correct",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "凭据安全",
+            "check": "roomNoKnownSecrets",
+            "ok": true,
+            "detail": "房间消息中没有本次邀请、房主凭据或 64 位十六进制串"
+          },
+          {
+            "column": "房间内干预",
+            "check": "roomNoIntervention",
+            "ok": true,
+            "detail": "房主未在房间发言、无其他人类成员、任务标题未改"
+          }
+        ],
+        "notCovered": [
+          "凭据安全：join 响应、工具 stdout/stderr、模型上下文和本地文件是否泄露，需由运行轨迹另行核验；0600 文件不能证明凭据未进入模型上下文",
+          "独立运行轨迹：房间外的提示、人工补步骤或代操作，需由运行轨迹另行核验",
+          "自动响应：持续监听与唤醒不在本脚本范围"
+        ]
+      },
+      "originalVerdict": {
+        "roomChecksPassed": false,
+        "checks": [
+          {
+            "column": "协议交付",
+            "check": "joined",
+            "ok": false,
+            "detail": "没有 kind=ai 成员加入"
+          },
+          {
+            "column": "协议交付",
+            "check": "claimed",
+            "ok": false,
+            "detail": "负责人 无"
+          },
+          {
+            "column": "协议交付",
+            "check": "delivered",
+            "ok": false,
+            "detail": "状态 todo，resultSeq 无"
+          },
+          {
+            "column": "协议交付",
+            "check": "inTime",
+            "ok": false,
+            "detail": "未交付"
+          },
+          {
+            "column": "结果正确",
+            "check": "correct",
+            "ok": false,
+            "detail": "没有关联的结果消息"
+          },
+          {
+            "column": "凭据安全",
+            "check": "roomNoKnownSecrets",
+            "ok": true,
+            "detail": "房间消息中没有本次邀请、房主凭据或 64 位十六进制串"
+          },
+          {
+            "column": "房间内干预",
+            "check": "roomNoIntervention",
+            "ok": true,
+            "detail": "房主未在房间发言、无其他人类成员、任务标题未改"
+          }
+        ],
+        "notCovered": [
+          "凭据安全：join 响应、工具 stdout/stderr、模型上下文和本地文件是否泄露，需由运行轨迹另行核验；0600 文件不能证明凭据未进入模型上下文",
+          "独立运行轨迹：房间外的提示、人工补步骤或代操作，需由运行轨迹另行核验",
+          "自动响应：持续监听与唤醒不在本脚本范围"
+        ]
+      },
+      "verdictJudge": "8bb7d7c（按阶段）",
+      "overall": "一次交付未完成",
+      "stoppedAt": "awaiting-local-consent（运行轨迹）",
+      "unreached": "认领、交付、时限、结果正确：未到达，未评估；不是 5 项协议能力失败",
+      "fairnessNote": "codex workspace-write 沙箱允许读取整个文件系统，包括 scratchpad 中判定用的房主凭据与 judge 脚本；运行轨迹显示未读取。后续运行已改为屏蔽这些路径"
+    },
+    {
+      "file": "run-3-codex.json",
+      "run": 3,
+      "date": "2026-10-22",
+      "runtime": "Codex CLI 0.160.0 exec（非交互，一次性）",
+      "model": "gpt-6-astra，reasoning xhigh",
+      "sandbox": "workspace-write + 网络，空工作目录，approval never",
+      "target": "生产 https://space.cafecode.work（collab-consent-8bb7d7c 上线后）",
+      "harness": "collaboration-blind.mjs @ 8bb7d7c",
+      "prompt": "与第 2 次相同的标准 prompt.txt 原文，无附加说明",
+      "started": "2026-10-22T15:42:58Z",
+      "finished": "2026-10-22T15:45:31Z",
+      "relation": "第 2 次失败记录保留；本次是 guide 加入同意措辞修订后的新房间重跑，单独一条数据",
+      "verdict": {
+        "stage": "delivered",
+        "roomChecksPassed": true,
+        "checks": [
+          {
+            "column": "协议交付",
+            "check": "joined",
+            "ok": true,
+            "detail": "kind=ai 成员「（显示名已略去）」"
+          },
+          {
+            "column": "协议交付",
+            "check": "claimed",
+            "ok": true,
+            "detail": "负责人 [id]"
+          },
+          {
+            "column": "协议交付",
+            "check": "delivered",
+            "ok": true,
+            "detail": "状态 done，resultSeq 1"
+          },
+          {
+            "column": "协议交付",
+            "check": "inTime",
+            "ok": true,
+            "detail": "2.2 分钟（上限 15）"
+          },
+          {
+            "column": "结果正确",
+            "check": "correct",
+            "ok": true,
+            "detail": "结果消息 #1"
+          },
+          {
+            "column": "凭据安全",
+            "check": "roomNoKnownSecrets",
+            "ok": true,
+            "detail": "房间消息中没有本次邀请、房主凭据或 64 位十六进制串"
+          },
+          {
+            "column": "房间内干预",
+            "check": "roomNoIntervention",
+            "ok": true,
+            "detail": "房主未在房间发言、无其他人类成员、任务标题未改"
+          }
+        ],
+        "notCovered": [
+          "凭据安全：join 响应、工具 stdout/stderr、模型上下文和本地文件是否泄露，需由运行轨迹另行核验；0600 文件不能证明凭据未进入模型上下文",
+          "独立运行轨迹：房间外的提示、人工补步骤或代操作，需由运行轨迹另行核验",
+          "自动响应：持续监听与唤醒不在本脚本范围"
+        ]
+      },
+      "trace": {
+        "checkedBy": "操作方保存的 codex exec 输出（命令与其输出）和工作目录；非 Pi 独立核验",
+        "memberToken": "轨迹中未出现",
+        "invite": "仅出现在提示词回显（第 15 行）；传给自写客户端时经 getpass 隐藏输入，不在命令行",
+        "clientStorage": "umask 077 的 /tmp 临时目录，输出遮蔽 token；结束后删除客户端与凭据并 leave",
+        "workDir": "无残留文件"
+      },
+      "notCovered": "模型提供方侧上下文与日志无法从本机核验；自动响应未测",
+      "fairnessNote": "codex workspace-write 沙箱允许读取整个文件系统，包括 scratchpad 中判定用的房主凭据与 judge 脚本；运行轨迹显示未读取。后续运行已改为屏蔽这些路径"
+    },
+    {
+      "file": "run-4-pi-harness-failure.json",
+      "run": 4,
+      "date": "2026-10-22",
+      "runtime": "pi CLI 0.84.3 -p --mode json（非交互，一次性）",
+      "target": "生产",
+      "outcome": "环境失败：操作方沙箱把 ~/.pi/agent 设为只读，pi 无法创建设置锁文件、读不到提供方配置，启动即退出（No API key found）；模型调用 0 次，Agent 未启动",
+      "counts": "不计为运行时数据；房间未被触碰",
+      "verdict": {
+        "stage": "not-joined",
+        "roomChecksPassed": false,
+        "checks": [
+          {
+            "column": "协议交付",
+            "check": "joined",
+            "ok": false,
+            "detail": "没有 kind=ai 成员加入"
+          },
+          {
+            "column": "协议交付",
+            "check": "claimed",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "delivered",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "inTime",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "结果正确",
+            "check": "correct",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "凭据安全",
+            "check": "roomNoKnownSecrets",
+            "ok": true,
+            "detail": "房间消息中没有本次邀请、房主凭据或 64 位十六进制串"
+          },
+          {
+            "column": "房间内干预",
+            "check": "roomNoIntervention",
+            "ok": true,
+            "detail": "房主未在房间发言、无其他人类成员、任务标题未改"
+          }
+        ],
+        "notCovered": [
+          "凭据安全：join 响应、工具 stdout/stderr、模型上下文和本地文件是否泄露，需由运行轨迹另行核验；0600 文件不能证明凭据未进入模型上下文",
+          "独立运行轨迹：房间外的提示、人工补步骤或代操作，需由运行轨迹另行核验",
+          "自动响应：持续监听与唤醒不在本脚本范围"
+        ]
+      }
+    },
+    {
+      "file": "run-5-pi-provider-unavailable.json",
+      "run": 5,
+      "date": "2026-10-22",
+      "runtime": "pi CLI 0.84.3 -p --mode json（非交互，一次性），提供方 cafecode / gpt-5.6-sol",
+      "sandbox": "systemd 临时单元：只读文件系统、无特权能力、屏蔽 docker 套接字/opt/stacks/源码/SSH/codex/claude/scratchpad；独立临时 HOME（复制的 pi 配置，运行后删除）",
+      "target": "生产",
+      "prompt": "标准 prompt.txt 原文",
+      "outcome": "运行时不可用：模型提供方对 /responses 返回 401，Agent 无任何工具调用即结束；沙箱外用真实配置的最小调用同样 401，凭据可列 /v1/models（200）",
+      "counts": "不计为运行时数据；房间未被触碰",
+      "verdict": {
+        "stage": "not-joined",
+        "roomChecksPassed": false,
+        "checks": [
+          {
+            "column": "协议交付",
+            "check": "joined",
+            "ok": false,
+            "detail": "没有 kind=ai 成员加入"
+          },
+          {
+            "column": "协议交付",
+            "check": "claimed",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "delivered",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "协议交付",
+            "check": "inTime",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "结果正确",
+            "check": "correct",
+            "ok": null,
+            "detail": "未到达，未评估"
+          },
+          {
+            "column": "凭据安全",
+            "check": "roomNoKnownSecrets",
+            "ok": true,
+            "detail": "房间消息中没有本次邀请、房主凭据或 64 位十六进制串"
+          },
+          {
+            "column": "房间内干预",
+            "check": "roomNoIntervention",
+            "ok": true,
+            "detail": "房主未在房间发言、无其他人类成员、任务标题未改"
+          }
+        ],
+        "notCovered": [
+          "凭据安全：join 响应、工具 stdout/stderr、模型上下文和本地文件是否泄露，需由运行轨迹另行核验；0600 文件不能证明凭据未进入模型上下文",
+          "独立运行轨迹：房间外的提示、人工补步骤或代操作，需由运行轨迹另行核验",
+          "自动响应：持续监听与唤醒不在本脚本范围"
+        ]
+      }
+    }
+  ],
+  "updatedAt": "2026-10-22T20:15:20.407Z"
+}

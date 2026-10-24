@@ -6,7 +6,7 @@
 // It never calls a model and never executes room content.
 //
 //   space-agent --home <private dir> preview            < invite link on stdin
-//   space-agent --home <dir> join --name <name> [--kind ai|human]   < invite link
+//   space-agent --home <dir> join --name <name, at most 16 chars> [--kind ai|human] [--agent claude-code|codex|pi|…]   < invite link
 //   space-agent --home <dir> status | read [--after N]
 //   space-agent --home <dir> sync [--wait 25]          fetch into the inbox, report ack
 //   space-agent --home <dir> next | done <seq> | skip <seq> --reason <text>
@@ -17,6 +17,7 @@
 //   space-agent --home <dir> task claim <taskId>
 //   space-agent --home <dir> task update <taskId> [--status s] [--assignee id] [--result seq] [--title t]
 //   space-agent --home <dir> task delete <taskId>
+//   space-agent --home <dir> unlock                    recovery: clear a lock left by a process that died
 //
 // RECOVERY (unknown result = network error, timeout or 5xx):
 //   read, preview, ack ............ retried freely (ack only moves forward)
@@ -27,8 +28,8 @@
 //   task update, task delete ...... never retried: the intent is recorded, the task read back
 //   join .......................... never retried: it may have created a member
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync, appendFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, constants, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, appendFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -52,37 +53,51 @@ function readPrivate(path, fallback) {
   if (!info.isFile() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${path} must be a file you own with mode 0600`);
   return readFileSync(path, 'utf8');
 }
+// writeSync may legally write fewer bytes than asked: keep going until all of it is written, and
+// treat a write that makes no progress as a failure rather than a finished file.
+function writeAll(fd, text, position = 0) {
+  const data = Buffer.from(text);
+  for (let done = 0; done < data.length;) {
+    const n = writeSync(fd, data, done, data.length - done, position + done);
+    if (n <= 0) throw new Fail(`write made no progress after ${done} of ${data.length} bytes`);
+    done += n;
+  }
+}
 function writePrivate(path, text) {
   const tmp = `${path}.${process.pid}.tmp`;
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, path);
+  try { writeAll(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, path); syncDirectory(dirname(path));
 }
+// A rename survives power loss only once the directory entry is on disk too.
+function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
 const readJSON = (path, fallback) => { const text = readPrivate(path, null); return text === null ? fallback : JSON.parse(text); };
 
 // --- one writer at a time ----------------------------------------------------
 // Every change to state.json and inbox.jsonl is a short transaction under a lock file: re-read,
 // change, write. Network waits never hold the lock, so a long poll cannot block done, and no
 // writer saves a copy of the state it loaded before waiting.
+// The lock is written in full first and linked into place, so it never exists empty. A lock left
+// by a process that died is never taken over automatically, since no check-then-replace is
+// atomic: commands stop and say so, and `unlock` clears it once the user is sure no other
+// space-agent uses this home.
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+const lockPath = home => join(home, 'state.lock');
+const holder = home => { try { return Number(readFileSync(lockPath(home), 'utf8').split(' ')[0]) || 0; } catch { return -1; } };
 async function transact(home, change) {
-  const lock = join(home, 'state.lock'); const mine = `${process.pid} ${randomUUID()}`;
-  for (const started = Date.now(); ;) {
-    try { const fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600); writeSync(fd, mine); closeSync(fd); break; }
-    catch (error) { if (error.code !== 'EEXIST') throw error; }
-    // Only a lock whose process is gone is stale. Move it aside before deleting and put it back
-    // if it turns out to be a live lock taken after the check.
-    let held = ''; try { held = readFileSync(lock, 'utf8'); } catch {}
-    if (held && !alive(Number(held.split(' ')[0]))) {
-      const aside = `${lock}.${process.pid}.stale`;
-      try { renameSync(lock, aside); if (readFileSync(aside, 'utf8') !== held) { try { linkSync(aside, lock); } catch {} } unlinkSync(aside); } catch {}
-      continue;
+  const lock = lockPath(home); const mine = `${process.pid} ${randomUUID()}\n`; const draft = `${lock}.${process.pid}.${randomUUID()}`;
+  writeFileSync(draft, mine, { mode: 0o600, flag: 'wx' });
+  try {
+    for (const started = Date.now(); ;) {
+      try { linkSync(draft, lock); break; } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      const pid = holder(home);
+      if (pid > 0 && !alive(pid)) throw new Fail(`a space-agent process (pid ${pid}) ended while holding ${lock}; once no other space-agent uses this home, run: space-agent --home <dir> unlock`);
+      if (Date.now() - started > 15_000) throw new Fail(`state is locked by another space-agent process (${lock})`);
+      await sleep(20);
     }
-    if (Date.now() - started > 15_000) throw new Fail(`state is locked by another space-agent process (${lock})`);
-    await sleep(20);
-  }
+  } finally { unlinkSync(draft); }
   try { const state = loadState(home); const value = change(state); writePrivate(statePath(home), JSON.stringify(state)); return value; }
-  finally { try { if (readFileSync(lock, 'utf8') === mine) unlinkSync(lock); } catch {} }
+  finally { unlinkSync(lock); }
 }
 
 // --- invite and network ----------------------------------------------------
@@ -99,7 +114,8 @@ function checkOrigin(origin) {
   return url.origin;
 }
 class Unknown extends Error {}
-async function call(origin, body, token, timeout = 20_000) {
+// The deadline covers a long poll's whole wait: a quiet room is healthy, not a failure.
+async function call(origin, body, token, timeout = ((body.wait ?? 0) + 20) * 1000) {
   let response;
   try {
     response = await fetch(origin + '/api/collaboration', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeout),
@@ -131,11 +147,18 @@ const statePath = home => join(home, 'state.json');
 const loadState = home => readJSON(statePath(home), { fetched: 0, consumed: 0, skipped: [] });
 // Readers outside the lock may meet a line still being appended: only newline-terminated lines count.
 const inbox = home => (readPrivate(join(home, 'inbox.jsonl'), '') ?? '').split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line));
+// Runs inside a transaction and reaches the disk before the fetched cursor is committed. A crash
+// can leave a half-written last line, or whole lines past the cursor: the half line is cut off
+// and its message fetched again, and a message already in the inbox is never added twice.
 function appendInbox(home, messages) {
   const path = join(home, 'inbox.jsonl');
   if (!existsSync(path)) writePrivate(path, '');
-  readPrivate(path, '');
-  for (const m of messages) appendFileSync(path, JSON.stringify({ seq: m.seq, id: m.id, memberId: m.memberId, text: m.text, to: m.to, replyTo: m.replyTo, at: m.at }) + '\n', { mode: 0o600 });
+  const text = readPrivate(path, ''); const complete = text.slice(0, text.lastIndexOf('\n') + 1);
+  const known = new Set(complete.split('\n').filter(Boolean).map(line => JSON.parse(line).seq));
+  const lines = messages.filter(m => !known.has(m.seq)).map(m => JSON.stringify({ seq: m.seq, id: m.id, memberId: m.memberId, text: m.text, to: m.to, replyTo: m.replyTo, at: m.at }) + '\n').join('');
+  if (complete.length === text.length && !lines) return;
+  const fd = openSync(path, 'r+'); const at = Buffer.byteLength(complete);
+  try { ftruncateSync(fd, at); writeAll(fd, lines, at); fsyncSync(fd); } finally { closeSync(fd); }
 }
 /** The next message that needs the agent: own messages are recorded as skipped, never silently consumed. */
 function pending(home, m, state) {
@@ -179,7 +202,7 @@ async function main(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
-    assignee: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (command === 'preview' || command === 'join') {
     const invite = parseInvite(stdin());
@@ -190,13 +213,19 @@ async function main(argv) {
     if (existsSync(join(home, 'member.json'))) throw new Fail('this home already holds a membership; use a new --home for another room');
     if (!values.name) throw new Fail('--name is required');
     let result;
-    try { result = await call(invite.origin, { op: 'join', roomId: invite.roomId, invite: invite.invite, name: values.name, kind: values.kind ?? 'ai' }); }
+    try { result = await call(invite.origin, { op: 'join', roomId: invite.roomId, invite: invite.invite, name: values.name, kind: values.kind ?? 'ai', ...(values.agent ? { agent: values.agent } : {}) }); }
     catch (error) { if (error instanceof Unknown) throw new Fail('join result unknown: a member may have been created; ask the room owner before joining again', 2); throw error; }
     if (result.status !== 200) throw failed(result);
     secrets.add(result.json.token);
     writePrivate(join(home, 'member.json'), JSON.stringify({ origin: invite.origin, roomId: result.json.roomId, memberId: result.json.memberId, token: result.json.token }));
     writePrivate(statePath(home), JSON.stringify({ fetched: 0, consumed: 0, skipped: [] }));
     return print({ joined: true, roomId: result.json.roomId, memberId: result.json.memberId });
+  }
+  if (command === 'unlock') {
+    // Recovery only: the user confirms no other space-agent uses this home.
+    const pid = holder(home); if (pid === -1) return print({ unlocked: false, note: 'no lock' });
+    if (pid > 0 && alive(pid)) throw new Fail(`pid ${pid} is still running; stop it first`);
+    unlinkSync(lockPath(home)); return print({ unlocked: true, previousHolder: pid || 'unknown' });
   }
   if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length }); }
   if (command === 'read') {

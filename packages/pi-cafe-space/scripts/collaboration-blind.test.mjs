@@ -99,16 +99,22 @@ test('listen mode: a reply quoting the nonce with the exact replyTo is one room 
   let stop = listen(roomId, me, true);
   const exact = await blindAsync(['respond', '--home', h, '--scenario', 'idle', '--wait-seconds', '20']); await stop();
   assert.equal(exact.code, 0); assert.equal(exact.json().responded, true); assert.match(exact.json().label, /^本次响应测试成功，耗时/); assert.match(exact.json().hostAutoWake, /^未验证/);
+  // A run that crashed after sending its test leaves no local record; the next run must not reuse its id.
+  await api({ op: 'send', roomId, id: 'blind-respond-2', to: me.memberId, text: '【响应测试】收到请直接在房间回复验证码 ABCDEFGHJKMNPQRSTUVW，回复时把 replyTo 设为这条消息，无需做其他事情。' }, owner(h).token);
+  // A busy agent can answer after a whole long poll has passed without news.
+  stop = listen(roomId, me, true, () => sleep(27_000));
+  const late = await blindAsync(['respond', '--home', h, '--scenario', 'busy', '--wait-seconds', '60']); await stop();
+  assert.equal(late.code, 0); assert.equal(late.json().responded, true);
   // A reply that quotes the nonce without pointing at the test does not count.
   stop = listen(roomId, me, false);
   const sloppy = await blindAsync(['respond', '--home', h, '--scenario', 'quiet', '--wait-seconds', '4']); await stop();
   assert.equal(sloppy.code, 1); assert.equal(sloppy.json().label, '尚未确认响应，原因未知');
   const verdict = blind(['judge', '--home', h]); const checks = Object.fromEntries(verdict.json().checks.map(c => [c.check, c]));
-  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /2 次响应测试中 1 次/);
+  assert.equal(checks.roomRecordedReply.ok, false); assert.match(checks.roomRecordedReply.detail, /4 次响应测试中 2 次/);
   assert.equal(checks.roomNoIntervention.ok, true, 'the tests themselves are not intervention');
   assert(verdict.json().notCovered.some(n => n.startsWith('自动响应（宿主唤醒）：未验证')));
   const log = readFileSync(join(h, 'respond.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
+  assert.deepEqual(log.map(r => [r.n, r.scenario, !!r.answerSeq]), [[1, 'idle', true], [2, 'busy', true], [3, 'quiet', false]]); assert.equal(statSync(join(h, 'respond.jsonl')).mode & 0o777, 0o600);
 });
 
 test('host evidence: a Claude Code log counts only a host event, then a model turn, then the reply, with no human input', { skip: !binary }, async () => {
@@ -118,14 +124,48 @@ test('host evidence: a Claude Code log counts only a host event, then a model tu
   const log = join(dir, 'session.jsonl'); writeFileSync(log, JSON.stringify({ type: 'user', origin: { kind: 'human' }, timestamp: new Date().toISOString(), message: { content: '开始监听' } }) + '\n', { mode: 0o600 });
   const line = entry => appendFileSync(log, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n');
   const run = async (scenario, onProbe) => { const stop = listen(roomId, me, true, onProbe);
-    const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log]); await stop(); return r.json(); };
+    const r = await blindAsync(['respond', '--home', h, '--scenario', scenario, '--wait-seconds', '20', '--host', 'claude-code', '--transcript', log, '--host-grace-seconds', '5']); await stop(); return r.json(); };
   const wake = (m, nonce) => line({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><event>[msg #${m.seq}] ${nonce}</event></task-notification>` });
-  const ok = await run('idle', async (m, nonce) => { wake(m, nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); });
-  assert.match(ok.hostAutoWake, /^宿主日志显示/); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
-  const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
+  // How the queued event reaches the model: as the start of a new turn, or attached to the running one.
+  const newTurn = (nonce, extra = {}) => line({ type: 'user', origin: { kind: 'task-notification' }, message: { content: `<task-notification>${nonce}</task-notification>` }, ...extra });
+  const inTurn = nonce => { line({ type: 'queue-operation', operation: 'remove', content: `<task-notification>${nonce}</task-notification>` }); line({ type: 'attachment', attachment: { type: 'queued_command', prompt: `<task-notification>${nonce}</task-notification>` } }); };
+  const ok = await run('idle', async (m, nonce) => { wake(m, nonce); newTurn(nonce); await sleep(20); line({ type: 'assistant', message: { content: [] } }); line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }); });
+  assert.match(ok.hostAutoWake, /^宿主日志显示：监听事件带来该 nonce → 新的模型回合/); assert.equal(ok.hostEvidence.delivery, 'new-turn'); assert.equal(ok.hostEvidence.humanInputs, 0); assert.equal(ok.hostEvidence.appendOnly, true);
+  // Arriving while the model runs and joining that turn is handled inside a turn, not a new wake-up.
+  const joined = await run('busy', async (m, nonce) => { wake(m, nonce); inTurn(nonce); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(joined.hostEvidence.delivery, 'in-turn'); assert.match(joined.hostAutoWake, /回合内处理，不是新的唤醒/);
+  const unclear = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(unclear.hostAutoWake, '未验证：无法确定监听事件以何种方式送达模型');
+  // As in a real session: the turn is stamped when it starts but reaches the log after the reply.
+  const late = await run('idle', async (m, nonce) => { wake(m, nonce); newTurn(nonce); const started = new Date().toISOString(); setTimeout(() => line({ type: 'assistant', timestamp: started, message: { content: [] } }), 3000); });
+  assert.match(late.hostAutoWake, /^宿主日志显示/);
+  // Pi's counterexamples: an input of unknown origin, a line that does not parse, and a person's
+  // input stamped inside the window but written after the chain already looked complete.
+  const shell = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce); line({ type: 'user', message: { content: '<bash-input> curl …</bash-input>' } }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(shell.hostAutoWake, '未验证：期间有 1 个无法确认来源的输入条目');
+  const garbled = await run('busy', async (m, nonce) => { wake(m, nonce); appendFileSync(log, '{"type":"user","origin":\n'); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(garbled.hostAutoWake, '未验证：日志有 1 行无法解析');
+  const afterwards = await run('busy', async (m, nonce) => { const when = new Date().toISOString(); wake(m, nonce); newTurn(nonce); line({ type: 'assistant', message: { content: [] } });
+    setTimeout(() => line({ type: 'user', origin: { kind: 'human' }, timestamp: when, message: { content: '我来回' } }), 2500); });
+  assert.equal(afterwards.hostAutoWake, '未验证：期间有 1 次人工输入');
+  const undated = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); line({ type: 'user', origin: { kind: 'human' }, timestamp: 'not-a-date', message: { content: '我' } }); });
+  assert.equal(undated.hostAutoWake, '未验证：有 1 个时间无法解析的条目');
+  const unfinished = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); appendFileSync(log, '{"type":"user","origin":{"kind":"human"}'); });
+  assert.equal(unfinished.hostAutoWake, '未验证：日志末尾有未写完的记录'); assert.equal(unfinished.hostEvidence.incompleteTail, true);
+  appendFileSync(log, '}\n');
+  // Pi's chain counterexamples: the turn must follow this delivery, and every time must exist and be in order.
+  const deliveredLate = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); setTimeout(() => newTurn(nonce), 1500); });
+  assert.equal(deliveredLate.hostAutoWake, '未验证：送达之后没有模型回合');
+  const staleTurn = await run('busy', async (m, nonce) => { wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); newTurn(nonce); });
+  assert.equal(staleTurn.hostAutoWake, '未验证：送达之后没有模型回合');
+  const timeless = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce, { timestamp: undefined }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(timeless.hostAutoWake, '未验证：送达记录没有有效时间');
+  const backwards = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce, { timestamp: '2020-01-01T00:00:00Z' }); line({ type: 'assistant', message: { content: [] } }); });
+  assert.equal(backwards.hostAutoWake, '未验证：时间顺序不是 事件 ≤ 送达 ≤ 模型回合 ≤ 回复');
+  const prompted = await run('busy', async (m, nonce) => { wake(m, nonce); newTurn(nonce); line({ type: 'user', origin: { kind: 'human' }, message: { content: '快回复' } }); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(prompted.hostAutoWake, '未验证：期间有 1 次人工输入');
   const typed = await run('quiet', async (m, nonce) => { line({ type: 'user', origin: { kind: 'human' }, message: { content: `回复 ${nonce}` } }); line({ type: 'assistant', message: { content: [] } }); });
-  assert.equal(typed.hostAutoWake, '未验证：nonce 首次出现于 human，不是宿主事件');
+  assert.equal(typed.hostAutoWake, '未验证：nonce 首次出现于 human，不是宿主入队事件');
   const rewritten = await run('restart', async (m, nonce) => { writeFileSync(log, readFileSync(log, 'utf8').replace('开始监听', '改写过的'), { mode: 0o600 }); wake(m, nonce); line({ type: 'assistant', message: { content: [] } }); });
   assert.equal(rewritten.hostAutoWake, '未验证：窗口前的日志被改动');
   assert.equal(blind(['respond', '--home', h, '--host', 'claude-code', '--transcript', 'relative.jsonl']).code, 2);
