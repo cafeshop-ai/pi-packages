@@ -234,8 +234,7 @@ test('Goal CLI controls and notifications survive restart without consuming chat
   assert.equal(agent(worker, ['next']).json().revision, 1, 'a new process replays the unconfirmed Goal state');
   assert.equal(agent(worker, ['done-goal', '1']).code, 0); assert.equal(agent(worker, ['next']).out, '');
   assert.equal(agent(worker, ['status']).json().consumed, 0);
-  assert.equal(agent(worker, ['goal', 'pause', '1', '--revision', '1']).code, 1, 'AI cannot pause the room Goal');
-  assert.equal(agent(admin, ['goal', 'pause', '1', '--revision', '1']).json().goal.status, 'paused');
+  assert.equal(agent(worker, ['goal', 'pause', '1', '--revision', '1']).json().goal.status, 'paused', 'any member may pause the room Goal');
   assert.equal(agent(admin, ['goal', 'resume', '1', '--revision', '1']).code, 1, 'stale revision is refused');
   assert.equal(agent(admin, ['goal', 'resume', '1', '--revision', '2']).json().goal.status, 'active');
   agent(worker, ['sync']); assert.equal(agent(worker, ['next']).json().revision, 3);
