@@ -34,7 +34,8 @@ test('candidate matrix/platform/checksum and self-contained scripts', async () =
  const manifest = JSON.parse(await readFile(join(target, 'package.json'), 'utf8'));
  assert.deepEqual(manifest.pi.extensions, ['./dist/extension/index.js']); assert.equal(manifest.peerDependencies.typebox, '*');
  assert.equal(manifest.private, true); assert.equal(manifest.engines.node, '>=22.19.0');assert.deepEqual(manifest.dependencies,{ws:'8.21.3'});assert.equal(manifest.devDependencies['@assistant-ui/core'],'0.3.17');
- for (const name of ['build-source.mjs','verify-artifacts.mjs','run-relay.mjs','start-relay.ps1','stop-relay.ps1','start-pi.ps1','remote/setup.mjs','remote/run.mjs']) await readFile(join(target,'scripts',name));
+ for (const name of ['space-agent.mjs','build-source.mjs','verify-artifacts.mjs','run-relay.mjs','start-relay.ps1','stop-relay.ps1','start-pi.ps1','remote/setup.mjs','remote/run.mjs']) await readFile(join(target,'scripts',name));
+ assert.equal(await readFile(join(target,'scripts/space-agent.mjs'),'utf8'), await readFile(join(root,'scripts/space-agent.mjs'),'utf8'));
  assert.match(run(process.execPath,[join(target,'scripts/remote/setup.mjs'),'--help']),/--output/);
  assert.match(run(process.execPath,[join(target,'scripts/remote/run.mjs'),'--help']),/--profile/);
  assert.match(await readFile(join(target,'README.md'),'utf8'),/多设备、多人协作/);

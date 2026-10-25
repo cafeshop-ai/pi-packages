@@ -10,4 +10,6 @@ const identity = JSON.parse(result.stdout); const metadata = JSON.parse(await re
 if (identity.webDigest !== metadata.webDigest || identity.version !== metadata.version) throw Error('Embedded Web identity mismatch');
 await readFile(new URL('../dist/extension/index.js', import.meta.url));
 for (const part of ['client', 'extension', 'listener']) await readFile(new URL('../dist/collaboration/' + part + '.js', import.meta.url));
+await readFile(new URL('./space-agent.mjs', import.meta.url));
+await readFile(new URL('./collaboration-goal.mjs', import.meta.url));
 console.log('PASS: prebuilt candidate identity, platform, checksum and extension entry');
