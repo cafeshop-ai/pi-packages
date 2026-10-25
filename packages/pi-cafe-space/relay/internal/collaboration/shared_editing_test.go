@@ -30,6 +30,10 @@ func TestMembersManageRoomAfterCreatorLeavesOrIsRemoved(t *testing.T) {
 				call(t, s, map[string]any{"op": op, "roomId": id, "paused": false, "memberId": human["memberId"]}, a, 409)
 			}
 			goalChange(t, s, id, a, "delete", nil, 409)
+			// Preserve existing invite/leave behavior; pause is not a credential revocation.
+			pausedInvite := invitation(t, s, id, a)
+			departing := join(t, s, id, pausedInvite, "Leaving AI")
+			call(t, s, map[string]any{"op": "leave", "roomId": id}, departing["token"].(string), 200)
 			call(t, s, map[string]any{"op": "pause", "roomId": id, "paused": false}, h, 200)
 			restarted, err := New(s.directory, testOrigin, Options{})
 			if err != nil {

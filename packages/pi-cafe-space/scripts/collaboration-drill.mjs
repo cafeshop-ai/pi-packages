@@ -74,7 +74,7 @@ try {
   // 5. Pause takes effect for the next AI write and is reported to the watcher.
   await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
   await api({ op: 'send', roomId: owner.roomId, id: 'drill-ai-paused', text: 'should be rejected' }, ai.token, 409);
-  await until(() => lines.some(l => l.includes('房主已暂停 AI 发言')), 40000, 'pause notice');
+  await until(() => lines.some(l => l.includes('房间已暂停 AI 发言')), 40000, 'pause notice');
   checks.push('pause: AI writes rejected immediately and the watcher reports it');
 
   const order = seen(); const unique = new Set(order);
