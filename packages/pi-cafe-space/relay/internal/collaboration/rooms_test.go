@@ -87,7 +87,7 @@ func TestRoomsAcrossClientsAndRestart(t *testing.T) {
 	if len(read["messages"].([]any)) != 1 {
 		t.Fatal("restart lost data")
 	}
-	call(t, restored, map[string]any{"op": "remove", "roomId": id, "memberId": a["memberId"]}, token, 403)
+	call(t, restored, map[string]any{"op": "remove", "roomId": id, "memberId": a["memberId"]}, token, 200)
 	call(t, restored, map[string]any{"op": "remove", "roomId": id, "memberId": a["memberId"]}, owner, 200)
 	call(t, restored, map[string]any{"op": "read", "roomId": id}, token, 401)
 	call(t, restored, map[string]any{"op": "revoke", "roomId": id}, owner, 200)

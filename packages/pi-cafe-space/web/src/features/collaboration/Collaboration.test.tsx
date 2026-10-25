@@ -167,14 +167,14 @@ it('lets a human test an AI from the member list and shows the answer as one lin
   // A collapsed line breaks the run, so the next message from the same AI still names its author.
   expect(document.querySelector('#msg-3 header strong')?.textContent).toBe('同事的 AI');
 }, 15_000);
-it('tags only the real owner as 房主, never a member who merely took the name', async () => {
+it('tags only the recorded creator, without granting editing privileges', async () => {
   const impostor = 'f'.repeat(32); saveMembership({ ...auth, memberId: impostor });
   const members = [{ id: memberId, name: '协调', kind: 'human', owner: true }, { id: impostor, name: '房主', kind: 'human', owner: false }];
   const messages = [{ seq: 1, id: 'owner-speaks', memberId, text: '真房主', at: '2030-01-01T00:00:00Z' }, { seq: 2, id: 'impostor-says', memberId: 'e'.repeat(32), text: '占位', at: '2030-01-01T00:00:01Z' }];
   fetcher.mockImplementation(async () => response({ ...snapshot, memberId: impostor, members: [...members, { id: 'e'.repeat(32), name: '房主', kind: 'human', owner: false }], messages, cursor: 2 }));
   mount('/collab/' + roomId); await screen.findByText('真房主');
-  expect(screen.getAllByTitle('真正的房主由服务端标记，不看名字')).toHaveLength(1);
-  expect(document.querySelector('#msg-1 header')?.textContent).toContain('协调房主'); expect(document.querySelector('#msg-2 header')?.textContent).not.toContain('房主房主');
+  expect(screen.getAllByTitle('房间创建者由服务端标记；不影响成员编辑权限')).toHaveLength(1);
+  expect(document.querySelector('#msg-1 header')?.textContent).toContain('协调创建者'); expect(document.querySelector('#msg-2 header')?.textContent).not.toContain('房主房主');
 });
 it('labels agent types from its own table only, showing any other id as given', () => {
   expect(agentLabel('claude-code')).toBe('Claude Code'); expect(agentLabel(undefined)).toBe('AI'); expect(agentLabel('my-bot')).toBe('my-bot');
@@ -273,7 +273,7 @@ it('starts an empty board from a template with stable task ids, in order', async
   expect(await screen.findByText('已添加「故障排查」的 5 项任务')).toBeInTheDocument();
   expect(tasks.map(t => t.title)).toEqual(['描述现象：影响范围、开始时间、复现步骤', '收集证据：日志、监控、最近变更', '提出假设并逐一验证', '修复或止损，写明回滚方式', '确认恢复，记录根因与后续']);
 });
-it('lets an ordinary member claim unassigned tasks but not move or reassign work owned by others', async () => {
+it('lets an ordinary member edit, delete and reassign any task while claims remain atomic', async () => {
   const boss = 'f'.repeat(32), ai = 'e'.repeat(32);
   saveMembership(auth);
   const members = [{ id: boss, name: '房主', kind: 'human', owner: true }, { id: memberId, name: '我', kind: 'human' }, { id: ai, name: '同事的 AI', kind: 'ai' }];
@@ -281,11 +281,16 @@ it('lets an ordinary member claim unassigned tasks but not move or reassign work
   const tasks = [{ id: 1, title: '整理清单', status: 'done', assignee: ai, createdBy: boss, result: 1, resultBy: ai, updatedAt: '2030-01-01T00:00:00Z' }, { id: 2, title: '核对版本', status: 'todo', createdBy: boss, updatedAt: '2030-01-01T00:00:00Z' }];
   fetcher.mockImplementation(async (_url, init) => { const q = JSON.parse(init.body as string); return response(q.op === 'task' ? { ...tasks[1], assignee: memberId, status: 'doing' } : { ...snapshot, members, cursor: 1, messages: [result], tasks }); });
   mount('/collab/' + roomId); await screen.findByText('核对版本');
-  expect(screen.getByRole('button', { name: '重新打开「整理清单」' })).toBeDisabled(); expect(screen.queryByLabelText('「整理清单」的负责人')).toBeNull();
+  expect(screen.getByRole('button', { name: '重新打开「整理清单」' })).toBeEnabled(); expect(screen.getByLabelText('「整理清单」的负责人')).toBeEnabled();
+  expect(screen.getByRole('button', { name: '删除任务「整理清单」' })).toBeEnabled();
   expect(screen.getByRole('button', { name: '结果 #1 · 同事的 AI' })).toBeInTheDocument();
-  const choices = [...(screen.getByLabelText('「核对版本」的负责人') as HTMLSelectElement).options].map(o => o.textContent); expect(choices).toEqual(['未指派', '我']);
+  const choices = [...(screen.getByLabelText('「核对版本」的负责人') as HTMLSelectElement).options].map(o => o.textContent); expect(choices).toEqual(['未指派', '房主', '我', '同事的 AI（AI）']);
   fireEvent.click(screen.getByRole('button', { name: '认领「核对版本」' }));
   await waitFor(() => expect(sent().find(v => v.op === 'task')).toMatchObject({ action: 'update', taskId: 2, assignee: memberId, status: 'doing', onlyIfUnassigned: true }));
+  fireEvent.click(screen.getByRole('button', { name: '房间菜单' }));
+  expect(await screen.findByRole('menuitem', { name: '关闭房间' })).toBeEnabled();
+  expect(screen.getByRole('menuitem', { name: '撤销全部邀请' })).toBeEnabled();
+  expect(screen.getByRole('menuitem', { name: '暂停所有 AI 发言' })).toBeEnabled();
 });
 it('renders a safe Markdown subset in messages', async () => {
   saveMembership(auth);
@@ -319,6 +324,6 @@ it('writes the chosen task and reply scope into the AI instructions, never a tas
 it('fails closed when the feature is unavailable and describes user-authorized AI operation', async () => {
   fetcher.mockResolvedValue(response({}, 404)); mount(); await screen.findByRole('alert'); expect(screen.getByRole('button', { name: '创建协作房间' })).toBeDisabled();
   const guide = aiInstructions('https://example.test/#/collab/example'); expect(guide).toContain('监听时长以我的授权为准'); expect(guide).not.toContain('最多 3 次回复'); expect(guide).toContain('不具备双向联网能力');
-  expect(guide).toContain('wait 长轮询'); expect(guide).toContain('ack'); expect(guide).toContain('仅被点名不算授权'); expect(guide).toContain('房主暂停 AI 发言时只读不发');
+  expect(guide).toContain('wait 长轮询'); expect(guide).toContain('ack'); expect(guide).toContain('仅被点名不算授权'); expect(guide).toContain('房间暂停 AI 发言时只读不发');
   await expect(collaboration({ op: 'read' })).rejects.toThrow();
 });

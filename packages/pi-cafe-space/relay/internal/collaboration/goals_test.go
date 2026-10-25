@@ -29,18 +29,17 @@ func TestGoalLifecycleHumanReviewAndTaskFences(t *testing.T) {
 	ai := join(t, s, id, invite, "Goal AI")
 	a, r := ai["token"].(string), reviewer["token"].(string)
 	fields := map[string]any{"title": "Ship a verified release", "criteria": "Tests pass.\nReviewer checks evidence.", "reviewer": reviewer["memberId"]}
-	goalChange(t, s, id, a, "create", fields, 403)
 	bad := map[string]any{"title": "Goal", "criteria": "Evidence", "reviewer": ai["memberId"]}
 	goalChange(t, s, id, owner, "create", bad, 400)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "existing-task", "title": "Run tests"}, owner, 200)
-	created := goalChange(t, s, id, owner, "create", fields, 200)
+	created := goalChange(t, s, id, a, "create", fields, 200)
 	g := created["goal"].(map[string]any)
 	if g["status"] != "active" || created["goalRevision"] != float64(1) || created["tasks"].([]any)[0].(map[string]any)["goalId"] != g["id"] {
 		t.Fatalf("goal and unfinished board must be linked: %v", created)
 	}
 	goalChange(t, s, id, owner, "create", fields, 409)
-	goalChange(t, s, id, a, "pause", nil, 403)
-	goalChange(t, s, id, owner, "pause", nil, 200)
+	goalChange(t, s, id, a, "pause", nil, 200)
+	goalChange(t, s, id, owner, "pause", nil, 409)
 	for _, token := range []string{owner, a} {
 		call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "status": "done"}, token, 409)
 		call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "paused-task", "title": "New", "goalId": g["id"]}, token, 409)
@@ -69,7 +68,7 @@ func TestGoalLifecycleHumanReviewAndTaskFences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted := goalChange(t, restarted, id, owner, "delete", nil, 200)
+	deleted := goalChange(t, restarted, id, a, "delete", nil, 200)
 	if deleted["goal"] != nil || len(deleted["tasks"].([]any)) != 1 {
 		t.Fatal("deletion must preserve the board")
 	}

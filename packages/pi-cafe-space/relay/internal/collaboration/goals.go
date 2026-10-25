@@ -1,6 +1,9 @@
 package collaboration
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Goal is one room-scoped completion contract, not permission to run local tools.
 type Goal struct {
@@ -32,7 +35,7 @@ func validGoal(room *Room) bool {
 	if g == nil {
 		return true
 	}
-	if g.ID <= 0 || g.ID > room.NextGoal || room.GoalRevision == 0 || !validText(g.Title, 200, false) || !validText(g.Criteria, 4000, true) || !humanMember(room, g.Reviewer, false) || !humanMember(room, g.CreatedBy, false) || g.UpdatedAt.IsZero() {
+	if g.ID <= 0 || g.ID > room.NextGoal || room.GoalRevision == 0 || !validText(g.Title, 200, false) || !validText(g.Criteria, 4000, true) || !humanMember(room, g.Reviewer, false) || !slices.ContainsFunc(room.Members, func(m Member) bool { return m.ID == g.CreatedBy }) || g.UpdatedAt.IsZero() {
 		return false
 	}
 	if g.Status != "active" && g.Status != "paused" && g.Status != "review" && g.Status != "done" {
@@ -69,9 +72,6 @@ func (s *Store) goal(room *Room, actor *Member, q request) error {
 		return fail(409, "GOAL_CHANGED")
 	}
 	if q.Action == "create" {
-		if !actor.Owner {
-			return fail(403, "OWNER_REQUIRED")
-		}
 		if room.Goal != nil && room.Goal.Status != "done" {
 			return fail(409, "GOAL_EXISTS")
 		}
@@ -95,9 +95,6 @@ func (s *Store) goal(room *Room, actor *Member, q request) error {
 		}
 		switch q.Action {
 		case "pause", "resume", "delete", "reviewer":
-			if !actor.Owner {
-				return fail(403, "OWNER_REQUIRED")
-			}
 			switch q.Action {
 			case "pause":
 				if g.Status != "active" {

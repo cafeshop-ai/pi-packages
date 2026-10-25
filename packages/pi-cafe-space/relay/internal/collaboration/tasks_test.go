@@ -32,19 +32,18 @@ func TestTaskBoardLifecycleAndPermissions(t *testing.T) {
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "task-create-04", "title": ""}, owner, 400)
 	second := call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "ai-task-0001", "title": "回归测试"}, aiToken, 200)
 
-	// The assignee moves its own work along; only the creator or owner can delete.
+	// Every active member may edit or delete tasks.
 	done := call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "status": "doing"}, aiToken, 200)
 	if done["status"] != "doing" || done["assignee"] != aiID {
 		t.Fatalf("status update must keep other fields: %v", done)
 	}
-	// A bystander cannot take someone's task away; the assignee can release it.
-	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "assignee": ""}, otherToken, 403)
+	// A bystander can release or reassign work too.
+	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "assignee": ""}, otherToken, 200)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "assignee": ""}, aiToken, 200)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "status": "blocked"}, aiToken, 400)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1}, aiToken, 400)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 99, "status": "done"}, aiToken, 400)
-	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "delete", "taskId": 2}, otherToken, 403)
-	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "delete", "taskId": 2}, aiToken, 200)
+	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "delete", "taskId": 2}, otherToken, 200)
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "archive", "taskId": 1}, owner, 400)
 	_ = second
 
@@ -87,17 +86,18 @@ func TestTaskClaimPermissionsAndResults(t *testing.T) {
 		return call(t, s, q, token, status)
 	}
 	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "create", "id": "claim-task-01", "title": "整理发布说明"}, owner, 200)
-	// Nobody but the owner or creator may move an unassigned task except by claiming it.
-	task(map[string]any{"status": "done"}, b, 403)
+	// An unrelated member may edit an unassigned task without claiming it.
+	task(map[string]any{"status": "done"}, b, 200)
 
 	// Claiming is atomic: the first claimant wins, others get TASK_TAKEN or cannot override.
 	if got := task(map[string]any{"assignee": aID, "status": "doing", "onlyIfUnassigned": true}, a, 200); got["assignee"] != aID || got["status"] != "doing" {
 		t.Fatalf("claim failed: %v", got)
 	}
 	task(map[string]any{"assignee": bID, "onlyIfUnassigned": true}, b, 409)
-	task(map[string]any{"assignee": bID}, b, 403)
-	task(map[string]any{"status": "done"}, b, 403)
-	task(map[string]any{"title": "改名"}, a, 403)
+	task(map[string]any{"assignee": bID}, b, 200)
+	task(map[string]any{"assignee": aID}, b, 200)
+	task(map[string]any{"status": "done"}, b, 200)
+	task(map[string]any{"title": "改名"}, a, 200)
 
 	// Results must be the submitter's own message, and a failed update changes nothing.
 	foreign := call(t, s, map[string]any{"op": "send", "roomId": id, "id": "foreign-result", "text": "别人的结果"}, b, 200)
@@ -120,7 +120,7 @@ func TestTaskClaimPermissionsAndResults(t *testing.T) {
 	if got := task(map[string]any{"assignee": bID}, owner, 200); got["assignee"] != bID || got["result"] != own["seq"] || got["resultBy"] != aID {
 		t.Fatalf("owner reassignment failed: %v", got)
 	}
-	task(map[string]any{"assignee": ""}, a, 403)
+	task(map[string]any{"assignee": ""}, a, 200)
 	task(map[string]any{"assignee": ""}, b, 200)
 }
 

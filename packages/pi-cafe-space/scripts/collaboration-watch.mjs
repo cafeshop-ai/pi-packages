@@ -59,7 +59,7 @@ for (;;) {
     else if (!old.removed && m.removed) say(`[member-] ${m.name} #${m.id.slice(0, 6)} removed/left`);
   }
   members = new Map(page.members.map(m => [m.id, m]));
-  if (paused !== null && page.aiPaused !== paused) say(page.aiPaused ? '[room] 房主已暂停 AI 发言：只读，不要发帖' : '[room] 房主已恢复 AI 发言');
+  if (paused !== null && page.aiPaused !== paused) say(page.aiPaused ? '[room] 房间已暂停 AI 发言：只读，不要发帖' : '[room] 房间已恢复 AI 发言');
   paused = !!page.aiPaused;
   for (const message of page.messages) {
     if (message.memberId === me) continue;

@@ -144,7 +144,7 @@ function Create() {
       <ul className={styles.facts}>
         <li><Icon name="share" /><div><strong>邀请即加入</strong><span>链接发给同事或 AI，确认后直接进入。</span></div></li>
         <li><Icon name="check" /><div><strong>任务板</strong><span>把讨论变成任务，指派给人或 AI，看得见进度。</span></div></li>
-        <li><Icon name="lock" /><div><strong>边界清楚</strong><span>只共享房间里的内容，房主随时可以暂停 AI 或关闭房间。</span></div></li>
+        <li><Icon name="lock" /><div><strong>边界清楚</strong><span>只共享房间里的内容，所有成员都可编辑任务、管理 Goal 或关闭房间。</span></div></li>
       </ul>
     </div>
     <form className={styles.formCard} onSubmit={event => { event.preventDefault(); if (busy) return; setBusy(true); setError(''); void (async () => {
@@ -169,7 +169,7 @@ function Room({ id, invite }: { id: string; invite: string }) {
   return <section className={styles.card}>
     <p className={styles.eyebrow}>INVITATION</p>
     <h1>加入协作房间</h1>
-    <p className={styles.lead}>加入后可以查看已有讨论、发言和认领任务。名称由你自己填写，不代表已验证的身份。</p>
+    <p className={styles.lead}>加入后可查看讨论、编辑任务和 Goal、管理成员或关闭房间；所有成员权限相同。名称由你自己填写，不代表已验证的身份。</p>
     {!/^[a-f0-9]{64}$/.test(invite) ? <p className={styles.formError} role="alert">请向邀请人索取完整的邀请链接；此浏览器没有保存这个房间的成员凭据。</p> : <form className={styles.joinForm} onSubmit={event => { event.preventDefault(); if (busy) return; setBusy(true); setError(''); void (async () => {
       try { checkStorage(); const value = await collaboration<Membership>({ op: 'join', roomId: id, invite, name: name.trim(), kind: 'human' }); saveMembership(value); setAuth(value); navigate('/collab/' + id, { replace: true }); }
       catch (e) { setError(messageError(e)); } finally { setBusy(false); }
@@ -288,7 +288,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing && !coarse) { event.preventDefault(); send(); }
   };
   const members = snapshot?.members ?? []; const active = members.filter(m => !m.removed); const presence = snapshot?.presence ?? {};
-  const own = members.find(m => m.id === auth.memberId); const owner = !!own?.owner;
+  const own = members.find(m => m.id === auth.memberId);
+  const managementLocked = terminal || (own?.kind === 'ai' && !!snapshot?.aiPaused);
   const memberOf = (memberId?: string) => members.find(m => m.id === memberId);
   const nameOf = (memberId: string) => memberOf(memberId)?.name ?? '已离开的成员';
   const now = Date.now(); const tasks = snapshot?.tasks ?? []; const goalFrozen = !!snapshot?.goal && snapshot.goal.status !== 'active'; const openTasks = tasks.filter(t => t.status !== 'done').length;
@@ -321,11 +322,10 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       {statusOrder.map(([status, label]) => { const items = tasks.filter(t => t.status === status); return items.length > 0 && <section key={status} className={styles.taskGroup} data-status={status}>
         <h3>{label}<span>{items.length}</span></h3>
         <ul>{items.map(task => {
-          // Mirrors the server: status belongs to the assignee, creator and owner; anyone may claim an unassigned task.
-          const assignee = memberOf(task.assignee); const privileged = owner || task.createdBy === auth.memberId; const mineTask = task.assignee === auth.memberId;
+          const assignee = memberOf(task.assignee);
           const frozen = goalFrozen && task.goalId === snapshot?.goal?.id;
-          const canMove = !frozen && (privileged || mineTask); const canClaim = !frozen && !task.assignee && !canMove;
-          const choices = privileged ? active : mineTask || !task.assignee ? active.filter(m => m.id === auth.memberId) : [];
+          const canMove = !frozen; const canClaim = !frozen && !task.assignee && task.createdBy !== auth.memberId;
+          const choices = active;
           return <li key={task.id} className={styles.task} data-status={task.status}>
           <button type="button" className={styles.check} data-status={task.status} aria-label={canClaim ? `认领「${task.title}」` : `${statusAction[task.status]}「${task.title}」`} title={!canMove && !canClaim ? `由 ${assignee?.name ?? '负责人'} 推进` : undefined} disabled={terminal || (!canMove && !canClaim)}
             onClick={() => void taskAct(canClaim ? { action: 'update', taskId: task.id, assignee: auth.memberId, status: 'doing', onlyIfUnassigned: true } : { action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
@@ -333,9 +333,9 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
           <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
-            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal || frozen} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!privileged && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select>}
+            {choices.length > 0 && <select aria-label={`「${task.title}」的负责人`} value={task.assignee && !assignee?.removed ? task.assignee : ''} disabled={terminal || frozen} onChange={e => void taskAct({ action: 'update', taskId: task.id, assignee: e.target.value, ...(!task.assignee && e.target.value === auth.memberId ? { onlyIfUnassigned: true } : {}) })}><option value="">未指派</option>{choices.map(m => <option key={m.id} value={m.id}>{m.name}{m.kind === 'ai' ? `（${agentLabel(m.agent)}）` : ''}</option>)}</select>}
           </span>
-          {(owner || task.createdBy === auth.memberId) && <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal || frozen} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>}
+          <IconButton label={`删除任务「${task.title}」`} variant="quiet" className={styles.taskDelete} disabled={terminal || frozen} onClick={() => void taskAct({ action: 'delete', taskId: task.id })}><Icon name="close" /></IconButton>
         </li>; })}</ul>
       </section>; })}
     </div>;
@@ -344,7 +344,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     <Avatar member={m} fallback={m.id} presence={presenceOf(m)} />
     <div className={styles.person}>
       <p className={styles.personName}><strong>{m.name}</strong>{m.kind === 'ai' && <AgentTag member={m} />}{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
-      <p className={styles.meta}>{m.owner ? '房主' : m.kind === 'ai' ? '' : '成员'}{state && <>{m.owner ? ' · ' : ''}<span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
+      <p className={styles.meta}>{m.owner ? '创建者' : m.kind === 'ai' ? '' : '成员'}{state && <>{m.owner ? ' · ' : ''}<span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
       {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 接入选项与说明 → 持续参与讨论”的说明检查后台接收能力。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
       {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
@@ -353,7 +353,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
           {own?.kind === 'human' && <button type="button" className={styles.probeButton} disabled={!!blocked || !!probing || terminal} title={blocked || '发一条带验证码的消息，看它多久回复'} onClick={() => probe(m)}>{probing === m.id ? '正在发出…' : last ? '再测一次' : '测试响应'}</button>}
         </p>; })()}
     </div>
-    {owner && !m.owner && <IconButton label={`移除 ${m.name}`} variant="quiet" className={styles.remove} disabled={busy || terminal} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。`, action: '移除' })}><Icon name="close" /></IconButton>}
+    {m.id !== auth.memberId && <IconButton label={`移除 ${m.name}`} variant="quiet" className={styles.remove} disabled={busy || managementLocked} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。`, action: '移除' })}><Icon name="close" /></IconButton>}
   </li>; })}</ul>;
   const side = (): ReactNode => <Tabs.Root value={tab} onValueChange={value => setTab(value as 'tasks' | 'people')} className={styles.sideTabs}>
     <Tabs.List className={styles.tabs} aria-label="任务与成员"><Tabs.Tab value="tasks" className={styles.tab}>任务{openTasks > 0 && <span>{openTasks}</span>}</Tabs.Tab><Tabs.Tab value="people" className={styles.tab}>成员<span>{active.length}</span></Tabs.Tab><Tabs.Indicator className={styles.tabIndicator} /></Tabs.List>
@@ -375,12 +375,12 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         <Button ref={inviteButton} variant="primary" className={styles.cta} aria-label="邀请同事 / AI" disabled={busy || terminal || !snapshot} onClick={openInvite}><Icon name="plus" /><span className={styles.inviteLabel}>邀请</span></Button>
         <RoomMenu label="房间菜单" disabled={!snapshot} buttonRef={menuButton}>
           {snapshot && <p className={styles.menuInfo}>{new Date(snapshot.expires).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 到期</p>}
-          {owner && <button type="button" role="menuitem" className={styles.menuItem} disabled={terminal} onClick={() => setConfirm(snapshot?.aiPaused ? { op: 'pause', fields: { paused: false }, label: '恢复 AI 发言？各 AI 会在下一次读取时看到。', action: '恢复' } : { op: 'pause', fields: { paused: true }, label: '暂停所有 AI 发言？AI 仍可读取，但服务端会拒绝其发帖和改动任务；这不移除任何成员。', action: '暂停' })}>{snapshot?.aiPaused ? '恢复 AI 发言' : '暂停所有 AI 发言'}</button>}
-          {owner && <button type="button" role="menuitem" className={styles.menuItem} disabled={terminal} onClick={() => setConfirm({ op: 'revoke', label: '撤销全部已发邀请？现有成员仍能访问，新成员需要新邀请。', action: '撤销' })}>撤销全部邀请</button>}
+          <button type="button" role="menuitem" className={styles.menuItem} disabled={managementLocked} onClick={() => setConfirm(snapshot?.aiPaused ? { op: 'pause', fields: { paused: false }, label: '恢复 AI 发言？各 AI 会在下一次读取时看到。', action: '恢复' } : { op: 'pause', fields: { paused: true }, label: '暂停所有 AI 发言？AI 仍可读取，但服务端会拒绝其发帖和改动任务；这不移除任何成员。', action: '暂停' })}>{snapshot?.aiPaused ? '恢复 AI 发言' : '暂停所有 AI 发言'}</button>
+          <button type="button" role="menuitem" className={styles.menuItem} disabled={managementLocked} onClick={() => setConfirm({ op: 'revoke', label: '撤销全部已发邀请？现有成员仍能访问，新成员需要新邀请。', action: '撤销' })}>撤销全部邀请</button>
           <button type="button" role="menuitem" className={styles.menuItem} onClick={() => setPrivacyOpen(true)}>隐私与限制</button>
           <hr className={styles.menuSeparator} />
-          {owner ? <button type="button" role="menuitem" className={styles.menuItem} data-danger disabled={terminal} onClick={() => setConfirm({ op: 'close', label: '关闭房间？所有成员将无法继续访问，此操作不能撤销。', action: '关闭房间' })}>关闭房间</button>
-            : <button type="button" role="menuitem" className={styles.menuItem} disabled={terminal} onClick={() => setConfirm({ op: 'leave', label: '退出房间并清除此浏览器的成员凭据？', action: '退出' })}>退出房间</button>}
+          <button type="button" role="menuitem" className={styles.menuItem} data-danger disabled={managementLocked} onClick={() => setConfirm({ op: 'close', label: '关闭房间？所有成员将无法继续访问，此操作不能撤销。', action: '关闭房间' })}>关闭房间</button>
+          <button type="button" role="menuitem" className={styles.menuItem} disabled={terminal} onClick={() => setConfirm({ op: 'leave', label: '退出房间并清除此浏览器的成员凭据？', action: '退出' })}>退出房间</button>
         </RoomMenu>
       </div>
     </header>
@@ -412,7 +412,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                 <article id={`msg-${message.seq}`} className={styles.message} data-own={mine} data-ai={author?.kind === 'ai'} data-addressed={message.to === auth.memberId} data-continued={continued} data-fresh={freshFrom.current !== null && message.seq > freshFrom.current} data-selected={selected === message.seq}>
                   {!mine && (continued ? <span className={styles.avatarSpacer} /> : <Avatar member={author} fallback={message.memberId} presence={author ? presenceOf(author) : undefined} />)}
                   <div className={styles.messageBody}>
-                    {!continued && <header>{!mine && <><strong>{nameOf(message.memberId)}</strong>{author?.owner && <span className={styles.ownerTag} title="真正的房主由服务端标记，不看名字">房主</span>}{author?.kind === 'ai' && <AgentTag member={author} />}</>}<time dateTime={message.at}>{clock(message.at)}</time></header>}
+                    {!continued && <header>{!mine && <><strong>{nameOf(message.memberId)}</strong>{author?.owner && <span className={styles.ownerTag} title="房间创建者由服务端标记；不影响成员编辑权限">创建者</span>}{author?.kind === 'ai' && <AgentTag member={author} />}</>}<time dateTime={message.at}>{clock(message.at)}</time></header>}
                     <div className={styles.bubble} onClick={event => { if (!(event.target as Element).closest('a, button')) setSelected(value => value === message.seq ? 0 : message.seq); }}>
                       {(quoted || message.to) && <p className={styles.context}>{quoted && <button type="button" className={styles.quote} onClick={() => jump(quoted.seq)}>↩ {nameOf(quoted.memberId)}：{excerpt(quoted.text, 40)}</button>}{message.to && <span className={styles.mention}>@{message.to === auth.memberId ? '你' : nameOf(message.to)}</span>}</p>}
                       <MessageText text={message.text} className={styles.text} />

@@ -77,9 +77,9 @@ try {
     checks.push('Goal create/pause/resume/delete wake a generic watcher independently of chat messages');
   } finally { watcher.kill(); }
   checks.push('background watcher: long-poll wake-up, out-of-scope marking, ack delivered, no credential output');
-  await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token, 403); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
+  await api({ op: 'pause', roomId: owner.roomId, paused: true }, ai.token); await api({ op: 'pause', roomId: owner.roomId, paused: false }, ai.token, 409); await api({ op: 'pause', roomId: owner.roomId, paused: true }, owner.token);
   await api({ op: 'send', roomId: owner.roomId, id: 'smoke-ai-paused', text: '暂停期间的 AI 发言。' }, ai.token, 409);
-  checks.push('long-poll wait woken by a new message, connector ack presence, owner-only AI pause enforced on AI sends');
+  checks.push('long-poll wait woken by a new message, connector ack presence, member-managed AI pause enforced on AI sends and controls');
   await stop(); await launch(); snapshot = await api({ op: 'read', roomId: owner.roomId }, ai.token); assert.equal(snapshot.messages.length, 5); assert.equal(snapshot.aiPaused, true); assert.deepEqual(snapshot.presence, {}); checks.push('restart retains membership, message history and AI pause; presence restarts empty');
   if (values.browser) {
     const { chromium } = await import('playwright-core'); browser = await chromium.launch({ executablePath: resolve(values.browser), headless: true });
@@ -93,11 +93,12 @@ try {
     await other.getByLabel('消息', { exact: true }).fill('来自独立浏览器的消息'); await other.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByText('来自独立浏览器的消息', { exact: true }).waitFor({ timeout: 15000 });
     await page.getByRole('button', { name: '收起邀请', exact: true }).click();
-    await page.getByRole('button', { name: '设置 Goal', exact: true }).click();
-    await page.getByLabel('目标', { exact: true }).fill('验证 Goal 暂停、Resume 与指定验收');
-    await page.getByLabel('验收条件与限制').fill('任务完成且证据可读；保留聊天和数据。');
-    await page.getByLabel('Goal 验收人').selectOption({ label: '浏览器同事' });
-    await page.getByRole('button', { name: '启动 Goal', exact: true }).click();
+    await other.getByRole('button', { name: '设置 Goal', exact: true }).click();
+    await other.getByLabel('目标', { exact: true }).fill('验证 Goal 暂停、Resume 与指定验收');
+    await other.getByLabel('验收条件与限制').fill('任务完成且证据可读；保留聊天和数据。');
+    await other.getByLabel('Goal 验收人').selectOption({ label: '浏览器同事' });
+    await other.getByRole('button', { name: '启动 Goal', exact: true }).click();
+    await page.getByRole('button', { name: '暂停 Goal', exact: true }).waitFor();
     await page.getByLabel('新任务', { exact: true }).fill('检查 Goal 状态'); await page.getByLabel('新任务', { exact: true }).press('Enter');
     const advance = page.getByRole('button', { name: '开始「检查 Goal 状态」', exact: true }); await advance.waitFor();
     await page.getByRole('button', { name: '暂停 Goal', exact: true }).click(); await page.getByRole('button', { name: 'Resume Goal', exact: true }).waitFor();
@@ -128,7 +129,7 @@ try {
     await page.getByRole('button', { name: '任务', exact: true }).click();
     assert(await page.getByRole('region', { name: '房间 Goal' }).evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'long criteria must not widen the mobile Goal form');
     await page.screenshot({ path: join(out, 'goal-create-320.png'), fullPage: true, animations: 'disabled' });
-    checks.push('browser Goal lifecycle: create, linked task, pause/resume fence, designated human acceptance, delete preserving tasks');
+    checks.push('browser Goal lifecycle: non-owner create, linked task, pause/resume fence, designated human acceptance, delete preserving tasks');
     await other.reload(); await other.getByRole('heading', { name: '浏览器多人讨论', exact: true }).waitFor(); assert.deepEqual(pageErrors, []);
     const home = await context.newPage(); await home.setViewportSize({ width: 320, height: 700 }); await home.goto(origin + '/');
     await home.getByRole('button', { name: '中文', exact: true }).click(); await home.getByRole('link', { name: '协作房间 · 人与 AI' }).waitFor();

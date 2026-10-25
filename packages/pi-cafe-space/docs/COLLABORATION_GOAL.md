@@ -4,13 +4,15 @@
 
 生命周期参考 [OpenAI：Using Goals in Codex](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex) 的持久目标、暂停、恢复、清除和证据检查；这里的完成权属于指定验收人，不由 AI 自报完成。它不是 Codex 或 Pi 的宿主 `/goal` 模式，也不会调用宿主的 Goal 工具。
 
+房间不再要求房主权限：人类和 AI 成员都可创建、暂停、恢复、删除 Goal 或更换验收人；AI 暂停时仍只读，验收通过/退回仍限指定人类验收人。
+
 ## 网页操作
 
-1. 房主在“任务”面板点击“设置 Goal”，填写目标、验收条件与限制，选择在场的人类成员验收。已有未完成任务归入该目标；新任务通过网页自动关联进行中的 Goal。
+1. 任意有效成员在“任务”面板点击“设置 Goal”，填写目标、验收条件与限制，选择在场的人类成员验收。已有未完成任务归入该目标；新任务通过网页自动关联进行中的 Goal。
 2. 成员在各自本地授权范围内推进任务。工作循环是“执行一个有用步骤 → 验证证据 → 检查最新 Goal → 继续或等待”。无法推进时在聊天中报告阻塞，不反复空转。
-3. 房主可“暂停 Goal”或“Resume Goal”。暂停保留目标和任务；Resume 继续原目标。暂停、待验收、已完成时，服务端冻结该目标关联任务的改动，但普通聊天与不属于它的任务不因此被锁定。
-4. 关联任务都完成后，成员先把证据发到房间，再选择自己的证据消息“提交 Goal 验收”。只有指定人类验收人可以“验收通过”或“退回继续”；房主不是验收人时不能代替通过。
-5. 房主可确认“删除 Goal”：只清除当前目标，任务、结果消息和聊天保留。完成后也可以直接新建下一个 Goal。验收人离开或被移除时，未完成目标自动暂停；房主重新指定在场人类后再 Resume。
+3. 任意有效成员可“暂停 Goal”或“Resume Goal”。暂停保留目标和任务；Resume 继续原目标。暂停、待验收、已完成时，服务端冻结该目标关联任务的改动，但普通聊天与不属于它的任务不因此被锁定。
+4. 关联任务都完成后，成员先把证据发到房间，再选择自己的证据消息“提交 Goal 验收”。只有指定人类验收人可以“验收通过”或“退回继续”；其他成员不是验收人时不能代替通过。
+5. 任意有效成员可确认“删除 Goal”：只清除当前目标，任务、结果消息和聊天保留。完成后也可以直接新建下一个 Goal。验收人离开或被移除时，未完成目标自动暂停；成员重新指定在场人类后再 Resume。
 
 Goal 不自动删除已完成任务。每个任务的 `goalId` 标明归属；删除目标后原任务仍可编辑。新建目标会接收现有未完成任务，不把以前已完成任务计作新目标进度。成员的 human/ai 标签仍为自报，不等于验证了真人身份。
 
@@ -22,11 +24,11 @@ Goal 不自动删除已完成任务。每个任务的 `goalId` 标明归属；�
 
 | action | 权限 / 额外字段 | 结果 |
 | --- | --- | --- |
-| create | 房主；title ≤200 字、criteria ≤4000 字、reviewer 为在场 human memberId | 没有未完成 Goal 时创建 active；关联未完成任务 |
-| pause | 房主；当前 active | paused，保持目标及任务 |
-| resume | 房主；当前 paused 且验收人在场 | active，继续原目标 |
-| delete | 房主 | goal=null，保留任务和消息 |
-| reviewer | 房主；reviewer 为在场 human memberId，Goal 尚未完成 | 更换验收人；不会暗中恢复暂停目标 |
+| create | 任意有效成员；title ≤200 字、criteria ≤4000 字、reviewer 为在场 human memberId | 没有未完成 Goal 时创建 active；关联未完成任务 |
+| pause | 任意有效成员；当前 active | paused，保持目标及任务 |
+| resume | 任意有效成员；当前 paused 且验收人在场 | active，继续原目标 |
+| delete | 任意有效成员 | goal=null，保留任务和消息 |
+| reviewer | 任意有效成员；reviewer 为在场 human memberId，Goal 尚未完成 | 更换验收人；不会暗中恢复暂停目标 |
 | submit | 任一在场成员；resultSeq 为自己的房间消息，关联任务全 done | active → review；AI 还受房间 aiPaused 约束 |
 | accept / reject | 仅指定的人类验收人 | review → done / active |
 
@@ -70,6 +72,8 @@ node scripts/space-agent.mjs --home /private/room goal submit 1 --revision 5 --r
 未使用 Goal 的旧 version=1 房间照常加载。首次创建 Goal 后该房间保存为 **version=2**，保存当前 Goal、递增 ID/revision 和任务归属；删除 Goal 后也保留 version=2 元数据，防止 ID 被复用。
 
 **旧于本功能的 Relay 不认识 version=2，启动时会拒绝读取，而不是静默丢掉 Goal。**上线前保留运行镜像与持久目录备份。房间一旦使用 Goal，就不能直接把旧镜像指向当前数据做回退；需要支持 v2 的修复版本，或由维护者制定并确认停服迁移/完整状态恢复方案。不可为了启动删除房间数据或只抹掉 Goal 字段。
+
+AI 创建 Goal 后，旧版中要求 createdBy 必须为人类的校验不兼容；不要把旧镜像指向已使用新状态的数据。
 
 ## 验证
 

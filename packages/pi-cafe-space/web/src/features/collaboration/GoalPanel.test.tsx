@@ -28,7 +28,7 @@ function mount(snapshot = initial, memberId = owner) {
 }
 
 it('creates one Goal with explicit criteria and a selected human reviewer', async () => {
-  const { requests } = mount();
+  const { requests } = mount(initial, reviewer);
   fireEvent.click(screen.getByRole('button', { name: '设置 Goal' }));
   expect(screen.getByRole('button', { name: '启动 Goal' })).toBeDisabled();
   expect([...(screen.getByLabelText('Goal 验收人') as HTMLSelectElement).options].map(o => o.value)).toEqual(['', owner, reviewer]);
@@ -40,7 +40,7 @@ it('creates one Goal with explicit criteria and a selected human reviewer', asyn
   expect(requests[0]).toEqual({ op: 'goal', roomId, action: 'create', goalRevision: 0, title: '上线邀请改动', criteria: '邀请复制完整，保留数据', reviewer });
 });
 it('pauses and resumes the same Goal and confirms deletion without touching tasks/messages', async () => {
-  const { requests } = mount({ ...initial, goal, goalRevision: 1 });
+  const { requests } = mount({ ...initial, goal, goalRevision: 1 }, ai);
   fireEvent.click(screen.getByRole('button', { name: '暂停 Goal' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Resume Goal' }));
   await screen.findByRole('button', { name: '暂停 Goal' });
@@ -53,7 +53,7 @@ it('pauses and resumes the same Goal and confirms deletion without touching task
 });
 it('allows AI to submit its own evidence but never to accept the Goal', async () => {
   const { requests } = mount({ ...initial, goal, goalRevision: 4 }, ai);
-  expect(screen.queryByRole('button', { name: '暂停 Goal' })).toBeNull();
+  expect(screen.getByRole('button', { name: '暂停 Goal' })).toBeEnabled();
   expect([...(screen.getByLabelText('完成证据消息') as HTMLSelectElement).options].map(o => o.value)).toEqual(['', '1']);
   fireEvent.change(screen.getByLabelText('完成证据消息'), { target: { value: '1' } });
   fireEvent.click(screen.getByRole('button', { name: '提交 Goal 验收' }));
@@ -83,4 +83,10 @@ it('reports conflicts without optimistic completion or automatic write retries',
 });
 it('does not offer unsupported Goal controls on an older relay', () => {
   mount({ ...initial, goalRevision: undefined }); expect(screen.queryByRole('region', { name: '房间 Goal' })).toBeNull();
+});
+it('offers non-owner AI creation but still respects the room AI pause', () => {
+  mount(initial, ai);
+  expect(screen.getByRole('button', { name: '设置 Goal' })).toBeEnabled(); cleanup();
+  mount({ ...initial, aiPaused: true }, ai);
+  expect(screen.getByRole('button', { name: '设置 Goal' })).toBeDisabled();
 });

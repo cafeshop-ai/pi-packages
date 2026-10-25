@@ -174,7 +174,7 @@ func TestPresenceAckAndOwnerPause(t *testing.T) {
 	if presence := call(t, s, map[string]any{"op": "read", "roomId": id}, token, 200)["presence"].(map[string]any); len(presence) != 2 || presence[aiID].(map[string]any)["delivered"].(float64) != 2 {
 		t.Fatal("each member updates only its own presence")
 	}
-	call(t, s, map[string]any{"op": "pause", "roomId": id, "paused": true}, token, 403)
+	call(t, s, map[string]any{"op": "pause", "roomId": id, "paused": true}, token, 200)
 	call(t, s, map[string]any{"op": "pause", "roomId": id}, owner, 400)
 	call(t, s, map[string]any{"op": "pause", "roomId": id, "paused": true}, owner, 200)
 	if call(t, s, map[string]any{"op": "read", "roomId": id}, token, 200)["aiPaused"] != true {
