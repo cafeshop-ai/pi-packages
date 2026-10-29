@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createRelayServer, type RunningRelayServer } from '../relay/server.js';
 import register from './index.js';
@@ -16,7 +17,7 @@ it('uses the real handshake, not an inconclusive startup preflight, as connectio
   for (const [key,value] of Object.entries({ PI_COLLAB_ENABLED:'1', PI_COLLAB_RELAY_URL:relay.url.replace('http:','ws:')+'/ws', PI_COLLAB_HOST_TOKEN:'host-token', PI_COLLAB_ROOM:'startup-notification', PI_COLLAB_PEER_ID:'startup-notification-test' })) vi.stubEnv(key,value);
   const handlers = new Map<string,(...args:any[])=>unknown>();
   const notifications: {level:string;message:string}[] = [], statuses: string[] = [];
-  const pi = { registerFlag(){}, getFlag(name:string){return name==='collab'?true:undefined;}, registerCommand(){}, on(name:string,handler:(...args:any[])=>unknown){handlers.set(name,handler);}, getSessionName(){return null;}, getThinkingLevel(){return 'off';} } as unknown as ExtensionAPI;
+  const pi = { events: new EventEmitter(), registerFlag(){}, getFlag(name:string){return name==='collab'?true:undefined;}, registerCommand(){}, on(name:string,handler:(...args:any[])=>unknown){handlers.set(name,handler);}, getSessionName(){return null;}, getThinkingLevel(){return 'off';} } as unknown as ExtensionAPI;
   const context = { cwd:process.cwd(), hasUI:true, isIdle:()=>true, hasPendingMessages:()=>false, model:null,
     sessionManager:{getBranch:()=>[],getSessionId:()=>'startup-test-session',getLeafId:()=>null},
     ui:{setStatus(_key:string,value:string){statuses.push(value);},notify(message:string,level:string){notifications.push({message,level});}},

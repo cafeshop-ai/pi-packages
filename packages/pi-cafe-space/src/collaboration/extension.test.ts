@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import extension from './extension.js';
 import * as client from './client.js';
@@ -28,7 +29,8 @@ function fixture() {
       members: [me, peer, human].map(id => ({ id, name: id, kind: id === human ? 'human' : 'ai' })), messages: messages.filter(m => m.seq > body.after).map(m => ({ ...m, to: m.to || undefined })) }));
   });
   vi.stubGlobal('fetch', fetcher);
-  const pi = { registerCommand: (name: string, value: any) => commands.set(name, value), registerTool: (value: any) => tools.set(value.name, value),
+  const bus = new EventEmitter();
+  const pi = { events: bus, registerCommand: (name: string, value: any) => commands.set(name, value), registerTool: (value: any) => tools.set(value.name, value),
     on: (name: string, handler: any) => events.set(name, handler),
     appendEntry: vi.fn((customType: string, data: unknown) => { entries.push({ type: 'custom', customType, data }); }),
     sendMessage: vi.fn((value: any, options: any) => {
@@ -37,11 +39,20 @@ function fixture() {
     }),
   } as unknown as ExtensionAPI;
   extension(pi); cleanups.push(() => events.get('session_shutdown')?.({}, ctx));
-  const command = (args: string) => commands.get('cafe-collab').handler(args, ctx);
+  const command = (args: string) => commands.get('cafe').handler('collab ' + args, ctx);
   const tool = (name: string, params = {}, signal?: AbortSignal) => tools.get(name).execute('call', params, signal, undefined, ctx);
-  const reload = () => { events.get('session_shutdown')?.({}, ctx); extension(pi); };
-  return { pi, ctx, entries, messages, events, command, tool, fetcher, reload, idle: (value: boolean) => { idle = value; }, receipt: (value: boolean) => { receipt = value; }, session: (value: string) => { session = value; } };
+  const reload = () => { events.get('session_shutdown')?.({}, ctx); bus.removeAllListeners(); commands.clear(); extension(pi); };
+  return { pi, ctx, entries, messages, events, commands, command, tool, fetcher, reload, idle: (value: boolean) => { idle = value; }, receipt: (value: boolean) => { receipt = value; }, session: (value: string) => { session = value; } };
 }
+it('only registers /cafe, and usage and status never read credentials or start a network request', async () => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } });
+  expect([...f.commands.keys()]).toEqual(['cafe']);
+  await f.commands.get('cafe').handler('', f.ctx);
+  await f.command(''); await f.command('status');
+  expect(client.readMembership).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
+  expect(JSON.stringify(notify.mock.calls)).toContain('/cafe collab connect');
+  expect(JSON.stringify(notify.mock.calls)).not.toContain('/cafe-collab');
+});
 it('does nothing on load; explicit connect skips old history and injects only new external messages', async () => {
   const f = fixture(); expect(f.fetcher).not.toHaveBeenCalled(); f.messages.push(message(1));
   await f.command('connect C:/private/room.json'); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).not.toHaveBeenCalled();

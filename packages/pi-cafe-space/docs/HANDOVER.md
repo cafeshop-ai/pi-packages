@@ -99,7 +99,7 @@ packages/pi-cafe-space/
 - 回滚到 `fbf6f81` 之前的版本会在下次写入时丢弃 `request` 字段，之后回退为按当前标题比对（兼容，不破坏旧数据）。
 
 ### Pi 协议（`pi-collaboration-inbox` 分支）
-- Pi 监听通过 `/cafe-collab connect <config路径>` 启动，使用 `cafe-collaboration` 自定义消息类型投递，`cafe-collaboration-state` 记录检查点。
+- Pi 监听通过 `/cafe collab connect <config路径>` 启动，使用 `cafe-collaboration` 自定义消息类型投递，`cafe-collaboration-state` 记录检查点。
 - 当前行为：普通广播和点名消息都可进入会话；本机行动边界不因房间消息扩大。
 
 ---

@@ -3,6 +3,7 @@ import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { RoomClient, RoomError, readMembership, type Message } from './client.js';
 import { RoomListener } from './listener.js';
+import { registerCafeRoute } from './commands.js';
 
 const eventType = 'cafe-collaboration';
 const stateType = 'cafe-collaboration-state';
@@ -38,7 +39,8 @@ export default function collaborationExtension(pi: ExtensionAPI) {
     return listener;
   };
 
-  pi.registerCommand('cafe-collab', {
+  registerCafeRoute(pi, 'collab', {
+    getArgumentCompletions: prefix => ['connect', 'resume', 'pause', 'status', 'resolve retry', 'resolve skip'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     description: 'Room bridge: connect <private config> | resume | pause | status | resolve retry/skip (uncertain delivery only)',
     handler: async (args, ctx) => {
       if (args.trim() === 'pause') { stop(); notify(ctx, 'Room listening paused. Any already-running model turn is not aborted.'); return; }
@@ -50,17 +52,17 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         if (!ctx.hasUI || !await ctx.ui.confirm('Resolve uncertain room delivery', `Message #${recovery.seq}: ${decision === 'retry' ? 'allow a new model turn; first verify no work already ran' : 'skip automatic delivery; first inspect the original room message'}? This does not undo tool effects.`)) return;
         if (generation !== current || recovery !== pending || ctx.sessionManager.getSessionId() !== pending.session) return;
         pi.appendEntry(stateType, { kind: 'resolution', scope: pending.scope, seq: pending.seq, attempt: pending.attempt, decision });
-        recovery = undefined; notify(ctx, 'Decision saved. Run /cafe-collab resume, or connect with the same private config if no binding was saved.'); return;
+        recovery = undefined; notify(ctx, 'Decision saved. Run /cafe collab resume, or connect with the same private config if no binding was saved.'); return;
       }
       const resuming = args.trim() === 'resume';
       const match = /^connect\s+(.+)$/.exec(args.trim());
-      if (!match && !resuming) { notify(ctx, 'Usage: /cafe-collab connect <absolute private config path> | resume | pause | status'); return; }
+      if (!match && !resuming) { notify(ctx, 'Usage: /cafe collab connect <absolute private config path> | resume | pause | status'); return; }
       const sessionId = ctx.sessionManager.getSessionId();
       const entry = resuming ? [...ctx.sessionManager.getBranch()].reverse().find(e => e.type === 'custom' && e.customType === stateType && record(e.data) && e.data.kind === 'binding' && e.data.session === sessionId) : undefined;
       const binding = entry?.type === 'custom' && record(entry.data) ? entry.data : undefined;
       const configPath = resuming ? binding?.configPath : match?.[1];
       if (typeof configPath !== 'string' || (resuming && (typeof binding?.scope !== 'string' || typeof binding.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(binding.fingerprint)))) {
-        notify(ctx, 'No saved room binding in this session branch. Run /cafe-collab connect <absolute private config path> once.'); return;
+        notify(ctx, 'No saved room binding in this session branch. Run /cafe collab connect <absolute private config path> once.'); return;
       }
       let current = generation;
       try {
@@ -141,7 +143,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
           timer = setTimeout(() => void poll(), delay); timer.unref?.();
         };
         timer = setTimeout(() => void poll(), 5000); timer.unref?.();
-        notify(ctx, 'Room connected. New room messages from other active members are received without a sender list or mention; no turn-count or listening-duration cutoff. Model/tool usage may incur ongoing costs. Use /cafe-collab pause to stop.');
+        notify(ctx, 'Room connected. New room messages from other active members are received without a sender list or mention; no turn-count or listening-duration cutoff. Model/tool usage may incur ongoing costs. Use /cafe collab pause to stop.');
       } catch (error) {
         if (generation !== current || ctx.sessionManager.getSessionId() !== sessionId) return;
         stop(); notify(ctx, error instanceof RoomError ? error.code : 'ROOM_CONNECT_FAILED_CHECK_PRIVATE_CONFIG');

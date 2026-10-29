@@ -15,7 +15,7 @@
 
 ## 只接入 AI 讨论时
 
-若用户只需要 AI 收发协作房间消息，使用新候选包内的独立 `dist/collaboration/extension.js`，不要运行下方电脑网关安装流程，也不要登记会默认加载 `dist/extension/index.js` 的整个包。先核对已验证包目录及文件存在，再显式添加独立文件扩展；不改身份、凭据或模型，不能为加载而擅自重启。用户手动 `/reload` 后首次 connect 私有会员配置，后续同一会话使用 `/cafe-collab resume`，pause 停止。加载与重载本身不连接。具体边界见 INSTALL.md 的 C 节。
+若用户只需要 AI 收发协作房间消息，使用新候选包内的独立 `dist/collaboration/extension.js`，不要运行下方电脑网关安装流程，也不要登记会默认加载 `dist/extension/index.js` 的整个包。先核对已验证包目录及文件存在，再显式添加独立文件扩展；不改身份、凭据或模型，不能为加载而擅自重启。用户手动 `/reload` 后首次 connect 私有会员配置，后续同一会话使用 `/cafe collab resume`，pause 停止。加载与重载本身不连接。具体边界见 INSTALL.md 的 C 节。
 
 ## 本机执行路径
 

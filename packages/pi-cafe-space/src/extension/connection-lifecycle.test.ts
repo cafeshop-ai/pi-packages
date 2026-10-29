@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
 import WebSocket, { type RawData } from "ws";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import registerPiCollabExtension from "./index.js";
@@ -116,6 +117,7 @@ describe("Pi Cafe Space connection lifecycle", () => {
     const statuses: string[] = [];
     const handlers = new Map<string, Handler>();
     const pi = {
+      events: new EventEmitter(),
       registerFlag() {},
       getFlag(name: string) { return name === "collab" ? true : undefined; },
       on(name: string, handler: Handler) { handlers.set(name, handler); },
@@ -227,6 +229,7 @@ describe("Pi Cafe Space connection lifecycle", () => {
 
     const handlers = new Map<string, Handler>();
     const pi = {
+      events: new EventEmitter(),
       registerFlag() {},
       getFlag(name: string) { return name === "collab" ? true : undefined; },
       on(name: string, handler: Handler) { handlers.set(name, handler); },

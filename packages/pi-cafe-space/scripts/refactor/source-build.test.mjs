@@ -18,7 +18,7 @@ test('the final source build/prepack implementation works in an isolated source 
   const result=run(process.execPath,[join(copy,'scripts/build-source.mjs')],{cwd:copy,timeout:180000});
   assert.match(result,/pi-cafe-build-v1/);
   assert.match(await readFile(join(copy,'dist/extension/index.js'),'utf8'),/from ["']\.\/local-relay-go\.js["']/);
-  for (const part of ['client', 'extension', 'listener']) await readFile(join(copy, 'dist/collaboration', part + '.js'));
+  for (const part of ['client', 'commands', 'extension', 'listener']) await readFile(join(copy, 'dist/collaboration', part + '.js'));
   assert.match(run(process.execPath,[join(copy,'scripts/verify-artifacts.mjs')],{cwd:copy}),/PASS/);
   run(process.execPath,[join(copy,'scripts/source-verify.mjs'),'check'],{cwd:copy,timeout:120000});
   // Node + Web + Go exceed two minutes on native Windows even when each suite passes.

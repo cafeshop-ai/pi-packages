@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { mkdtemp, mkdir, realpath, writeFile, truncate, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,7 +54,7 @@ async function harness(initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, Handler>();
   let sessionName: string | undefined;
-  const pi = { registerFlag() {}, getFlag(name: string) { return name === 'collab' ? true : undefined; }, on(name: string, fn: Handler) { handlers.set(name, fn); }, registerCommand(name: string, command: { handler: Handler }) { commands.set(name, command.handler); }, getSessionName() { return sessionName; }, setSessionName: vi.fn((name: string) => { sessionName = name; handlers.get('session_info_changed')?.({ name }, ctx); }), getCommands: vi.fn(() => [{ name: 'review:2', description: 'Review locally', source: 'extension', sourceInfo: { path: 'hidden-path' } }, { name: 'skill:check', source: 'skill' }, { name: 'template', source: 'prompt' }, { name: 'review:2', source: 'prompt', description: 'Shadowed template' }, { name: 'collab-session-control', source: 'extension' }, { name: 'cafe', source: 'extension' }]), sendUserMessage: vi.fn(), getThinkingLevel() { return 'off'; } } as unknown as ExtensionAPI;
+  const pi = { events: new EventEmitter(), registerFlag() {}, getFlag(name: string) { return name === 'collab' ? true : undefined; }, on(name: string, fn: Handler) { handlers.set(name, fn); }, registerCommand(name: string, command: { handler: Handler }) { commands.set(name, command.handler); }, getSessionName() { return sessionName; }, setSessionName: vi.fn((name: string) => { sessionName = name; handlers.get('session_info_changed')?.({ name }, ctx); }), getCommands: vi.fn(() => [{ name: 'review:2', description: 'Review locally', source: 'extension', sourceInfo: { path: 'hidden-path' } }, { name: 'skill:check', source: 'skill' }, { name: 'template', source: 'prompt' }, { name: 'review:2', source: 'prompt', description: 'Shadowed template' }, { name: 'collab-session-control', source: 'extension' }, { name: 'cafe', source: 'extension' }]), sendUserMessage: vi.fn(), getThinkingLevel() { return 'off'; } } as unknown as ExtensionAPI;
   let branch = initial;
   const ctx = { cwd: root, hasUI: false, isIdle: () => true, hasPendingMessages: () => false, model: null, sessionManager: { getBranch: () => branch, getSessionId: () => 'current', getLeafId: () => null, getSessionDir: () => sessionDir } } as unknown as ExtensionContext;
   register(pi);

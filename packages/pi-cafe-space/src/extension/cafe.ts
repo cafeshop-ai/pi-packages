@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { lstat, open } from 'node:fs/promises';
 import { inspectCafe, localCafeURL, type CafeConfig, type CafeInfo } from './cafe-client.js';
 import { CafeApprovalController } from './cafe-approvals.js';
+import { registerCafeRoute } from '../collaboration/commands.js';
 import { CafePanel, type CafeAction, type CafeView } from './cafe-render.js';
 import { browserAction, clipboardAction, createQrPreview, previewBrowserAction, isRemoteTerminal, runNativeAction } from './cafe-actions.js';
 
@@ -51,6 +52,7 @@ export function cafeView(info: CafeInfo, localStatus: string, sharing: boolean, 
     if (info.localURL) items.push({ action: 'open', label: info.state === 'setup' ? '打开首次设置网页  [B]' : '打开本机工作台  [B]' });
     items.push({ action: 'refresh', label: '重新检查  [R]' }, { action: joined ? 'disconnect' : 'connect', label: joined ? '仅将当前 Pi 移出房间' : '尝试连接当前 Pi' }, { action: 'exit', label: '返回 Pi' });
   }
+  details.push('协作讨论收信：/cafe collab（需加载讨论桥接，与电脑共享独立）。');
   return { title: sharing && info.url ? 'Café Space · 分享房间' : 'Café Space', subtitle, details, items, sharing: sharing && !!info.url, ...(notice ? { notice } : {}), ...(sharing && info.url ? { invitation: info.url } : {}) };
 }
 export class CafeController {
@@ -154,6 +156,6 @@ export class CafeController {
 }
 export function registerCafe(pi: ExtensionAPI, owner: CafeOwner): CafeController {
   const controller = new CafeController(owner, pi);
-  pi.registerCommand('cafe', { description: 'Café Space：分享房间、控制权审批、二维码和连接状态', getArgumentCompletions: prefix => ['share','qr','open','status','help','connect','disconnect','approvals','models'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })), handler: (args, ctx) => controller.command(args, ctx) });
+  registerCafeRoute(pi, 'gateway', { description: 'Café Space：分享房间、控制权审批、二维码和连接状态', getArgumentCompletions: prefix => ['share','qr','open','status','help','connect','disconnect','approvals','models'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })), handler: (args, ctx) => controller.command(args, ctx) });
   return controller;
 }

@@ -100,10 +100,10 @@ try {
     const { session } = await createAgentSession({ cwd: dir, agentDir: dir, modelRuntime: runtime, model: runtime.getModel('cafe-synthetic-' + index, 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager: manager ?? SessionManager.create(dir, join(dir, 'sessions')), noTools: 'all', tools: ['cafe_room_done', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_status'], thinkingLevel: 'off' });
     sessions.push(session); await session.bindExtensions({});
     assert.deepEqual(session.getActiveToolNames().sort(), ['cafe_room_done', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_status']);
-    await session.prompt('/cafe-collab status');
+    await session.prompt('/cafe collab status');
     if (manager) await delay(5500);
     assert.equal(requests[index], requestCount, 'Loading/status must not connect, including a previously bound session');
-    await session.prompt(manager ? '/cafe-collab resume' : '/cafe-collab connect ' + config);
+    await session.prompt(manager ? '/cafe collab resume' : '/cafe collab connect ' + config);
     return { session, config };
   }
   const a = await open(0), b = await open(1); assert.equal(modelCalls.length, 0);
@@ -118,7 +118,7 @@ try {
   assert.equal(messages[8].text, 'Discussion complete; no response needed.');
   console.log('PASS: eight autonomous replies; discussion ends on its conclusion, not a runtime quota');
   await delay(5500); assert.equal(modelCalls.length, 17); assert.equal(messages.length, 9);
-  await a.session.prompt('/cafe-collab pause'); const sessionPath = a.session.sessionFile; assert(sessionPath); a.session.dispose(); sessions.splice(sessions.indexOf(a.session), 1);
+  await a.session.prompt('/cafe collab pause'); const sessionPath = a.session.sessionFile; assert(sessionPath); a.session.dispose(); sessions.splice(sessions.indexOf(a.session), 1);
   const stored = await readFile(sessionPath, 'utf8'); assert(!tokens.some(token => stored.includes(token)), 'No credential in saved session');
   const restored = await open(0, SessionManager.open(sessionPath));
   await delay(5500); assert.equal(modelCalls.length, 17); assert.equal(messages.length, 9);
@@ -127,11 +127,11 @@ try {
   await Promise.all([restored.session.waitForIdle(), b.session.waitForIdle()]);
   assert.equal(messages[10].replyTo, 10);
   console.log('PASS: path-free resume after SDK restore does not replay history; new work still wakes the agent');
-  await restored.session.prompt('/cafe-collab pause'); await restored.session.prompt('/cafe-collab resume');
+  await restored.session.prompt('/cafe collab pause'); await restored.session.prompt('/cafe collab resume');
   messages.push({ seq: 12, id: 'synthetic-manual-task', memberId: ids[1], text: 'Handle once through the shared inbox.', to: ids[0], replyTo: 0 });
   await restored.session.prompt('Read and confirm the next pending room message manually.');
   await delay(5500); assert.equal(modelCalls.length, 23); assert.equal(messages.length, 12);
-  await restored.session.prompt('/cafe-collab pause'); const manualPath = restored.session.sessionFile; assert(manualPath);
+  await restored.session.prompt('/cafe collab pause'); const manualPath = restored.session.sessionFile; assert(manualPath);
   restored.session.dispose(); sessions.splice(sessions.indexOf(restored.session), 1);
   const manualEntries = (await readFile(manualPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert(manualEntries.some(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'consumed' && e.data?.seq === 12));
@@ -142,23 +142,23 @@ try {
   assert(acknowledgements.some(q => q.index === 0 && q.fetched === 12 && q.delivered === 10));
   assert(!acknowledgements.some(q => q.delivered === 12), 'Manual consumption is not automatic host delivery');
   assert(acknowledgements.some(q => q.index === 1 && q.delivered === 11));
-  const beats = acknowledgements.length; await Promise.all(sessions.map(session => session.prompt('/cafe-collab pause')));
+  const beats = acknowledgements.length; await Promise.all(sessions.map(session => session.prompt('/cafe collab pause')));
   await delay(5500); assert.equal(acknowledgements.length, beats);
   console.log('PASS: connector reports distinguish fetch, persisted delivery and manual consumption; pause stops heartbeat');
   const beforeReload = httpRequests;
-  await restoredAgain.session.reload(); await restoredAgain.session.prompt('/cafe-collab status'); await delay(5500);
+  await restoredAgain.session.reload(); await restoredAgain.session.prompt('/cafe collab status'); await delay(5500);
   assert.equal(httpRequests, beforeReload, 'Native reload must not reconnect automatically');
   const originalConfig = await readFile(restoredAgain.config, 'utf8');
   for (const change of [{ token: 'f'.repeat(64) }, { origin: 'https://do-not-contact.invalid' }]) {
     await writeFile(restoredAgain.config, JSON.stringify({ ...JSON.parse(originalConfig), ...change }), { mode: 0o600 });
-    await restoredAgain.session.prompt('/cafe-collab resume');
+    await restoredAgain.session.prompt('/cafe collab resume');
     assert.equal(httpRequests, beforeReload, 'Changed binding must be refused before network access');
   }
-  await rm(restoredAgain.config); await restoredAgain.session.prompt('/cafe-collab resume');
+  await rm(restoredAgain.config); await restoredAgain.session.prompt('/cafe collab resume');
   assert.equal(httpRequests, beforeReload, 'Missing config must not trigger discovery or a fallback connection');
   await writeFile(restoredAgain.config, originalConfig, { mode: 0o600 });
-  await restoredAgain.session.prompt('/cafe-collab resume');
-  const resumedRequests = httpRequests; await restoredAgain.session.prompt('/cafe-collab resume');
+  await restoredAgain.session.prompt('/cafe collab resume');
+  const resumedRequests = httpRequests; await restoredAgain.session.prompt('/cafe collab resume');
   assert.equal(httpRequests, resumedRequests, 'Repeated resume does not create another listener');
   await until(() => acknowledgements.length > beats, 'path-free resume after real native reload');
   assert.equal(modelCalls.length, 23); assert.equal(messages.length, 12);
@@ -167,7 +167,7 @@ try {
   const version = JSON.parse(await readFile(join(piRoot, 'package.json'), 'utf8')).version;
   console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: 11, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
 } finally {
-  for (const session of sessions) { try { await session.prompt('/cafe-collab pause'); } catch {} session.dispose(); }
+  for (const session of sessions) { try { await session.prompt('/cafe collab pause'); } catch {} session.dispose(); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   globalThis.fetch = nativeFetch; await rm(root, { recursive: true, force: true });
 }

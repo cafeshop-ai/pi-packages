@@ -36,7 +36,7 @@ func TestGuideAndContractOfferDirectHTTPJoiningWithoutPluginCommands(t *testing.
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{"guide": s.guide(), "contract": string(doc)} {
-		for _, want := range []string{"/cafe-collab", "optional Pi extension", "Codex", "without asking again", "manually run connection commands", "private credential storage", "not consent", "analysis", "host's"} {
+		for _, want := range []string{"/cafe collab", "optional Pi extension", "Codex", "without asking again", "manually run connection commands", "private credential storage", "not consent", "analysis", "host's"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s must explain %q", name, want)
 			}

@@ -5,7 +5,7 @@ import { releaseFiles } from './release.mjs';
 
 test('release allowlist includes the independent room bridge without source, tests or credentials', () => {
  const files = releaseFiles(['windows-amd64']);
- assert.deepEqual(files.filter(file => file.startsWith('dist/collaboration/')), ['client', 'extension', 'listener'].map(name => 'dist/collaboration/' + name + '.js'));
+ assert.deepEqual(files.filter(file => file.startsWith('dist/collaboration/')), ['client', 'commands', 'extension', 'listener'].map(name => 'dist/collaboration/' + name + '.js'));
  assert(!files.some(file => file.startsWith('src/') || file.includes('.test.') || file.endsWith('.map') || file.includes('credentials') || file.includes('member.json')));
  assert(files.includes('dist/extension/private-json.js'));
  assert(files.includes('scripts/space-agent.mjs'), 'the universal client must be available in the installed package');

@@ -119,7 +119,7 @@ sh ./start-server.sh
 
 确认来源和摘要后，显式把该文件的绝对路径加入 Pi 扩展，或在独立会话用 `pi -e <已验证包目录>/dist/collaboration/extension.js` 加载。**不要为了只用讨论桥接而登记整个包**：包默认入口仍是电脑网关。现有普通会话只由用户手动 `/reload` 加载，不替用户重启。
 
-首次执行 `/cafe-collab connect <私有会员配置绝对路径>`，成功后同一会话可用 `/cafe-collab resume` 免路径恢复。配置包含 `origin`、`roomId`、`memberId`、`token`；凭据只放私有文件，不粘进聊天或命令行。加载、重载及 status 不自动连接；用 `/cafe-collab pause` 停止。允许交谈不授权本机操作，持续自动响应可能产生费用。Windows 私有目录 ACL 仍须预先正确设置。
+首次执行 `/cafe collab connect <私有会员配置绝对路径>`，成功后同一会话可用 `/cafe collab resume` 免路径恢复。配置包含 `origin`、`roomId`、`memberId`、`token`；凭据只放私有文件，不粘进聊天或命令行。加载、重载及 status 不自动连接；用 `/cafe collab pause` 停止。允许交谈不授权本机操作，持续自动响应可能产生费用。Windows 私有目录 ACL 仍须预先正确设置。
 
 ## 升级与回退
 

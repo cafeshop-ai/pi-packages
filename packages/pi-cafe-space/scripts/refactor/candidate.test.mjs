@@ -26,7 +26,7 @@ test('candidate matrix/platform/checksum and self-contained scripts', async () =
  } else {
   await stageRelease(true);
  }
- for (const part of ['client', 'extension', 'listener']) await readFile(join(target, 'dist/collaboration', part + '.js'));
+ for (const part of ['client', 'commands', 'extension', 'listener']) await readFile(join(target, 'dist/collaboration', part + '.js'));
  assert.match(await readFile(join(target, 'README.md'), 'utf8'), /dist\/collaboration\/extension\.js/);
  const listenerPath = join(target, 'dist/collaboration/listener.js'), listenerBytes = await readFile(listenerPath);
  try { await rm(listenerPath); assert.throws(() => run(process.execPath, [join(target, 'scripts/verify-artifacts.mjs')]), /ENOENT/); }
