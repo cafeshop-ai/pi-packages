@@ -342,6 +342,7 @@ export default function registerSubagent(pi: ExtensionAPI): void {
       "Prefer quick_explorer for deterministic searches, inventories, comparisons, and mechanical read-only verification.",
       "Keep ambiguous design decisions and code modifications in the parent agent unless the user asks for a different role.",
       "Project-local roles are opt-in via agentScope and may require user confirmation.",
+      "Keep the default 600-second subagent timeout unless the user requests otherwise.",
     ],
     parameters: Type.Object({
       action: Type.Union([
@@ -360,7 +361,7 @@ export default function registerSubagent(pi: ExtensionAPI): void {
       tools: Type.Optional(Type.String({ description: "Raw spawn only: comma-separated tools" })),
       cwd: Type.Optional(Type.String({ description: "Child working directory" })),
       model: Type.Optional(Type.String({ description: "Raw spawn only: model ID or model:thinking shorthand" })),
-      timeoutSec: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600, description: "Timeout in seconds" })),
+      timeoutSec: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600, description: "Spawn deadline in seconds; default 600 (10 minutes). Keep unless the user requests otherwise; does not affect wait." })),
       jobId: Type.Optional(Type.String({ description: "Job ID for wait/status/kill" })),
     }),
     async execute(_callId, params, _signal, _update, ctx) {
