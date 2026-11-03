@@ -34,7 +34,9 @@
 .page:has(.room) > .header { display: none; }
 .brand { text-decoration: none; color: var(--cafe-ink) !important; font: 20px/1 var(--cafe-serif); letter-spacing: -.02em; display: flex; align-items: baseline; gap: 10px;
   span { font: 600 11px var(--cafe-sans); letter-spacing: .14em; color: var(--cafe-accent); } }
+.nav { display: flex; align-items: center; gap: 16px; }
 .nav a { font-size: 13px; text-decoration: none; color: var(--cafe-muted); transition: color .2s; &:hover { color: var(--cafe-ink); } }
+.formColumn { display: grid; gap: 16px; align-content: start; min-width: 0; }
 .eyebrow { color: var(--cafe-accent); font-size: 11px; font-weight: 700; letter-spacing: .18em; }
 .lead { color: var(--cafe-muted); font-size: 15px; line-height: 1.85; }
 .note { color: var(--cafe-muted); font-size: 12.5px; line-height: 1.7; }

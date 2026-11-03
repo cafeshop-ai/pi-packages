@@ -12,7 +12,8 @@ import { LoginForm } from '../features/auth/LoginForm';
 import { SetupForm } from '../features/auth/SetupForm';
 import setupStyles from '../features/auth/SetupForm.module.scss';
 import { RemoteLogin } from '../features/remote/RemoteLogin';
-import { RoomLanding, RoomLogin } from '../features/remote/RoomEntry';
+import { RoomLogin } from '../features/remote/RoomEntry';
+import { DevicesHub, PublicHeader, PublicHome, ShareGuide, publicView } from '../features/home/PublicHome';
 import { CafeIdentityMenu, CafeLoginCallback } from '../features/remote/CafeIdentity';
 import { RoomShare } from '../features/remote/RoomShare';
 import { useRoomControlOwner } from '../features/remote/RoomControlPanel';
@@ -226,11 +227,13 @@ function OwnedApp({ createOwner }: { createOwner: () => AppOwner }) {
   return <Shell owner={owner} defaultRoom={defaultRoom} managedSessions={managedSessions} />;
 }
 function PublicRoomHome({ owner }: { owner: AppOwner }) {
-  const { i18n } = useTranslation();
+  const location = useLocation();
+  // Unchanged behavior: any public page outside a device room ends the device session.
   useEffect(() => { owner.logout(); }, [owner]);
+  const view = publicView(location.pathname);
   return <main className={styles.shell} data-theme="dark" data-surface="workspace"><UiProvider>
-    <header className={styles.header}><div className={`${styles.brand} ${styles.collaborationBrand}`}><h1>Café Space</h1><a className={styles.collaborationLink} href="#/collab">{i18n.language.startsWith("zh") ? "协作房间 · 人与 AI" : "People + AI rooms"}</a></div><nav className={`${styles.language} ${setupStyles.language}`}><Button variant="quiet" onClick={() => void i18n.changeLanguage('zh-CN')}>中文</Button><Button variant="quiet" onClick={() => void i18n.changeLanguage('en')}>English</Button></nav></header>
-    <div className={`${styles.loginStage} ${setupStyles.stage}`}><RoomLanding owner={owner} /></div>
+    <PublicHeader view={view} />
+    <div className={`${styles.loginStage} ${setupStyles.stage}`}>{view === 'devices' ? <DevicesHub owner={owner} /> : view === 'share' ? <ShareGuide /> : <PublicHome />}</div>
   </UiProvider></main>;
 }
 function AppEntry({ createOwner }: { createOwner: () => AppOwner }) {

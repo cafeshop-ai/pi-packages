@@ -10,6 +10,7 @@ import { MessageText } from './MessageText';
 import { GoalPanel } from './GoalPanel';
 import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
+import { classifyEntryLink } from '../home/entryLink';
 import styles from './Collaboration.module.scss';
 
 const messageError = (error: unknown) => error instanceof Error ? error.message : '连接失败，请重试。';
@@ -124,7 +125,7 @@ export function Collaboration() {
   return <main lang="zh-CN" className={styles.page} data-theme="dark" data-surface="workspace"><UiProvider>
     <header className={styles.header}>
       <Link to="/collab" className={styles.brand}>Café Space <span>协作</span></Link>
-      <nav className={styles.nav}><Link to="/">电脑房间</Link></nav>
+      <nav className={styles.nav} aria-label="站点导航"><Link to="/">首页</Link><Link to="/devices">远程电脑</Link></nav>
     </header>
     {match ? <Room key={match[1]} id={match[1]!} invite={new URLSearchParams(location.search).get('invite') ?? ''} /> : location.pathname === '/collab' ? <Create /> : <section className={styles.card}><h1>无效的协作链接</h1><p className={styles.note}>请检查链接是否完整，或向邀请人索取新的链接。</p><Link to="/collab">返回协作首页</Link></section>}
   </UiProvider></main>;
@@ -147,6 +148,7 @@ function Create() {
         <li><Icon name="lock" /><div><strong>边界清楚</strong><span>只共享房间里的内容，所有成员都可编辑任务、管理 Goal 或关闭房间。</span></div></li>
       </ul>
     </div>
+    <div className={styles.formColumn}>
     <form className={styles.formCard} onSubmit={event => { event.preventDefault(); if (busy) return; setBusy(true); setError(''); void (async () => {
       try { checkStorage(); const value = await collaboration<Membership>({ op: 'create', title: title.trim(), name: name.trim(), kind: 'human' }); saveMembership(value); navigate('/collab/' + value.roomId); }
       catch (e) { setError(messageError(e)); } finally { setBusy(false); }
@@ -159,7 +161,28 @@ function Create() {
       {enabled === false && <p className={styles.formError} role="alert">协作服务暂不可用，请稍后再试；电脑房间不受影响。</p>}
       {error && <p className={styles.formError} role="alert">{error}</p>}
     </form>
+    <JoinWithInvite />
+    </div>
   </section>;
+}
+
+/** Opens an invite locally; the room page then previews it and joins only after confirmation. */
+function JoinWithInvite() {
+  const navigate = useNavigate();
+  const [link, setLink] = useState(''); const [error, setError] = useState('');
+  return <form className={styles.formCard} aria-labelledby="collab-join-title" noValidate onSubmit={event => {
+    event.preventDefault();
+    const target = classifyEntryLink(link, window.location.origin);
+    if (target.kind === 'collab') { navigate(target.path); return; }
+    setError(target.kind === 'device' ? '这是远程电脑的房间链接，请在首页或「远程电脑」页面打开。' : '请粘贴完整的协作邀请链接（…/#/collab/…?invite=…）。');
+  }}>
+    <h2 id="collab-join-title">已有邀请链接？</h2>
+    <div className={styles.field}><Label htmlFor="collab-invite">邀请链接</Label><Input id="collab-invite" value={link} maxLength={2048} autoCapitalize="none" spellCheck={false} autoComplete="off"
+      aria-invalid={error ? true : undefined} aria-describedby={error ? 'collab-invite-error' : undefined}
+      onChange={e => { setLink(e.target.value); setError(''); }} placeholder="https://…/#/collab/…?invite=…" /></div>
+    <Button type="submit">打开邀请</Button>
+    {error && <p id="collab-invite-error" className={styles.formError} role="alert">{error}</p>}
+  </form>;
 }
 
 function Room({ id, invite }: { id: string; invite: string }) {
