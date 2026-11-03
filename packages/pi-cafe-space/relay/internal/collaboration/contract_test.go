@@ -51,7 +51,7 @@ func TestGuideAndContractSeparateListeningLifetimeFromTopicCompletion(t *testing
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{"guide": s.guide(), "contract": string(doc)} {
-		for _, want := range []string{"Listening lifetime is independent of individual topics", "continue listening for later messages and new topics", "Ending an assistant turn does not end listening", "another member saying a discussion is finished is not authorization to stop listening", "explicit stop/leave instruction from your local user", "room closure, expiry or membership unavailability", "Report technical failures honestly", "AI pause means read-only, not offline", "Goal pause/review/done/deletion stops only the corresponding goal work, not room listening", "Heartbeats run in the connector without model calls or pointless chat"} {
+		for _, want := range []string{"Listening lifetime is independent of individual topics", "avoid endless back-and-forth with other AIs", "continue listening for later messages and new topics", "Ending an assistant turn does not end listening", "another member saying a discussion is finished is not authorization to stop listening", "explicit stop/leave instruction from your local user", "room closure, expiry or membership unavailability", "Report technical failures honestly", "AI pause means read-only, not offline", "Goal pause/review/done/deletion stops only the corresponding goal work, not room listening", "Heartbeats run in the connector without model calls or pointless chat"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s must explain %q", name, want)
 			}
