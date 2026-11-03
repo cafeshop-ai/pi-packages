@@ -53,6 +53,21 @@ it('only registers /cafe, and usage and status never read credentials or start a
   expect(JSON.stringify(notify.mock.calls)).toContain('/cafe collab connect');
   expect(JSON.stringify(notify.mock.calls)).not.toContain('/cafe-collab');
 });
+it.each(['connect', 'resume', 'poll'])('explains HTTP 404 during %s without changing bindings, retrying or leaking credentials', async phase => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } });
+  if (phase !== 'connect') await f.command('connect C:/private/room.json');
+  if (phase === 'resume') f.reload();
+  const entries = [...f.entries]; f.fetcher.mockClear(); notify.mockClear();
+  f.fetcher.mockResolvedValueOnce(new Response(null, { status: 404 }));
+  if (phase === 'poll') await vi.advanceTimersByTimeAsync(5000);
+  else await f.command(phase === 'connect' ? 'connect C:/private/room.json' : 'resume');
+  await vi.advanceTimersByTimeAsync(60000);
+  const text = JSON.stringify(notify.mock.calls);
+  for (const hint of ['ROOM_HTTP_404', 'room or API endpoint', 'resume uses the saved room binding', '/cafe collab connect <absolute private config path>']) expect(text).toContain(hint);
+  expect(text).not.toContain(token); expect(text).not.toContain('C:/private/room.json');
+  expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.entries).toEqual(entries); expect(f.pi.sendMessage).not.toHaveBeenCalled();
+  expect((await f.tool('cafe_room_status')).details.state).toBe(phase === 'poll' ? 'paused' : 'disconnected');
+});
 it('does nothing on load; explicit connect skips old history and injects only new external messages', async () => {
   const f = fixture(); expect(f.fetcher).not.toHaveBeenCalled(); f.messages.push(message(1));
   await f.command('connect C:/private/room.json'); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).not.toHaveBeenCalled();

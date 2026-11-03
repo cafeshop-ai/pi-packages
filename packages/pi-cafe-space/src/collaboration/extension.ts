@@ -26,7 +26,10 @@ export default function collaborationExtension(pi: ExtensionAPI) {
   const manualReads = new Set<number>(), consumed = new Set<number>();
   const stop = () => { generation++; clearTimeout(timer); listener?.pause(); activeAttempt = undefined; };
   const status = () => ({ state: listener?.state ?? 'disconnected', cursor: listener?.cursor ?? 0, error: listener?.error, pendingSequence: listener?.pending?.seq, uncertainSequence: recovery?.seq, automaticTurns });
-  const notify = (ctx: ExtensionContext, message: string) => { try { if (ctx.hasUI) ctx.ui.notify(message, 'info'); } catch { /* Session replacement can invalidate UI. */ } };
+  const notify = (ctx: ExtensionContext, message: string) => {
+    if (message === 'ROOM_HTTP_404' || message === 'Room listener paused: ROOM_HTTP_404') message += '\nThe room or API endpoint was not found. Check the private config: resume uses the saved room binding, not the most recently discussed room. To switch rooms, run /cafe collab connect <absolute private config path>. No automatic rejoin or room switch was attempted.';
+    try { if (ctx.hasUI) ctx.ui.notify(message, 'info'); } catch { /* Session replacement can invalidate UI. */ }
+  };
   const observeStoredReceipt = (ctx: ExtensionContext) => {
     if (!listener || !activeAttempt || ctx.sessionManager.getSessionId() !== boundSession) return;
     const entry = ctx.sessionManager.getBranch().find(e => e.type === 'custom_message' && e.customType === eventType && record(e.details) && e.details.scope === scope && e.details.attempt === activeAttempt);
