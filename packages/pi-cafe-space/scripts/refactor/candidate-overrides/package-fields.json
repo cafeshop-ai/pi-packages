@@ -24,5 +24,5 @@
     "@assistant-ui/core": "0.3.17",
     "assistant-cloud": "0.1.43"
   },
-  "files": ["dist", "scripts", "README.md", "INSTALL.md", "AI_INSTALL.md", "LICENSE", "THIRD-PARTY-NOTICES.txt"]
+  "files": ["dist", "scripts", "README.md", "INSTALL.md", "AI_INSTALL.md", "MANAGED_SESSIONS.md", "LICENSE", "THIRD-PARTY-NOTICES.txt"]
 }

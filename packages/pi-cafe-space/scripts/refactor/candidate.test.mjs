@@ -27,7 +27,13 @@ test('candidate matrix/platform/checksum and self-contained scripts', async () =
   await stageRelease(true);
  }
  for (const part of ['client', 'commands', 'extension', 'listener']) await readFile(join(target, 'dist/collaboration', part + '.js'));
- assert.match(await readFile(join(target, 'README.md'), 'utf8'), /dist\/collaboration\/extension\.js/);
+ const readme = await readFile(join(target, 'README.md'), 'utf8');
+ assert.match(readme, /dist\/collaboration\/extension\.js/);
+ assert.doesNotMatch(readme, /\]\((?:CAFE_SSO|DEVELOPMENT_HANDOFF)\.md\)/);
+ assert.match(readme, /详细有效期与部署记录见源码仓库中的 CAFE_SSO\.md/);
+ assert.match(readme, /验收记录\]\(#remote-acceptance\)/);
+ const installGuide = await readFile(join(target, 'INSTALL.md'), 'utf8');
+ assert.match(installGuide, /\[README\]\(README\.md\)/); assert.doesNotMatch(installGuide, /\(\.\.\/README\.md\)|\(DEPLOYMENT_SPACE\.md\)/);
  const listenerPath = join(target, 'dist/collaboration/listener.js'), listenerBytes = await readFile(listenerPath);
  try { await rm(listenerPath); assert.throws(() => run(process.execPath, [join(target, 'scripts/verify-artifacts.mjs')]), /ENOENT/); }
  finally { await writeFile(listenerPath, listenerBytes); }

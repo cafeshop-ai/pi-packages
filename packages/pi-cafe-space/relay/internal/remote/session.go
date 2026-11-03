@@ -180,11 +180,11 @@ func(s *remoteSession) workspaceRequest(raw []byte)error{
 	var q workspaceMessage;if len(raw)>4096||strictJSON(raw,&q)!=nil||!requestID.MatchString(q.RequestID){return errors.New("invalid workspace request")}
 	if q.Request.Room!=s.identity.Room{return s.result(q.RequestID,"FORBIDDEN",nil)}
 	s.agent.roomPolicyMu.RLock();defer s.agent.roomPolicyMu.RUnlock()
-	if s.roomKey!=""&&q.Request.Operation!="list"&&s.agent.control.RoomMode(s.identity.Room)=="approval"{return s.result(q.RequestID,"LOCAL_OWNER_REQUIRED",nil)}
+	if s.roomKey!=""&&q.Request.Operation!="list"&&q.Request.Operation!="threads"&&s.agent.control.RoomMode(s.identity.Room)=="approval"{return s.result(q.RequestID,"LOCAL_OWNER_REQUIRED",nil)}
 	if s.agent.backend.Manager==nil{return s.result(q.RequestID,"MANAGED_UNAVAILABLE",nil)}
 	if s.roomKey!="" {
 		if !s.agent.cfg.RoomManagement { return s.result(q.RequestID,"MANAGED_UNAVAILABLE",nil) }
-		if s.identity.Role!="operator" || (q.Request.Operation!="list"&&q.Request.Operation!="create"&&q.Request.Operation!="open") { return s.result(q.RequestID,"FORBIDDEN",nil) }
+		if s.identity.Role!="operator" || (q.Request.Operation!="list"&&q.Request.Operation!="threads"&&q.Request.Operation!="create"&&q.Request.Operation!="open") { return s.result(q.RequestID,"FORBIDDEN",nil) }
 	} else if q.Request.Operation!="list"&&s.identity.Role!="admin"{return s.result(q.RequestID,"FORBIDDEN",nil)}
 	data,code:=s.agent.backend.Manager.Execute(q.Request)
 	b,err:=json.Marshal(remoteResult{Type:"remote.result",RequestID:q.RequestID,OK:code=="",Code:code,Data:data});if err!=nil||len(b)>protocol.MaxFrameBytes{return s.result(q.RequestID,"RESULT_TOO_LARGE",nil)}

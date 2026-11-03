@@ -208,7 +208,8 @@ export class RemoteAccess {
     if(request.room!==this.#state.info?.roomId)return Promise.reject(Error('FORBIDDEN'));
     if(!this.#state.info?.managed)return Promise.reject(Error('MANAGED_UNAVAILABLE'));
     if(request.operation==='close'&&!this.canCloseManaged())return Promise.reject(Error('FORBIDDEN'));
-    const write=request.operation!=='list';if(write&&!this.canManage())return Promise.reject(Error('FORBIDDEN'));
+    const managed=request.operation!=='list';if(managed&&!this.canManage())return Promise.reject(Error('FORBIDDEN'));
+    const write=request.operation==='create'||request.operation==='open'||request.operation==='close';
     return this.#request({type:'remote.workspace',request},write,signal);
   }
   #settleAll():void{for(const p of this.#pending.values()){clearTimeout(p.timer);p.cleanup();p.reject(Error(p.write?'RESULT_UNKNOWN':'CONNECTION_LOST'));}this.#pending.clear();}

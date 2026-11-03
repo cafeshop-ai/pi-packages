@@ -37,10 +37,33 @@
 
 后台 Pi 以 `--mode rpc --offline --no-extensions -e <固定扩展> --no-approve --no-themes` 启动。`--offline` 禁止自动启动联网，不禁止用户后续明确发送的模型请求。仅加载固定协作扩展，不自动执行全局/项目第三方扩展，不替用户批准项目资源。原生内置工具、模型配置和已允许的 skills/templates 仍由 Pi 管理；需要依赖额外扩展的自定义 provider 时，应继续使用手动 Pi，不能假定这里会自动加载它。
 
+## 可选 Codex ACP Runtime
+
+源码版 Go manager 还可配置 `acp`，让托管会话选择 Pi 或 Codex ACP。ACP 适配脚本已加入候选发行 allowlist；尚未重新生成/安装的现有版本不会包含它们。ACP SDK 与 `codex-acp` 仍由管理员放在独立、已审核的本机 runtime 目录中，不会自动下载、安装或登录。
+
+```json
+{
+  "acp": {
+    "root": "C:/Private/cafe-acp-runtime",
+    "codex": "C:/Users/me/AppData/Local/Programs/Codex/codex.exe",
+    "socket": "C:/Users/me/.codex/app-server-control/app-server-control.sock",
+    "env": { "CODEX_HOME": "C:/Users/me/.codex" }
+  }
+}
+```
+
+`root` 必须包含 `node_modules/@agentclientprotocol/sdk/` 与 `node_modules/@agentclientprotocol/codex-acp/`；当前 host 固定要求 ACP SDK `2.1.0` 与 `codex-acp 2.5.0`。`codex` 是本机原生 CLI 的绝对路径；`env` 只能在此本机配置中明确指定，并拒绝覆盖 Pi/Café/ACP 内部变量与 `NODE_OPTIONS`/`NODE_PATH`。不把配置环境、Codex 登录状态或 host token返回网页。常规创建使用本机操作者的 Codex 登录态。
+
+可选 `socket` 启用已加载会话枚举和挂接；目前此部分**只支持 Windows 主机**。网页只展示被本机批准项目覆盖的会话名称、项目目录、状态，不请求对话内容；最多列出 100 项。选择时浏览器只持有随机不透明键，原生 Codex 会话 ID 不发给浏览器。只有 `idle` 会话可选，manager 和 host 都会重查，避免过期状态误连。挂接不回放 transcript、不覆盖模型/权限/MCP/instructions；关闭只断开 Café，不结束原 Codex daemon、终端或 turn。此 metadata 会对拥有房间管理权限的 operator 可见，不是成员身份升级。
+
+Café 新建的 Codex 会话以 `read-only` 模式启动。原生 Codex 会话 ID 和不透明选择键保存在本机受保护登记中；原生 ID 不暴露给浏览器或公开 managed inventory。新建前先持久化幂等尝试标记；会话 ID 未确认、断线或结果未知时不自动重建/重发。manager 重启后不会自动恢复进程或提示；operator 显式打开时恢复 Cafe 新建的 ACP session。权限审批全部拒绝；read-only ACP mode 不是 OS sandbox，也不限制 Agent 自有工具的本机权限。托管 ACP prompt budget 不限制已授权 operator 的会话使用；Café 不会自动重试。
+
+若 `acp` 不存在，Pi 行为与现有配置相同。传统 Pi 托管仍是默认且不降级；本机要继续 Codex 的原生全能力，请直接使用手动 Codex，不要把该 ACP host 当成完整桌面客户端。
+
 ## 所有权与保存
 
 - 每个后台会话使用独立原生 RPC 进程、固定 UUID 和 `managed-<UUID>` host ID；不会接管手动 Pi 或附着其 JSONL。
-- `registry.json` 仅保存项目/房间/cwd、创建 ID、名称与进程状态元数据；原生会话存在 `stateDir/sessions/<projectId>/`。Relay 不生成、修改或重写 Pi JSONL。
+- `registry.json` 保存项目/房间/cwd、创建 ID、名称与进程状态，以及仅供本机恢复使用的 ACP 原生会话身份和选择键；Pi 原生会话数据位于 `stateDir/sessions/<projectId>/`。Relay 不生成、修改或重写 Pi JSONL。
 - Windows 文件锁保证同一登记目录只有一个 manager owner；不扫描 PID 接管进程，也不按旧 PID 结束进程。每个直接创建的进程树放进带 `KILL_ON_JOB_CLOSE` 的 Windows Job Object，Relay 崩溃时也回收其工具子进程。
 - macOS/Linux 使用专用 supervisor、存活管道与进程组，仅回收自身派生组；网关退出时由 supervisor 处理组内子进程。不按旧 PID 猜测所有权，主动脱离进程组的子进程不在此保证内。
 - **关闭实例** 要求确认，会停止该实例的任务与工具。先读原生状态保留名称、关闭 stdin，最多等待 8 秒后回收本管理器拥有的 Job；不会操作手动 Pi。
@@ -50,7 +73,7 @@
 
 ## 网络与资源边界
 
-公开 `/api/config` 仅增加可选 `managedSessions: true`。管理入口固定为同源 `POST /api/workspace`，必须同时通过 Origin 和 client bearer token 校验；不接受 query 参数或未知 JSON 字段，body 最多 4096 字节。操作仅有 `list/create/open/close`，任何返回均不包括命令行、环境、agent 目录、provider 配置或 token。
+公开 `/api/config` 仅增加可选 `managedSessions: true`。管理入口固定为同源 `POST /api/workspace`，必须同时通过 Origin 和 client bearer token 校验；不接受 query 参数或未知 JSON 字段，body 最多 4096 字节。操作包括 `list/create/open/close`，以及只读 `threads` 元数据查询；任何返回均不包括命令行、环境、agent 目录、provider 配置、token 或托管记录中的原生 ACP session ID。`threads` 只在配置 ACP socket 的 Windows 主机上工作。
 
 创建 ID 在进程启动前原子登记，相同 ID 的重复创建返回同一项，不会再次启动；冲突参数拒绝。超时/断线显示“结果未知”，不自动重试写入，应先刷新后台列表核对。Web 的读取和自动选择有房间、连接代次、认证状态、视图及手动选择保护。Pi RPC 的 `get_state` 只用于启动/关闭元数据，不发送模型 prompt；无法处理的原生确认明确取消，不自动批准。
 

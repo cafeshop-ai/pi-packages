@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createEventBuffer, readHostConfig, samePath } from './space-run.mjs';
+
+test('approved cwd matching is case-insensitive only on Windows', () => {
+ assert.equal(samePath('C:/Work/Repo','c:/work/repo','win32'),true);
+ assert.equal(samePath('/Work/Repo','/work/repo','linux'),false);
+});
+
+test('event buffer keeps bounded load events in order and streams after attach', () => {
+ const buffer=createEventBuffer({maxEvents:2,maxBytes:1024});const seen=[];
+ buffer.push({text:'one'});buffer.push({text:'two'});assert.throws(()=>buffer.push({text:'three'}),/limit/);
+ buffer.attach({event:event=>seen.push(event.text)});assert.deepEqual(seen,['one','two']);
+ buffer.push({text:'live'});assert.deepEqual(seen,['one','two','live']);
+ assert.throws(()=>buffer.attach({event(){}}),/already attached/);
+});
+
+test('explicit local host config validates budgets, paths, borrowed identity and unknown options', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'cafe-acp-config-test-'));
+ const path = join(root, 'host.json');
+ const base = { mode:'new', relayUrl:'ws://127.0.0.1:1234/',roomId:'test',hostId:'test',token:'test',acpRoot:root,codex:join(root,'codex.exe'),cwd:root,stateDirectory:join(root,'state'),promptBudget:0 };
+ const read = async value => { await writeFile(path, JSON.stringify(value), {mode:0o600}); return readHostConfig(path); };
+ try {
+   assert.equal((await read(base)).mode,'new');
+   const managed={...base,managed:true,managedSessionId:'11111111-1111-4111-8111-111111111111',promptBudget:null};assert.equal((await read(managed)).managed,true);
+   await assert.rejects(read({...base,managed:true,promptBudget:null}), /Managed session ID/);
+   await assert.rejects(read({...base,managedSessionId:'11111111-1111-4111-8111-111111111111'}), /internal/);
+   const restored={...managed,mode:'restore',threadId:'00000000-0000-7000-8000-000000000001'};delete restored.socket;assert.equal((await read(restored)).mode,'restore');
+   const unmanagedRestore={...restored,managed:false,promptBudget:0};delete unmanagedRestore.managedSessionId;
+   await assert.rejects(read(unmanagedRestore), /Restore requires/i);
+   await assert.rejects(read({...base, unexpected:true}), /Unknown/);
+   await assert.rejects(read({...base,promptBudget:3}), /budget/);
+   await assert.rejects(read({...base,codex:'relative.exe'}), /Absolute/);
+   const attached={...base,mode:'attach',socket:join(root,'socket'),expectedCwd:root,threadId:'11111111-1111-4111-8111-111111111111'}; delete attached.cwd;
+   assert.equal((await read(attached)).mode,'attach');
+   assert.equal((await read({...attached,socket:join(root,'socket %!^&.sock')})).mode,'attach');
+   await assert.rejects(read({...attached,socket:join(root,'界'.repeat(1400))}), /socket/i);
+   await assert.rejects(read({...attached,cwd:root}), /Borrowed cwd/);
+   await assert.rejects(read({...attached,promptBudget:2}), /budget/);
+   await assert.rejects(read({...attached,threadId:'guessed'}), /thread ID/);
+   await assert.rejects(readHostConfig(root), /ordinary/);
+   await assert.rejects(readHostConfig('relative.json'), /absolute/);
+ } finally {await rm(root,{recursive:true,force:true});}
+});

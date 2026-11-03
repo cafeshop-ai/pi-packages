@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/auth"
+	"io"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -17,14 +17,20 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if code, handled := RunSupervisor(os.Args[1:]); handled { os.Exit(code) }
+	if code, handled := RunSupervisor(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--managed-test-leaf":
-			for { time.Sleep(time.Hour) }
+			for {
+				time.Sleep(time.Hour)
+			}
 		case "--managed-test-tree":
 			child := exec.Command(os.Args[0], "--managed-test-leaf")
-			if child.Start() != nil { os.Exit(2) }
+			if child.Start() != nil {
+				os.Exit(2)
+			}
 			fmt.Printf("tree:%d:%d\n", os.Getpid(), child.Process.Pid)
 			_, _ = io.Copy(io.Discard, os.Stdin)
 			os.Exit(0)
@@ -32,12 +38,19 @@ func TestMain(m *testing.M) {
 			child := exec.Command(os.Args[0], "--managed-test-tree")
 			child.Stdout, child.Stderr = os.Stdout, os.Stderr
 			input, err := child.StdinPipe()
-			if err != nil { os.Exit(2) }
+			if err != nil {
+				os.Exit(2)
+			}
 			release, err := startOwnedProcess(child)
-			if err != nil { os.Exit(2) }
-			defer release(); defer input.Close()
+			if err != nil {
+				os.Exit(2)
+			}
+			defer release()
+			defer input.Close()
 			fmt.Printf("supervisor:%d\n", child.Process.Pid)
-			for { time.Sleep(time.Hour) }
+			for {
+				time.Sleep(time.Hour)
+			}
 		}
 	}
 	if os.Getenv("CAFE_MANAGED_HELPER") == "1" {
@@ -93,6 +106,35 @@ func awaitStatus(t *testing.T, m *Manager, id, status string) {
 	}
 	t.Fatalf("status %s not observed", status)
 }
+func TestAttachUsesOpaqueTargetKeyAndKeepsNativeIDPrivate(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("ACP shared-session attachment is Windows-only")
+	}
+	root := t.TempDir()
+	id := "13572468-1234-4123-8123-123456789abc"
+	target := "87654321-4321-4abc-8def-123456789abc"
+	key := strings.Repeat("b", 64)
+	m := &Manager{
+		cfg:    Config{StateDir: root, ACP: &ACPConfig{Socket: filepath.Join(root, "app-server.sock")}, Projects: []Project{{ID: "project", Name: "Work", Room: "room", Cwd: root}}},
+		active: map[string]*process{}, targets: map[string]targetCache{"room": {threads: []AgentSession{{ID: target, Key: key, ProjectID: "project", Name: "Loaded", Cwd: root, Status: "idle"}}, at: time.Now()}},
+	}
+	value, code := m.Execute(Request{Room: "room", Operation: "create", ID: id, ProjectID: "project", Name: "Borrowed", Agent: "codex-acp", TargetKey: key})
+	if code != "" {
+		t.Fatal(code)
+	}
+	record := value.(Record)
+	if record.AgentMode != "attach" || record.Status != "failed" || m.records[0].AgentSessionID != target || m.records[0].AgentTargetKey != key {
+		t.Fatal("opaque selector did not resolve to its registered native session")
+	}
+	encoded, err := json.Marshal(m.inventory("room"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), target) || strings.Contains(string(encoded), key) {
+		t.Fatal("native session ID or lookup key leaked into inventory")
+	}
+}
+
 func TestOwnedLifecycle(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("unsupported process ownership platform")
@@ -149,6 +191,94 @@ func TestOwnedLifecycle(t *testing.T) {
 	next.Close()
 	awaitStatus(t, next, id, "stopped")
 }
+func TestAgentSessionIdentityIsPrivateAndDurable(t *testing.T) {
+	m, path := fixture(t)
+	id := "13572468-1234-4123-8123-123456789abc"
+	target := "87654321-4321-4abc-8def-123456789abc"
+	m.records = []Record{{ID: id, ProjectID: "project", Cwd: m.cfg.Projects[0].Cwd, Room: "room", Name: "Borrowed", HostID: "managed-" + id, Status: "stopped", Agent: "codex-acp", AgentMode: "attach", AgentSessionID: target, AgentTargetKey: strings.Repeat("a", 64)}}
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := json.Marshal(m.inventory("room"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(response), target) || strings.Contains(string(response), "agentSessionId") {
+		t.Fatal("native Codex session identity leaked to the web inventory")
+	}
+	registry, err := os.ReadFile(filepath.Join(m.cfg.StateDir, "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(registry), target) {
+		t.Fatal("native Codex session identity was not persisted locally")
+	}
+	if _, code := m.Execute(Request{Room: "room", Operation: "list"}); code != "" {
+		t.Fatal(code)
+	}
+	response, _ = json.Marshal(m.inventory("room"))
+	if strings.Contains(string(response), target) {
+		t.Fatal("native Codex session identity leaked after listing")
+	}
+	m.Close()
+	reloaded, err := Load(path, "ws://127.0.0.1:1/ws", "synthetic-host-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if len(reloaded.records) != 1 || reloaded.records[0].AgentSessionID != target || reloaded.records[0].AgentTargetKey != strings.Repeat("a", 64) {
+		t.Fatal("native Codex session identity did not survive registry reload")
+	}
+}
+
+func TestACPReadyEventPersistsPrivateSessionIdentity(t *testing.T) {
+	root := t.TempDir()
+	id := "13572468-1234-4123-8123-123456789abc"
+	target := "87654321-4321-4abc-8def-123456789abc"
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	p := &process{stdin: w, done: make(chan struct{}), kind: "acp", agentMode: "new"}
+	m := &Manager{cfg: Config{StateDir: root, Projects: []Project{{ID: "project", Name: "Work", Room: "room", Cwd: root}}}, active: map[string]*process{id: p}, records: []Record{{ID: id, ProjectID: "project", Cwd: root, Room: "room", Name: "Work", HostID: "managed-" + id, Status: "starting", Agent: "codex-acp", AgentMode: "new", AgentAttempted: true}}}
+	event := acpReadyEvent{Type: "cafe_space_ready", Mode: "new", HostID: "managed-" + id, SessionID: id, AgentSessionID: target}
+	m.markACPReady(p, id, event)
+	if !p.ready || m.records[0].Status != "ready" || m.records[0].AgentSessionID != target {
+		t.Fatal("valid ACP ready event did not persist session identity")
+	}
+	response, err := json.Marshal(m.inventory("room"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(response), target) || strings.Contains(string(response), "agentSessionId") {
+		t.Fatal("ACP session identity leaked into public inventory")
+	}
+	registry, err := os.ReadFile(filepath.Join(root, "registry.json"))
+	if err != nil || !strings.Contains(string(registry), target) {
+		t.Fatal("ACP session identity was not durably saved")
+	}
+}
+
+func TestACPReadyEventRejectsNativeIDAsPublicSessionIdentity(t *testing.T) {
+	root := t.TempDir()
+	id := "13572468-1234-4123-8123-123456789abc"
+	target := "87654321-4321-4abc-8def-123456789abc"
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	hostProcess := &process{stdin: writer, done: make(chan struct{}), kind: "acp", agentMode: "attach"}
+	manager := &Manager{cfg: Config{StateDir: root}, active: map[string]*process{id: hostProcess}, records: []Record{{ID: id, Room: "room", HostID: "managed-" + id, Status: "starting", Agent: "codex-acp", AgentMode: "attach", AgentSessionID: target, AgentTargetKey: strings.Repeat("a", 64)}}}
+	manager.markACPReady(hostProcess, id, acpReadyEvent{Type: "cafe_space_ready", Mode: "attach", HostID: "managed-" + id, SessionID: target, AgentSessionID: target})
+	if hostProcess.ready || manager.records[0].Status != "failed" || manager.records[0].AgentSessionID != target {
+		t.Fatal("native session identity was accepted as the public host session identity")
+	}
+}
+
 func TestAdmissionAndBounds(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("unsupported registry ownership platform")

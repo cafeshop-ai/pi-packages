@@ -123,9 +123,13 @@ func array(v any, max int, check func(any) bool) bool {
 	}
 	return true
 }
+func validAgentInfo(v any) bool {
+	o, ok := v.(Object)
+	return ok && text(o["name"], 128, false) && boolean(o["modelControl"]) && boolean(o["deliveryControl"])
+}
 func validSnapshot(v any) bool {
 	o, ok := v.(Object)
-	return ok && o["protocolVersion"] == float64(1) && text(o["streamId"], 128, false) && text(o["sessionId"], 256, false) && nullable(o, "sessionName", 256) && text(o["cwd"], 16384, true) && nullable(o, "activeLeafId", 128) && hasModel(o, "model") && thinking(o["thinkingLevel"]) && phase(o["phase"]) && boolean(o["hasPendingMessages"]) && optional(o, "sessionControl", boolean) && optional(o, "inputAssist", boolean) && optional(o,"execution",ValidExecution) && array(o["messages"], 1000, validMessage) && optional(o, "historyTruncated", boolean) && array(o["tools"], 500, validTool) && integer(o["lastEventSeq"], MaxEventSequence)
+	return ok && o["protocolVersion"] == float64(1) && text(o["streamId"], 128, false) && text(o["sessionId"], 256, false) && nullable(o, "sessionName", 256) && text(o["cwd"], 16384, true) && nullable(o, "activeLeafId", 128) && hasModel(o, "model") && thinking(o["thinkingLevel"]) && phase(o["phase"]) && boolean(o["hasPendingMessages"]) && optional(o, "sessionControl", boolean) && optional(o, "inputAssist", boolean) && optional(o, "agent", validAgentInfo) && optional(o,"execution",ValidExecution) && array(o["messages"], 1000, validMessage) && optional(o, "historyTruncated", boolean) && array(o["tools"], 500, validTool) && integer(o["lastEventSeq"], MaxEventSequence)
 }
 func validHost(v any) bool {
 	o, ok := v.(Object)
@@ -255,6 +259,9 @@ func canonicalEvent(o Object) Object {
 func canonicalSnapshot(o Object) Object {
 	out := selectFields(o, "protocolVersion", "streamId", "sessionId", "sessionName", "cwd", "activeLeafId", "thinkingLevel", "phase", "hasPendingMessages", "sessionControl", "inputAssist", "lastEventSeq")
 	out["model"] = canonicalModel(o["model"])
+	if agent, ok := o["agent"].(Object); ok {
+		out["agent"] = selectFields(agent, "name", "modelControl", "deliveryControl")
+	}
 	if state,ok:=o["execution"].(Object);ok{out["execution"]=CanonicalExecution(state)}
 	out["historyTruncated"] = o["historyTruncated"] == true
 	messages := []any{}

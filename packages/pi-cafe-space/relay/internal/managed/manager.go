@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const maxActive = 8
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 var sessionID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
+var agentSessionID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
 
 type Project struct {
 	ID   string `json:"id"`
@@ -36,27 +38,47 @@ type Project struct {
 	Room string `json:"room"`
 	Cwd  string `json:"cwd"`
 }
+type ACPConfig struct {
+	Root   string            `json:"root"`
+	Codex  string            `json:"codex"`
+	Socket string            `json:"socket,omitempty"`
+	Env    map[string]string `json:"env,omitempty"`
+}
+type AgentSession struct {
+	ID        string `json:"-"`
+	Key       string `json:"key"`
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+	Cwd       string `json:"cwd"`
+	Status    string `json:"status"`
+}
 type Config struct {
-	Node      string `json:"node"`
-	CLI       string `json:"cli"`
-	Extension string `json:"extension"`
-	AgentDir  string `json:"agentDir"`
-	StateDir  string `json:"stateDir"`
-	// Exact environment for native Pi, explicitly configured locally. Never sent
-	// to Web or copied from an arbitrary browser payload or another live Pi.
+	Node      string     `json:"node"`
+	CLI       string     `json:"cli"`
+	Extension string     `json:"extension"`
+	AgentDir  string     `json:"agentDir"`
+	StateDir  string     `json:"stateDir"`
+	ACP       *ACPConfig `json:"acp,omitempty"`
+	// Exact environments are explicitly configured locally. Never sent to Web
+	// or copied from an arbitrary browser payload or another live agent.
 	Env      map[string]string `json:"env"`
 	Projects []Project         `json:"projects"`
 }
 type Record struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"projectId"`
-	Cwd       string `json:"cwd"`
-	Room      string `json:"room"`
-	Name      string `json:"name"`
-	Title     string `json:"title,omitempty"`
-	HostID    string `json:"hostId"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
+	ID             string `json:"id"`
+	ProjectID      string `json:"projectId"`
+	Cwd            string `json:"cwd"`
+	Room           string `json:"room"`
+	Name           string `json:"name"`
+	Title          string `json:"title,omitempty"`
+	HostID         string `json:"hostId"`
+	Status         string `json:"status"`
+	Error          string `json:"error,omitempty"`
+	Agent          string `json:"agent,omitempty"`
+	AgentMode      string `json:"agentMode,omitempty"`
+	AgentSessionID string `json:"-"`
+	AgentTargetKey string `json:"-"`
+	AgentAttempted bool   `json:"-"`
 	// Set only on inventory copies from the current owned RPC process.
 	Execution protocol.Object `json:"execution,omitempty"`
 }
@@ -66,26 +88,42 @@ type Request struct {
 	ID        string `json:"id,omitempty"`
 	ProjectID string `json:"projectId,omitempty"`
 	Name      string `json:"name,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	TargetKey string `json:"targetKey,omitempty"`
+}
+type registryRecord struct {
+	Record
+	AgentSessionID string `json:"agentSessionId,omitempty"`
+	AgentTargetKey string `json:"agentTargetKey,omitempty"`
+	AgentAttempted bool   `json:"agentAttempted,omitempty"`
 }
 type process struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	done    chan struct{}
-	release func()
-	ready   bool
-	naming  bool
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	done      chan struct{}
+	release   func()
+	ready     bool
+	naming    bool
+	kind      string
+	agentMode string
 	execution rpcExecution
 }
 type Manager struct {
-	mu                  sync.Mutex
-	cfg                 Config
-	relayURL, hostToken string
-	records             []Record
-	active              map[string]*process
-	closing             bool
-	unlock              func()
-	closeOnce           sync.Once
-	closeDone           chan struct{}
+	mu                       sync.Mutex
+	targetsMu                sync.Mutex
+	queryCancels             map[uint64]context.CancelFunc
+	queryNext                uint64
+	queries                  sync.WaitGroup
+	cfg                      Config
+	acpRunner, targetsRunner string
+	relayURL, hostToken      string
+	records                  []Record
+	active                   map[string]*process
+	targets                  map[string]targetCache
+	closing                  bool
+	unlock                   func()
+	closeOnce                sync.Once
+	closeDone                chan struct{}
 }
 
 func readJSON(path string, value any) error {
@@ -132,9 +170,26 @@ func Load(path, relayURL, token string) (*Manager, error) {
 	if len(cfg.Projects) == 0 || len(cfg.Projects) > 16 || len(cfg.Env) > 64 {
 		return nil, errors.New("invalid managed project/environment limits")
 	}
-	for key, value := range cfg.Env {
-		if strings.ContainsAny(key, "=\x00") || strings.HasPrefix(strings.ToUpper(key), "PI_COLLAB_") || strings.EqualFold(key, "NODE_OPTIONS") || strings.EqualFold(key, "NODE_PATH") || len(value) > 32768 {
-			return nil, errors.New("invalid managed environment")
+	if err := validateEnvironment(cfg.Env); err != nil {
+		return nil, err
+	}
+	if cfg.ACP != nil {
+		if err := validateEnvironment(cfg.ACP.Env); err != nil {
+			return nil, err
+		}
+		if err := validateACPRuntime(cfg.ACP.Root); err != nil {
+			return nil, err
+		}
+		for _, field := range []*string{&cfg.ACP.Root, &cfg.ACP.Codex} {
+			directory := field == &cfg.ACP.Root
+			real, err := canonical(*field, directory)
+			if err != nil {
+				return nil, errors.New("invalid ACP runtime path")
+			}
+			*field = real
+		}
+		if !validACPSocketPath(cfg.ACP.Socket) {
+			return nil, errors.New("invalid ACP socket path")
 		}
 	}
 	for _, field := range []*string{&cfg.Node, &cfg.CLI, &cfg.Extension} {
@@ -167,29 +222,69 @@ func Load(path, relayURL, token string) (*Manager, error) {
 	if err != nil {
 		return nil, errors.New("managed registry is already owned or unavailable")
 	}
+	acpRunner, targetsRunner := "", ""
+	if cfg.ACP != nil {
+		packageRoot := filepath.Dir(filepath.Dir(filepath.Dir(cfg.Extension)))
+		var err error
+		acpRunner, err = canonical(filepath.Join(packageRoot, "scripts", "acp", "space-run.mjs"), false)
+		if err != nil {
+			return nil, errors.New("ACP runtime scripts are unavailable")
+		}
+		targetsRunner, err = canonical(filepath.Join(packageRoot, "scripts", "acp", "targets.mjs"), false)
+		if err != nil {
+			return nil, errors.New("ACP target listing is unavailable")
+		}
+	}
 	loaded := false
 	defer func() {
 		if !loaded {
 			unlock()
 		}
 	}()
-	m := &Manager{cfg: cfg, relayURL: relayURL, hostToken: token, active: map[string]*process{}, unlock: unlock}
-	if err := readJSON(filepath.Join(cfg.StateDir, "registry.json"), &m.records); err != nil && !os.IsNotExist(err) {
+	m := &Manager{cfg: cfg, acpRunner: acpRunner, targetsRunner: targetsRunner, relayURL: relayURL, hostToken: token, active: map[string]*process{}, targets: map[string]targetCache{}, queryCancels: map[uint64]context.CancelFunc{}, unlock: unlock}
+	var stored []registryRecord
+	if err := readJSON(filepath.Join(cfg.StateDir, "registry.json"), &stored); err != nil && !os.IsNotExist(err) {
 		return nil, err
+	}
+	m.records = make([]Record, len(stored))
+	for i, record := range stored {
+		m.records[i] = record.Record
+		m.records[i].AgentSessionID = record.AgentSessionID
+		m.records[i].AgentTargetKey = record.AgentTargetKey
+		m.records[i].AgentAttempted = record.AgentAttempted
 	}
 	if len(m.records) > maxSaved {
 		return nil, errors.New("managed registry capacity exceeded")
 	}
 	ids := map[string]bool{}
+	recovered := false
 	for i, r := range m.records {
+		if r.Agent == "" {
+			r.Agent = "pi"
+		}
 		p := m.project(r.ProjectID, r.Room)
-		if !sessionID.MatchString(r.ID) || p == nil || r.Cwd != p.Cwd || !validName(r.Name) || (r.Title != "" && !validName(r.Title)) || ids[r.ID] || r.HostID != "managed-"+r.ID {
+		if !sessionID.MatchString(r.ID) || p == nil || r.Cwd != p.Cwd || !validName(r.Name) || (r.Title != "" && !validName(r.Title)) || ids[r.ID] || r.HostID != "managed-"+r.ID || (r.Agent != "pi" && r.Agent != "codex-acp") || (r.Agent == "pi" && (r.AgentMode != "" || r.AgentSessionID != "" || r.AgentTargetKey != "" || r.AgentAttempted)) || (r.Agent == "codex-acp" && ((r.AgentMode != "new" && r.AgentMode != "attach") || (r.AgentMode == "attach" && (!agentSessionID.MatchString(r.AgentSessionID) || !targetKeyPattern.MatchString(r.AgentTargetKey) || r.AgentAttempted)) || (r.AgentMode == "new" && (r.AgentTargetKey != "" || r.AgentSessionID != "" && (!agentSessionID.MatchString(r.AgentSessionID) || !r.AgentAttempted))))) {
 			return nil, errors.New("invalid managed registry record")
 		}
 		ids[r.ID] = true
+		m.records[i].Agent = r.Agent
 		m.records[i].Status = "stopped"
 		m.records[i].Error = ""
+		if r.Agent == "codex-acp" && r.AgentMode == "new" && r.AgentAttempted && r.AgentSessionID == "" {
+			if session, err := readACPState(agentStateDirectory(cfg.StateDir, r.ID)); err == nil {
+				m.records[i].AgentSessionID = session
+				recovered = true
+			} else {
+				m.records[i].Status = "failed"
+				m.records[i].Error = "ACP_SESSION_UNKNOWN"
+			}
+		}
 		m.records[i].Execution = nil
+	}
+	if recovered {
+		if err := m.save(); err != nil {
+			return nil, errors.New("ACP session recovery could not be persisted")
+		}
 	}
 	loaded = true
 	return m, nil
@@ -215,8 +310,11 @@ func (m *Manager) project(id, room string) *Project {
 	return nil
 }
 func (m *Manager) save() error {
-	records:=append([]Record(nil),m.records...)
-	for i:=range records{records[i].Execution=nil}
+	records := make([]registryRecord, len(m.records))
+	for i, record := range m.records {
+		record.Execution = nil
+		records[i] = registryRecord{Record: record, AgentSessionID: record.AgentSessionID, AgentTargetKey: record.AgentTargetKey, AgentAttempted: record.AgentAttempted}
+	}
 	b, err := json.Marshal(records)
 	if err != nil {
 		return err
@@ -249,17 +347,63 @@ func (m *Manager) inventory(room string) any {
 	}
 	for _, r := range m.records {
 		if r.Room == room {
-			r.Execution=nil
-			if p:=m.active[r.ID];p!=nil&&p.ready&&r.Status=="ready"{r.Execution=p.execution.snapshot()}
+			r.Execution = nil
+			if p := m.active[r.ID]; p != nil && p.ready && r.Status == "ready" && p.kind != "acp" {
+				r.Execution = p.execution.snapshot()
+			}
 			records = append(records, r)
 		}
 	}
-	return map[string]any{"projects": projects, "sessions": records, "maxActive": maxActive}
+	agents := []string{"pi"}
+	if m.cfg.ACP != nil {
+		agents = append(agents, "codex-acp")
+	}
+	return map[string]any{"projects": projects, "sessions": records, "agents": agents, "acpAttach": m.cfg.ACP != nil && m.cfg.ACP.Socket != "" && runtime.GOOS == "windows", "maxActive": maxActive}
 }
 
 // Execute never waits for child readiness under the mutex. Status is explicit;
 // Web waits for both the ready process AND its authoritative Relay snapshot.
 func (m *Manager) Execute(q Request) (any, string) {
+	targetID := ""
+	if q.Operation == "threads" {
+		if q.ID != "" || q.ProjectID != "" || q.Name != "" || q.Agent != "" || q.TargetKey != "" {
+			return nil, "INVALID_REQUEST"
+		}
+		return m.listTargets(q.Room)
+	}
+	if q.TargetKey != "" {
+		if q.Operation != "create" || q.Agent != "codex-acp" || !sessionID.MatchString(q.ID) || !targetKeyPattern.MatchString(q.TargetKey) {
+			return nil, "INVALID_REQUEST"
+		}
+		m.mu.Lock()
+		for _, existing := range m.records {
+			if existing.ID == q.ID {
+				m.mu.Unlock()
+				if existing.Room == q.Room && existing.ProjectID == q.ProjectID && existing.Name == strings.TrimSpace(q.Name) && existing.Agent == "codex-acp" && existing.AgentMode == "attach" && existing.AgentTargetKey == q.TargetKey {
+					return existing, ""
+				}
+				return nil, "REQUEST_CONFLICT"
+			}
+		}
+		m.mu.Unlock()
+		data, code := m.listTargets(q.Room)
+		if code != "" {
+			return nil, code
+		}
+		threads := data.(map[string]any)["threads"].([]AgentSession)
+		for _, target := range threads {
+			if target.Key == q.TargetKey && target.ProjectID == q.ProjectID {
+				targetID = target.ID
+				if target.Status != "idle" {
+					return nil, "SESSION_BUSY"
+				}
+				break
+			}
+		}
+		if targetID == "" {
+			return nil, "SESSION_NOT_FOUND"
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closing {
@@ -269,7 +413,7 @@ func (m *Manager) Execute(q Request) (any, string) {
 		return nil, "INVALID_REQUEST"
 	}
 	if q.Operation == "list" {
-		if q.ID != "" || q.ProjectID != "" || q.Name != "" {
+		if q.ID != "" || q.ProjectID != "" || q.Name != "" || q.Agent != "" || q.TargetKey != "" {
 			return nil, "INVALID_REQUEST"
 		}
 		return m.inventory(q.Room), ""
@@ -285,20 +429,56 @@ func (m *Manager) Execute(q Request) (any, string) {
 		}
 	}
 	if q.Operation == "create" {
+		agent := q.Agent
+		if agent == "" {
+			agent = "pi"
+		}
+		if agent != "pi" && agent != "codex-acp" {
+			return nil, "INVALID_REQUEST"
+		}
+		if agent == "pi" && q.TargetKey != "" {
+			return nil, "INVALID_REQUEST"
+		}
+		if agent == "codex-acp" && m.cfg.ACP == nil {
+			return nil, "AGENT_UNAVAILABLE"
+		}
+		mode := ""
+		if agent == "codex-acp" {
+			mode = "new"
+			if q.TargetKey != "" {
+				if !targetKeyPattern.MatchString(q.TargetKey) || targetID == "" {
+					return nil, "INVALID_REQUEST"
+				}
+				if m.cfg.ACP.Socket == "" {
+					return nil, "ACP_ATTACH_UNAVAILABLE"
+				}
+				mode = "attach"
+			}
+		}
+		if mode == "attach" && runtime.GOOS != "windows" {
+			return nil, "ACP_PLATFORM_UNSUPPORTED"
+		}
 		if !validName(q.Name) || m.project(q.ProjectID, q.Room) == nil {
 			return nil, "PROJECT_UNAVAILABLE"
 		}
 		if index >= 0 {
 			r := m.records[index]
-			if r.Room != q.Room || r.ProjectID != q.ProjectID || r.Name != strings.TrimSpace(q.Name) {
+			if r.Room != q.Room || r.ProjectID != q.ProjectID || r.Name != strings.TrimSpace(q.Name) || r.Agent != agent || r.AgentMode != mode || (mode == "attach" && (r.AgentSessionID != targetID || r.AgentTargetKey != q.TargetKey)) {
 				return nil, "REQUEST_CONFLICT"
 			}
 			return r, ""
 		}
+		if mode == "attach" {
+			for _, existing := range m.records {
+				if existing.Agent == "codex-acp" && existing.AgentMode == "attach" && existing.AgentSessionID == targetID {
+					return nil, "AGENT_TARGET_BUSY"
+				}
+			}
+		}
 		if len(m.records) >= maxSaved || len(m.active) >= maxActive {
 			return nil, "MANAGED_LIMIT"
 		}
-		r := Record{ID: q.ID, ProjectID: q.ProjectID, Cwd: m.project(q.ProjectID, q.Room).Cwd, Room: q.Room, Name: strings.TrimSpace(q.Name), HostID: "managed-" + q.ID, Status: "stopped"}
+		r := Record{ID: q.ID, ProjectID: q.ProjectID, Cwd: m.project(q.ProjectID, q.Room).Cwd, Room: q.Room, Name: strings.TrimSpace(q.Name), HostID: "managed-" + q.ID, Status: "stopped", Agent: agent, AgentMode: mode, AgentSessionID: targetID, AgentTargetKey: q.TargetKey}
 		m.records = append(m.records, r)
 		index = len(m.records) - 1
 		// Persist the idempotency identity before any child can start. A lost HTTP
@@ -308,7 +488,7 @@ func (m *Manager) Execute(q Request) (any, string) {
 			return nil, "REGISTRY_UNAVAILABLE"
 		}
 	} else if q.Operation == "open" || q.Operation == "close" {
-		if q.ProjectID != "" || q.Name != "" {
+		if q.ProjectID != "" || q.Name != "" || q.Agent != "" || q.TargetKey != "" {
 			return nil, "INVALID_REQUEST"
 		}
 		if index < 0 || m.records[index].Room != q.Room {
@@ -327,12 +507,20 @@ func (m *Manager) Execute(q Request) (any, string) {
 	if p := m.active[q.ID]; p != nil {
 		return *r, ""
 	}
+	if r.Agent == "codex-acp" && r.AgentMode == "new" && r.AgentAttempted && r.AgentSessionID == "" {
+		return nil, "ACP_SESSION_UNKNOWN"
+	}
 	if len(m.active) >= maxActive {
 		return nil, "MANAGED_LIMIT"
 	}
 	if err := m.start(index, q.Operation == "create"); err != nil {
 		r.Status = "failed"
 		r.Error = "MANAGED_START_FAILED"
+		switch err.Error() {
+		case "ACP_SESSION_UNKNOWN", "ACP_PLATFORM_UNSUPPORTED", "ACP_ATTACH_UNAVAILABLE":
+			r.Error = err.Error()
+		}
+		_ = m.save()
 		return *r, ""
 	}
 	return *r, ""
@@ -346,7 +534,11 @@ func (m *Manager) stop(p *process, id string) {
 			m.records[i].Status = "stopping"
 		}
 	}
-	io.WriteString(p.stdin, "{\"id\":\"managed-close\",\"type\":\"get_state\"}\n")
+	if p.kind == "acp" {
+		io.WriteString(p.stdin, "{\"type\":\"stop\"}\n")
+	} else {
+		io.WriteString(p.stdin, "{\"id\":\"managed-close\",\"type\":\"get_state\"}\n")
+	}
 	go func() {
 		select {
 		case <-p.done:
@@ -363,6 +555,9 @@ func (m *Manager) stop(p *process, id string) {
 }
 func (m *Manager) start(index int, fresh bool) error {
 	r := &m.records[index]
+	if r.Agent == "codex-acp" {
+		return m.startACP(index, fresh)
+	}
 	project := m.project(r.ProjectID, r.Room)
 	// The configured, canonical directory must not have been replaced by a link.
 	cwd, err := canonical(project.Cwd, true)
@@ -464,6 +659,14 @@ func (m *Manager) read(p *process, id string, stdout io.Reader) {
 			skipping = false
 			continue
 		}
+		if p.kind == "acp" {
+			var event acpReadyEvent
+			if json.Unmarshal(line, &event) == nil && event.Type == "cafe_space_ready" {
+				m.markACPReady(p, id, event)
+			}
+			line = line[:0]
+			continue
+		}
 		var event rpcEvent
 		parseErr := json.Unmarshal(line, &event)
 		line = line[:0]
@@ -471,7 +674,9 @@ func (m *Manager) read(p *process, id string, stdout io.Reader) {
 			continue
 		}
 		m.mu.Lock()
-		if m.active[id]==p { p.execution.observe(event) }
+		if m.active[id] == p {
+			p.execution.observe(event)
+		}
 		m.mu.Unlock()
 		if event.Type == "response" && (event.ID == "managed-ready" || event.ID == "managed-close") {
 			m.mu.Lock()
@@ -554,12 +759,31 @@ func (m *Manager) read(p *process, id string, stdout io.Reader) {
 	delete(m.active, id)
 	for i := range m.records {
 		r := &m.records[i]
-		if r.ID == id && r.Status != "failed" {
+		if r.ID != id {
+			continue
+		}
+		if p.kind == "acp" && r.AgentMode == "new" && r.AgentSessionID == "" {
+			if session := m.acpSessionID(id); session != "" {
+				r.AgentSessionID = session
+				if saveErr := m.save(); saveErr != nil {
+					r.Error = "REGISTRY_UNAVAILABLE"
+				}
+			} else {
+				r.Error = "ACP_SESSION_UNKNOWN"
+			}
+		}
+		if r.Status != "failed" {
 			if r.Status != "stopping" && (err != nil || !p.ready) {
 				r.Status = "failed"
 				r.Error = "MANAGED_PROCESS_EXITED"
 			} else {
 				r.Status = "stopped"
+			}
+		}
+		if p.kind == "acp" && r.AgentMode == "new" && r.AgentSessionID == "" {
+			r.Status = "failed"
+			if r.Error == "" {
+				r.Error = "ACP_SESSION_UNKNOWN"
 			}
 		}
 	}
@@ -578,18 +802,31 @@ func (m *Manager) CloseContext(ctx context.Context) error {
 		m.closeDone = make(chan struct{})
 		go func() { defer close(m.closeDone); m.closeAll() }()
 	})
-	select { case <-m.closeDone: return nil; case <-ctx.Done(): return ctx.Err() }
+	select {
+	case <-m.closeDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 func (m *Manager) closeAll() {
-	defer func() { if m.unlock != nil { m.unlock() } }()
+	defer func() {
+		if m.unlock != nil {
+			m.unlock()
+		}
+	}()
 	m.mu.Lock()
 	m.closing = true
+	for _, cancel := range m.queryCancels {
+		cancel()
+	}
 	processes := []*process{}
 	for id, p := range m.active {
 		processes = append(processes, p)
 		m.stop(p, id)
 	}
 	m.mu.Unlock()
+	m.queries.Wait()
 	deadline := time.After(8 * time.Second)
 	for _, p := range processes {
 		select {

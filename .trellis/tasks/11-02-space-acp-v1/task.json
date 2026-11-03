@@ -1,0 +1,33 @@
+{
+  "id": "space-acp-v1",
+  "name": "space-acp-v1",
+  "title": "Space ACP-first 接入：Codex 双模式与产品集成",
+  "description": "在 Codex 新建与共享挂接证据基础上接入 Space 现有授权通道和网页；保留 Pi 原生，未验收能力拒绝而非假成功。",
+  "status": "in_progress",
+  "dev_type": "backend",
+  "scope": "pi-cafe-space",
+  "package": "packages/pi-cafe-space",
+  "priority": "P1",
+  "creator": "dp",
+  "assignee": "dp",
+  "createdAt": "2026-11-02",
+  "completedAt": null,
+  "branch": "review/cafe-acp-managed-sessions",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "packages/pi-cafe-space/scripts/acp/adapter.mjs",
+    "packages/pi-cafe-space/scripts/acp/probe.mjs"
+  ],
+  "notes": "文档任务模式：使用 Trellis 0.6.17 task.json 格式；不安装项目 hooks、不重载 Pi。",
+  "meta": {
+    "livePromptBudget": 2,
+    "livePromptAttempts": 2,
+    "phase": "shared-attach-and-same-turn-verified; managed-acp-source-integrated-and-offline-candidate-audited; production-gateway-browser-terminal-and-linux-runtime-acceptance-pending"
+  }
+}

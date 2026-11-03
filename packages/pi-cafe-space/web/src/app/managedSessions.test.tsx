@@ -17,10 +17,11 @@ afterEach(()=>{vi.resetAllMocks();window.history.replaceState(null,'','/');});
 async function mount(withHost=true){
   window.history.replaceState(null,'','/#/rooms/managed-test');
   const socket=new Socket();const sessions:ManagedSession[]=[];
-  const inventory=()=>({projects:[{id:'project',name:'Allowed project',room:'managed-test',cwd:'C:/synthetic'}],sessions:[...sessions],maxActive:8});
+  const inventory=()=>({projects:[{id:'project',name:'Allowed project',room:'managed-test',cwd:'C:/synthetic'}],sessions:[...sessions],agents:['pi'],acpAttach:false,maxActive:8});
   vi.mocked(managedRequest).mockImplementation(async(_token,q)=>{
     if(q.operation==='list')return inventory();
-    if(q.operation==='create'){const record:ManagedSession={id:q.id,hostId:'managed-'+q.id,room:q.room,projectId:q.projectId,name:q.name,status:'starting'};sessions.push(record);return record;}
+    if(q.operation==='threads')return {threads:[],truncated:false};
+    if(q.operation==='create'){const record:ManagedSession={id:q.id,hostId:'managed-'+q.id,room:q.room,projectId:q.projectId,name:q.name,status:'starting',agent:q.agent??'pi',...(q.agent?{agentMode:q.targetKey?'attach':'new'}:{})};sessions.push(record);return record;}
     const record=sessions.find(s=>s.id===q.id)!;record.status=q.operation==='close'?'stopped':'ready';return record;
   });
   const owner=new AppOwner({storage:createRelayStorage(()=>{throw Error('isolated');}),client:new RelayClient({origin:'http://localhost',socketFactory:()=>socket}),http:{config:async()=>({protocolVersion:1,wsPath:'/ws',defaultRoom:'main',managedSessions:true})}});

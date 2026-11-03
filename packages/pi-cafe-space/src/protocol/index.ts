@@ -83,6 +83,8 @@ export interface SessionSnapshot {
   sessionControl?: boolean;
   /** Slash command discovery/execution and bounded project-file references. */
   inputAssist?: boolean;
+  /** Agent-neutral display capabilities; never an authorization signal. */
+  agent?: { name: string; modelControl: boolean; deliveryControl: boolean };
   messages: TranscriptMessage[];
   historyTruncated: boolean;
   tools: ToolExecution[];
@@ -579,6 +581,10 @@ function isToolExecution(value: unknown): value is ToolExecution {
     (value.parentMessageId === undefined || isString(value.parentMessageId, 128));
 }
 
+function isAgentInfo(value: unknown): value is NonNullable<SessionSnapshot["agent"]> {
+  return isRecord(value) && isString(value.name, 128) && typeof value.modelControl === "boolean" && typeof value.deliveryControl === "boolean";
+}
+
 export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
   if (!isRecord(value)) return false;
   return value.protocolVersion === PROTOCOL_VERSION && isString(value.streamId, 128) &&
@@ -588,6 +594,7 @@ export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
     (value.phase === "idle" || value.phase === "running" || value.phase === "waiting_local_ui") &&
     (value.sessionControl === undefined || typeof value.sessionControl === "boolean") &&
     (value.inputAssist === undefined || typeof value.inputAssist === "boolean") &&
+    (value.agent === undefined || isAgentInfo(value.agent)) &&
     (value.execution === undefined || isExecutionState(value.execution)) &&
     typeof value.hasPendingMessages === "boolean" && Array.isArray(value.messages) && value.messages.length <= 1_000 &&
     value.messages.every(isTranscriptMessage) && (value.historyTruncated === undefined || typeof value.historyTruncated === "boolean") && Array.isArray(value.tools) && value.tools.length <= 500 &&
@@ -1041,6 +1048,7 @@ function canonicalSnapshot(
     tools: normalizedTools,
     ...(snapshot.sessionControl === undefined ? {} : { sessionControl: snapshot.sessionControl }),
     ...(snapshot.inputAssist === undefined ? {} : { inputAssist: snapshot.inputAssist }),
+    ...(snapshot.agent === undefined ? {} : { agent: { name: snapshot.agent.name, modelControl: snapshot.agent.modelControl, deliveryControl: snapshot.agent.deliveryControl } }),
     lastEventSeq,
   };
 }

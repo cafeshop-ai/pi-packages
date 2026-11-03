@@ -18,6 +18,7 @@ export interface ComposerProps {
   context?: ReactNode;
   navigation?: ReactNode;
   inputAssist?: boolean;
+  deliveryControl?: boolean;
   readCompletions?: CompletionRead;
   localCommands?: CompletionItem[];
   send: (text: string, delivery?: Delivery, files?: string[]) => Promise<GatewayResult>;
@@ -30,7 +31,7 @@ function boundedText(value: string) {
   if (end < value.length && end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1]!)) end--;
   return value.slice(0, end);
 }
-export function Composer({ scopeId, enabled, phase, readOnly = false, send, abort, context, navigation, inputAssist = false, readCompletions, localCommands = [], onApprovalRequired }: ComposerProps) {
+export function Composer({ scopeId, enabled, phase, readOnly = false, send, abort, context, navigation, inputAssist = false, deliveryControl = true, readCompletions, localCommands = [], onApprovalRequired }: ComposerProps) {
   const { t, i18n } = useTranslation(); const hintId = useId();
   const zh = i18n.language.startsWith('zh');
   const [draft, update] = useImmer(initial);
@@ -63,7 +64,7 @@ export function Composer({ scopeId, enabled, phase, readOnly = false, send, abor
   const running = phase === 'running' || phase === 'waiting_local_ui';
   const command = draft.text.trimStart().startsWith('/');
   const files = command ? [] : referencedFiles(draft.text);
-  const canSend = enabled && !readOnly && !draft.sending && !!draft.text.trim() && files.length <= 8 && (!running || !!draft.delivery && !command);
+  const canSend = enabled && !readOnly && !draft.sending && !!draft.text.trim() && files.length <= 8 && (!running || deliveryControl && !!draft.delivery && !command);
   const execute = async (operation: 'send' | 'abort') => {
     if (!enabled || readOnly) return;
     const latch = operation === 'send' ? sending : aborting;
@@ -118,7 +119,7 @@ export function Composer({ scopeId, enabled, phase, readOnly = false, send, abor
     </Field>
     <div className={styles.controls}>
       {context && <div className={styles.context}>{context}</div>}
-      {running && !!draft.text.trim() && <div className={styles.delivery}><ChoiceSelect labelHidden label={t('delivery')} value={draft.delivery} disabled={!enabled || draft.sending}
+      {running && deliveryControl && !!draft.text.trim() && <div className={styles.delivery}><ChoiceSelect labelHidden label={t('delivery')} value={draft.delivery} disabled={!enabled || draft.sending}
         items={[{ value: '', label: t('chooseDelivery') }, { value: 'steer', label: t('steer') }, { value: 'followUp', label: t('followUp') }]}
         onValueChange={value => { if (value === '' || value === 'steer' || value === 'followUp') update(d => { d.delivery = value; }); }} /></div>}
       <div className={styles.actions}>{running && <Button variant="quiet" aria-label={t('abort')} loading={draft.aborting} disabled={!enabled || !running || draft.aborting} onClick={() => void execute('abort')}><Icon name="stop" /><span className={styles.actionLabel}>{t('abort')}</span></Button>}

@@ -21,7 +21,7 @@ try{
  if(output.length!==1 || !output[0].files?.length || !/^[a-zA-Z0-9_.-]+\.tgz$/.test(output[0].filename))throw Error('Unexpected npm pack result');
  if(JSON.stringify(output[0].files.map(file=>file.path).sort())!==JSON.stringify(releaseFiles(Object.keys(metadata.platforms))))throw Error('Packed file set does not match the exact release allowlist');
  for(const file of output[0].files){
-  if(!/^(?:(?:package\.json|README\.md|INSTALL\.md|AI_INSTALL\.md|LICENSE|THIRD-PARTY-NOTICES\.txt)$|(?:dist|scripts)\/)/.test(file.path) || /[\\:\u0000-\u001f]/.test(file.path) || file.path.split('/').some(part=>!part||part==='.'||part==='..') || /(^|\/)(\.env|\.runtime|\.runtime-go|\.refactor|node_modules|candidate-overrides|refactor)(\/|$)|\.map$|\.test\.|\.pid$|\.log$/.test(file.path))throw Error('Unexpected packed path');
+  if(!/^(?:(?:package\.json|README\.md|INSTALL\.md|AI_INSTALL\.md|MANAGED_SESSIONS\.md|LICENSE|THIRD-PARTY-NOTICES\.txt)$|(?:dist|scripts)\/)/.test(file.path) || /[\\:\u0000-\u001f]/.test(file.path) || file.path.split('/').some(part=>!part||part==='.'||part==='..') || /(^|\/)(\.env|\.runtime|\.runtime-go|\.refactor|node_modules|candidate-overrides|refactor)(\/|$)|\.map$|\.test\.|\.pid$|\.log$/.test(file.path))throw Error('Unexpected packed path');
   if(/\.(js|mjs|json|ps1|md|txt)$/.test(file.path)){
    const text=await readFile(join(target,file.path),'utf8');if(/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}/.test(text))throw Error('Potential credential material in candidate');
   }

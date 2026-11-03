@@ -13,12 +13,13 @@ export function ModelControls({ owner, readOnly, expanded = false }: { owner: Ap
   const { t, i18n } = useTranslation(); const zh = i18n.language.startsWith('zh'); const state = useCollabStore(owner.store, s => s);
   const scope = owner.store.scope(); const host = state.selectedHostId ? state.hosts.get(state.selectedHostId) : undefined;
   const snapshot = host?.snapshot;
+  const fixedAgent = snapshot?.agent?.modelControl === false;
   const thinkingDisabled = snapshot?.model?.reasoning === false;
   const reportedLevels = snapshot?.model?.thinkingLevels;
   const availableLevels = thinkingDisabled ? ['off'] : reportedLevels ?? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const currentLevel = snapshot?.thinkingLevel ?? 'off';
   const choices = availableLevels.includes(currentLevel) ? availableLevels : [currentLevel, ...availableLevels];
-  const enabled = !readOnly && state.connection.status === 'authenticated' && !!scope && !!host && !host.stale && host.info.connected && host.info.ready !== false;
+  const enabled = !fixedAgent && !readOnly && state.connection.status === 'authenticated' && !!scope && !!host && !host.stale && host.info.connected && host.info.ready !== false;
   const [provider, setProvider] = useState(snapshot?.model?.provider ?? ''); const [model, setModel] = useState(snapshot?.model?.id ?? '');
   const [resultCode, setResultCode] = useState('');
   const [busy, setBusy] = useState(false); const latch = useRef(false); const active = useRef(false);
@@ -35,8 +36,9 @@ export function ModelControls({ owner, readOnly, expanded = false }: { owner: Ap
     <ChoiceSelect label={t('thinking')} value={snapshot?.thinkingLevel ?? 'off'} disabled={!enabled || busy || thinkingDisabled || availableLevels.length < 2}
       items={choices.map(level => ({ value: level, label: level }))}
       onValueChange={level => { if (isThinkingLevel(level)) void run({ name: 'set_thinking', level }); }} />
-    {thinkingDisabled && <p role="status">{zh ? '当前 Pi 模型配置禁用了思考（reasoning: false），不能切换强度。请在本机核对模型配置后重新加载；这不代表该系列模型本身不支持思考。' : 'This Pi model configuration disables reasoning (reasoning: false). Review the local model configuration and reload. This is not a claim about the model family’s capabilities.'}</p>}
-    {!thinkingDisabled && !reportedLevels && <p>{zh ? '当前 Pi 尚未上报支持的等级；实际生效值以 Pi 回传为准。更新扩展后可在空闲时 /reload。' : 'This Pi has not reported supported levels. The native Pi response determines the effective value; reload the updated extension when idle.'}</p>}
+    {!fixedAgent && thinkingDisabled && <p role="status">{zh ? '当前 Pi 模型配置禁用了思考（reasoning: false），不能切换强度。请在本机核对模型配置后重新加载；这不代表该系列模型本身不支持思考。' : 'This Pi model configuration disables reasoning (reasoning: false). Review the local model configuration and reload. This is not a claim about the model family’s capabilities.'}</p>}
+    {fixedAgent && <p role="status">{zh ? '此 Agent 的配置由本机管理；网页不会覆盖模型、推理强度或权限。' : 'This agent is configured locally. Web controls do not override its model, reasoning or permissions.'}</p>}
+    {!fixedAgent && !thinkingDisabled && !reportedLevels && <p>{zh ? '当前 Pi 尚未上报支持的等级；实际生效值以 Pi 回传为准。更新扩展后可在空闲时 /reload。' : 'This Pi has not reported supported levels. The native Pi response determines the effective value; reload the updated extension when idle.'}</p>}
     {resultCode && <p role="alert">{resultCode === 'THINKING_UNSUPPORTED' ? (zh ? '当前 Pi 配置未启用此模型的思考能力，未修改强度。' : 'Reasoning is disabled in this Pi model configuration. Nothing was changed.') : resultCode === 'THINKING_LEVEL_UNAVAILABLE' ? (zh ? '当前模型不接受这个等级，请选择 Pi 上报的支持等级。' : 'This level is not supported by the configured model.') : resultCode === 'THINKING_NOT_APPLIED' ? (zh ? 'Pi 未采用所选等级，已同步实际值。请检查本机模型能力配置。' : 'Pi did not apply the requested level. Its actual value is synchronized; review the model capabilities.') : resultCode === 'CONTROL_APPROVAL_REQUIRED' || resultCode === 'CONTROL_REQUIRED' ? (zh ? '尚未获得控制权，思考强度未修改。请先向房主申请。' : 'Control is required. The setting was not changed; request approval first.') : resultCode === 'RESULT_UNKNOWN' ? (zh ? '修改结果未确认，请以同步后的思考强度为准。' : 'The result is unconfirmed. Check the synchronized value.') : t(`errors.${resultCode}`, { defaultValue: t('commandRejected') })}</p>}
     <form onSubmit={event => { event.preventDefault(); void run({ name: 'set_model', provider, modelId: model }); }}><FieldGroup>
       <Field data-disabled={!enabled || busy}><FieldLabel htmlFor={`${id}-provider`}>{t('provider')}</FieldLabel><Input id={`${id}-provider`} value={provider} maxLength={128} disabled={!enabled || busy} onChange={event => setProvider(event.target.value.slice(0, 128))} /></Field>
