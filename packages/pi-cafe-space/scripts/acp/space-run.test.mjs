@@ -12,10 +12,21 @@ test('approved cwd matching is case-insensitive only on Windows', () => {
 
 test('event buffer keeps bounded load events in order and streams after attach', () => {
  const buffer=createEventBuffer({maxEvents:2,maxBytes:1024});const seen=[];
- buffer.push({text:'one'});buffer.push({text:'two'});assert.throws(()=>buffer.push({text:'three'}),/limit/);
- buffer.attach({event:event=>seen.push(event.text)});assert.deepEqual(seen,['one','two']);
- buffer.push({text:'live'});assert.deepEqual(seen,['one','two','live']);
+ buffer.push({text:'one'});buffer.push({text:'two'});buffer.push({text:'three'});
+ buffer.attach({event:event=>seen.push(event.text)});assert.deepEqual(seen,['two','three']);
+ buffer.push({text:'live'});assert.deepEqual(seen,['two','three','live']);
  assert.throws(()=>buffer.attach({event(){}}),/already attached/);
+});
+
+test('load replay evicts by bytes and tolerates single oversized events', () => {
+ const buffer=createEventBuffer({maxEvents:512,maxBytes:100});const seen=[];
+ for(let i=0;i<700;i++) buffer.push({text:String(i)});
+ buffer.push({text:'x'.repeat(200)});
+ buffer.push({text:'tail'});
+ buffer.attach({event:event=>seen.push(event)});
+ assert.equal(seen.at(-1).text,'tail');
+ assert(Buffer.byteLength(seen.map(event=>JSON.stringify(event)).join(''))<=100);
+ assert(!seen.some(event=>event.text.length>100));
 });
 
 test('explicit local host config validates budgets, paths, borrowed identity and unknown options', async () => {

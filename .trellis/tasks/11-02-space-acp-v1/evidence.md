@@ -1,6 +1,16 @@
 # 验证记录 — 2026-11-02
 
-## Review handoff — 2026-11-03 (current status)
+## ACP release-blocker fixes — 2026-11-03 (current status)
+
+- Local user authorized fixing F1/F2/F3, offline validation and updating the local gateway only after confirming it has no running managed work. Real ACP prompts remain disallowed in this phase; the user will test manually. Room-listener model turns are separately authorized.
+- F1: omit the Pi default agent only in the persisted copy. A strict pre-ACP-shaped JSON reader accepts the saved registry, and reload/save preserves Pi defaults. ACP identities remain private and durable; rollback of registries containing ACP records still needs an explicit compatible backup (documented in MANAGED_SESSIONS.md).
+- F2: bounded replay buffer evicts older events and skips oversized events instead of killing restore. AcpSpaceHost already marks historyTruncated=true. Official SDK + synthetic child + actual loopback host channel restores 700 updates and a 600 KB tool event, publishes the bounded tail and completes an offline prompt. No real Codex executable or provider was invoked.
+- F3: managed prompt requests explicitly disable only the prompt deadline, propagated through both new/restore and shared launchers. Lifecycle request deadlines and unknown-outcome/cancel semantics remain. Prototype prompts keep their bounded default.
+- Packaging: source prepack now accepts both npm 10 run-script and npm 11 run; raw pack/publish remain rejected. Existing refactor:pack alias is the same verified packer, not a bypass.
+- Fresh local checks: ACP 33/33 (official SDK fixtures enabled); source 667 passed / 1 unrelated skip; source TypeScript, Go ./... and Go vet passed. Focused npm lifecycle gate test passed. Full candidate build/pack, installation and independent review are still pending at this checkpoint.
+- Cloud deployment is separately coordinated at exact b1d24fea439f4c9aa759e22dbea931a6aac3a708; source push does not mean deployment.
+
+## Review handoff — 2026-11-03 (historical checkpoint)
 
 - Preparing branch `review/cafe-acp-managed-sessions` for independent frontend and architecture review; production deployment must follow review and resolution of blocking findings. Historical stage statements below are not the current installation status.
 - The previously audited archive `7f52681e8a46181c05aa710b5798fc31898a30a4add6dd505577b72620da996d` was installed locally with explicit user authorization. Pi package and collaboration entry paths now point to that build. No automatic Pi reload or gateway restart was performed; identity, credentials and model files were preserved. This is not a production deployment or full ACP acceptance.

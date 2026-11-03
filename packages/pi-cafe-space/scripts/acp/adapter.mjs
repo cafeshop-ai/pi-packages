@@ -4,21 +4,23 @@ export class AcpAdapter {
   #onEvent;
   #budget;
   #timeoutMs;
+  #promptTimeoutMs;
   #state = 'new';
   #sessionId;
   #info;
   #sharedTransport;
   #attempts = 0;
 
-  constructor({ sdk, transport, onEvent = () => {}, promptBudget = 0, timeoutMs = 600_000, sharedTransport = false, onDisconnect = () => {} }) {
+  constructor({ sdk, transport, onEvent = () => {}, promptBudget = 0, timeoutMs = 600_000, promptTimeoutMs = timeoutMs, sharedTransport = false, onDisconnect = () => {} }) {
     if (promptBudget !== null && (!Number.isInteger(promptBudget) || promptBudget < 0 || promptBudget > 2)) {
       throw new Error('Prompt budget must be null or an integer from 0 to 2');
     }
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('Invalid timeout');
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || (promptTimeoutMs !== null && (!Number.isInteger(promptTimeoutMs) || promptTimeoutMs < 1))) throw new Error('Invalid timeout');
     this.#sharedTransport = sharedTransport;
     this.#onEvent = onEvent;
     this.#budget = promptBudget;
     this.#timeoutMs = timeoutMs;
+    this.#promptTimeoutMs = promptTimeoutMs;
     this.#connection = sdk.client({ name: 'cafe-space-acp-prototype' })
       .onRequest('session/request_permission', () => ({ outcome: { outcome: 'cancelled' } }))
       .onNotification('session/update', ({ params }) => {
@@ -53,8 +55,9 @@ export class AcpAdapter {
 
   async #request(method, params) {
     try {
+      const timeoutMs = method === 'session/prompt' ? this.#promptTimeoutMs : this.#timeoutMs;
       return await this.#connection.agent.request(method, params, {
-        signal: AbortSignal.timeout(this.#timeoutMs),
+        signal: timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       // A lost response is not evidence the agent rejected the operation. Never retry.

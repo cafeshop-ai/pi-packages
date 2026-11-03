@@ -313,6 +313,10 @@ func (m *Manager) save() error {
 	records := make([]registryRecord, len(m.records))
 	for i, record := range m.records {
 		record.Execution = nil
+		// Omit the Pi default so pre-ACP registries remain readable on rollback.
+		if record.Agent == "pi" {
+			record.Agent = ""
+		}
 		records[i] = registryRecord{Record: record, AgentSessionID: record.AgentSessionID, AgentTargetKey: record.AgentTargetKey, AgentAttempted: record.AgentAttempted}
 	}
 	b, err := json.Marshal(records)

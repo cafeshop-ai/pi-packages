@@ -20,7 +20,7 @@ export async function reserveLiveAttempt(directory) {
   } finally { await file.close(); }
 }
 
-export async function launchAgent({ sdk, entry, codex, cwd, onEvent, promptBudget, timeoutMs, shared, onDisconnect, parentOwnsTree = false }) {
+export async function launchAgent({ sdk, entry, codex, cwd, onEvent, promptBudget, timeoutMs, promptTimeoutMs, shared, onDisconnect, parentOwnsTree = false }) {
   assert(isAbsolute(entry) && isAbsolute(codex) && isAbsolute(cwd), 'Use absolute executable and work paths');
   const env = { ...process.env };
   // No implicit login, provider override or adapter logs containing credentials/transcripts.
@@ -80,7 +80,7 @@ export async function launchAgent({ sdk, entry, codex, cwd, onEvent, promptBudge
   try {
     adapter = new AcpAdapter({
       sdk, transport: sdk.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout), { maxMessageBytes: 1024 * 1024 }),
-      onEvent, promptBudget, timeoutMs, sharedTransport: !!shared, onDisconnect,
+      onEvent, promptBudget, timeoutMs, promptTimeoutMs, sharedTransport: !!shared, onDisconnect,
     });
     return handle;
   } catch (error) {

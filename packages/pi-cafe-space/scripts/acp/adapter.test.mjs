@@ -10,7 +10,7 @@ function fixture({ request, ...options } = {}) {
     close() { closeCount++; disconnect(); },
     agent: {
       async request(method, params, opts) {
-        calls.push({ method, params });
+        calls.push({ method, params, signal: opts?.signal });
         if (request) { const value = request(method, params, opts); if (value !== undefined) return value; }
         if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: { loadSession: true } };
         if (method === 'session/new') return { sessionId: 'owned' };
@@ -134,6 +134,25 @@ test('disconnect and late success cannot revive a closed or unknown adapter', as
   finish({ stopReason: 'end_turn' });
   await assert.rejects(pending, /unknown/);
   f.adapter.close(); assert.equal(f.adapter.state, 'closed');
+});
+
+test('managed prompts can outlive lifecycle timeout and remain cancellable', async () => {
+ let finish;
+ const f=fixture({promptBudget:null,timeoutMs:10,promptTimeoutMs:null,request:method=>method==='session/prompt'?new Promise(resolve=>{finish=resolve;}):undefined});
+ try {
+  await ready(f);const pending=f.adapter.prompt('long offline turn');
+  assert(f.calls[0].signal instanceof AbortSignal);assert(f.calls[1].signal instanceof AbortSignal);
+  assert.equal(f.calls.at(-1).signal,undefined);
+  await new Promise(resolve=>setTimeout(resolve,30));assert.equal(f.adapter.state,'running');
+  await f.adapter.cancel();finish({stopReason:'cancelled'});
+  assert.equal((await pending).stopReason,'cancelled');assert.equal(f.notifications.length,1);
+ } finally {f.adapter.close();}
+});
+
+test('prompt timeout defaults stay bounded for prototypes and reject invalid overrides', async () => {
+ for(const promptTimeoutMs of [0,-1,1.5,Infinity]) assert.throws(()=>fixture({promptTimeoutMs}),/timeout/i);
+ const f=fixture({promptBudget:1,timeoutMs:100});
+ try {await ready(f);await f.adapter.prompt('offline');assert(f.calls.at(-1).signal instanceof AbortSignal);} finally {f.adapter.close();}
 });
 
 test('request timeout is passed to SDK and leaves outcome unknown', async () => {

@@ -105,7 +105,7 @@ export async function listSpaceThreads({ codex, socket, projects }) {
   finally { await observer.close(); }
 }
 
-export async function launchSharedAgent({ sdk, acpRoot, codex, socket, threadId, cwd, reportPath, promptBudget = 0, onEvent, onDisconnect, timeoutMs = 600000, parentOwnsTree = false }) {
+export async function launchSharedAgent({ sdk, acpRoot, codex, socket, threadId, cwd, reportPath, promptBudget = 0, onEvent, onDisconnect, timeoutMs = 600000, promptTimeoutMs, parentOwnsTree = false }) {
   const directory = await mkdtemp(join(tmpdir(), 'cafe-shared-launch-'));
   const script = fileURLToPath(new URL('./shared-bridge.mjs', import.meta.url));
   let launcher;
@@ -121,7 +121,7 @@ export async function launchSharedAgent({ sdk, acpRoot, codex, socket, threadId,
   }
   try {
     const handle = await launchAgent({ sdk, entry: join(acpRoot, 'node_modules/@agentclientprotocol/codex-acp/dist/index.js'), codex: launcher,
-      cwd, reportPath, promptBudget, onEvent, onDisconnect, timeoutMs, parentOwnsTree, shared: { codex, socket, threadId, reportPath } });
+      cwd, reportPath, promptBudget, onEvent, onDisconnect, timeoutMs, promptTimeoutMs, parentOwnsTree, shared: { codex, socket, threadId, reportPath } });
     return { ...handle, async close() { try { await handle.close(); } finally { await rm(directory, { recursive: true, force: true }); } } };
   } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
 }

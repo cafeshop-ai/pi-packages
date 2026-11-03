@@ -4,6 +4,12 @@ import { cp, readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { root, run } from './build.mjs';
 import { stageRelease } from './release.mjs';
+test('source prepack accepts npm 10/11 run names but refuses raw pack and publish', () => {
+ const script=join(root,'scripts/prepack.mjs');
+ for(const npm_command of ['run-script','run']) assert.doesNotThrow(()=>run(process.execPath,[script],{env:{...process.env,npm_command}}));
+ for(const npm_command of ['pack','publish','']) assert.throws(()=>run(process.execPath,[script],{env:{...process.env,npm_command}}),/Package this source checkout with/);
+});
+
 test('the final source build/prepack implementation works in an isolated source copy, not live dist', async () => {
  const { target } = await stageRelease(); const copy = await mkdtemp(join(root, '.refactor/source-check-'));
  try {

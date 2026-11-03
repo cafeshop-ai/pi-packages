@@ -191,6 +191,48 @@ func TestOwnedLifecycle(t *testing.T) {
 	next.Close()
 	awaitStatus(t, next, id, "stopped")
 }
+func TestPiRegistryRemainsCompatibleWithPreACPReader(t *testing.T) {
+	m, path := fixture(t)
+	id := "13572468-1234-4123-8123-123456789abc"
+	m.records = []Record{{ID: id, ProjectID: "project", Cwd: m.cfg.Projects[0].Cwd, Room: "room", Name: "Pi", HostID: "managed-" + id, Status: "stopped", Agent: "pi"}}
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	// The old reader rejects unknown fields, even an explicit agent:"pi".
+	var legacy []struct {
+		ID        string `json:"id"`
+		ProjectID string `json:"projectId"`
+		Cwd       string `json:"cwd"`
+		Room      string `json:"room"`
+		Name      string `json:"name"`
+		Title     string `json:"title,omitempty"`
+		HostID    string `json:"hostId"`
+		Status    string `json:"status"`
+		Error     string `json:"error,omitempty"`
+	}
+	if err := readJSON(filepath.Join(m.cfg.StateDir, "registry.json"), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy) != 1 || legacy[0].ID != id || m.records[0].Agent != "pi" {
+		t.Fatal("Pi registry or in-memory identity changed")
+	}
+	m.Close()
+	reloaded, err := Load(path, "ws://127.0.0.1:1/ws", "synthetic-host-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if len(reloaded.records) != 1 || reloaded.records[0].Agent != "pi" {
+		t.Fatal("Pi default was not restored")
+	}
+	if err := reloaded.save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSON(filepath.Join(reloaded.cfg.StateDir, "registry.json"), &legacy); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentSessionIdentityIsPrivateAndDurable(t *testing.T) {
 	m, path := fixture(t)
 	id := "13572468-1234-4123-8123-123456789abc"

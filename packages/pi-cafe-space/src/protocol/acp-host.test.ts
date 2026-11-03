@@ -32,7 +32,7 @@ describe('agent-neutral protocol metadata', () => {
   });
 });
 
-it.skipIf(!process.env.CAFE_ACP_ROOT)('offline CLI → official ACP SDK → fixture agent → Space host channel; no Codex/model invocation', async () => {
+it.skipIf(!process.env.CAFE_ACP_ROOT).each(['new', 'restore'])('offline %s → official ACP SDK → fixture agent → Space host channel; no Codex/model invocation', async mode => {
   const root = await mkdtemp(join(tmpdir(), 'cafe-acp-space-fixture-'));
   const packageRoot = join(root, 'node_modules/@agentclientprotocol/codex-acp');
   const sdkRoot = join(root, 'node_modules/@agentclientprotocol/sdk/dist/v1/stable');
@@ -56,6 +56,7 @@ it.skipIf(!process.env.CAFE_ACP_ROOT)('offline CLI → official ACP SDK → fixt
   try {
     await mkdir(join(packageRoot,'dist'),{recursive:true}); await mkdir(sdkRoot,{recursive:true});
     await writeFile(join(packageRoot,'package.json'),JSON.stringify({version:'2.5.0'}));
+    await writeFile(join(root,'node_modules/@agentclientprotocol/sdk/package.json'),JSON.stringify({version:'2.1.0',type:'module'}));
     await writeFile(join(sdkRoot,'acp.js'),`export * from ${JSON.stringify(actualSdk)};`);
     await writeFile(join(packageRoot,'dist/index.js'), `
       import {createInterface} from 'node:readline';
@@ -63,20 +64,35 @@ it.skipIf(!process.env.CAFE_ACP_ROOT)('offline CLI → official ACP SDK → fixt
       for await (const line of createInterface({input:process.stdin})) {
         const m=JSON.parse(line); if(m.id==null) continue;
         let result;
-        if(m.method==='initialize') result={protocolVersion:1,agentInfo:{name:'offline-fixture',version:'1'},agentCapabilities:{}};
-        else if(m.method==='session/new') result={sessionId:'offline-session',modes:{currentModeId:'read-only',availableModes:[{id:'read-only',name:'Read only'}]}};
+        const sessionId='11111111-1111-4111-8111-111111111111';
+        const update=u=>send({jsonrpc:'2.0',method:'session/update',params:{sessionId,update:u}});
+        if(m.method==='initialize') result={protocolVersion:1,agentInfo:{name:'offline-fixture',version:'1'},agentCapabilities:{loadSession:true}};
+        else if(m.method===${JSON.stringify(mode === 'new' ? 'session/new' : 'session/load')}) {
+          if(m.method==='session/load') {
+            for(let i=0;i<700;i++) update({sessionUpdate:i%2?'agent_message_chunk':'user_message_chunk',content:{type:'text',text:String(i)}});
+            update({sessionUpdate:'tool_call_update',toolCallId:'large',status:'completed',content:[{type:'content',content:{type:'text',text:'x'.repeat(600000)}}]});
+            update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'RESTORED_TAIL'}});
+          }
+          result={sessionId,modes:{currentModeId:'read-only',availableModes:[{id:'read-only',name:'Read only'}]}};
+        }
         else if(m.method==='session/prompt') {
-          send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'offline-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'OFFLINE_OK'}}}});
+          update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'OFFLINE_OK'}});
           result={stopReason:'end_turn'};
         } else throw Error('Unexpected ACP method');
         send({jsonrpc:'2.0',id:m.id,result});
       }
     `);
-    const config={mode:'new',relayUrl:`ws://127.0.0.1:${address.port}/ws`,roomId:'test',hostId:'fixture-host',token,acpRoot:root,codex:process.execPath,cwd:root,stateDirectory:join(root,'state'),promptBudget:1};
+    const config={mode,managed:true,managedSessionId:'22222222-2222-4222-8222-222222222222',...(mode==='restore'?{threadId:'11111111-1111-4111-8111-111111111111'}:{}),relayUrl:`ws://127.0.0.1:${address.port}/ws`,roomId:'test',hostId:'fixture-host',token,acpRoot:root,codex:process.execPath,cwd:root,stateDirectory:join(root,'state'),promptBudget:null};
     await runSpaceHost(config,{protocol});
     expect(result?.status).toBe('applied'); expect(snapshot?.agent?.modelControl).toBe(false);
     expect(events.some(m=>m.type==='event' && m.event.kind==='message_delta' && m.event.delta==='OFFLINE_OK')).toBe(true);
-    await expect(runSpaceHost(config,{protocol})).rejects.toMatchObject({code:'EEXIST'});
+    if(mode==='new') await expect(runSpaceHost(config,{protocol})).rejects.toMatchObject({code:'EEXIST'});
+    else {
+      expect(snapshot?.messages.some(m=>m.text==='RESTORED_TAIL')).toBe(true);
+      expect(snapshot?.historyTruncated).toBe(true); expect(snapshot?.phase).toBe('idle');
+      expect(snapshot?.messages.length).toBeLessThanOrEqual(24);
+      expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(200000);
+    }
   } finally {
     for(const ws of server.clients) ws.terminate();
     await new Promise<void>(resolve=>server.close(()=>resolve())); await rm(root,{recursive:true,force:true});

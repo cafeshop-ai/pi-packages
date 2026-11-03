@@ -66,7 +66,9 @@ export function createEventBuffer({ maxEvents = 512, maxBytes = 512 * 1024 } = {
     push(event) {
       if (host) { host.event(event); return; }
       const size = Buffer.byteLength(JSON.stringify(event));
-      if (size > maxBytes || events.length >= maxEvents || bytes + size > maxBytes) throw new Error('ACP load event buffer limit exceeded');
+      // AcpSpaceHost always advertises historyTruncated; retain only a bounded replay tail.
+      if (size > maxBytes) { events.length = 0; bytes = 0; return; }
+      while (events.length >= maxEvents || bytes + size > maxBytes) bytes -= events.shift().size;
       events.push({ event, size }); bytes += size;
     },
     attach(target) {
@@ -125,9 +127,10 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
     if (stopRequested) throw new Error('ACP host stopped during startup');
     const eventBuffer = createEventBuffer();
     const onEvent = event => { try { eventBuffer.push(event); } catch { eventFailure = true; signal(); } };
+    const promptTimeoutMs = config.managed === true ? null : undefined;
     handle = config.mode === 'attach'
-      ? await launchSharedAgent({ sdk, ...config, cwd, parentOwnsTree: config.managed === true, reportPath: config.promptBudget == null ? undefined : join(config.stateDirectory, 'bridge-report.json'), onEvent, onDisconnect: signal })
-      : await launchAgent({ sdk, entry: join(config.acpRoot, 'node_modules/@agentclientprotocol/codex-acp/dist/index.js'), codex: config.codex, cwd, onEvent, onDisconnect: signal, parentOwnsTree: config.managed === true, promptBudget: config.promptBudget ?? null });
+      ? await launchSharedAgent({ sdk, ...config, cwd, promptTimeoutMs, parentOwnsTree: config.managed === true, reportPath: config.promptBudget == null ? undefined : join(config.stateDirectory, 'bridge-report.json'), onEvent, onDisconnect: signal })
+      : await launchAgent({ sdk, entry: join(config.acpRoot, 'node_modules/@agentclientprotocol/codex-acp/dist/index.js'), codex: config.codex, cwd, onEvent, onDisconnect: signal, promptTimeoutMs, parentOwnsTree: config.managed === true, promptBudget: config.promptBudget ?? null });
     if (stopRequested) throw new Error('ACP host stopped during startup');
     const info = await handle.adapter.initialize();
     if (stopRequested) throw new Error('ACP host stopped during initialization');
@@ -144,7 +147,7 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
       assert.equal(session.modes?.currentModeId, 'read-only', 'Read-only mode must be confirmed');
       await persistAgentSession(config.stateDirectory, handle.adapter.sessionId);
     }
-    if (eventFailure) throw new Error('ACP event buffer limit exceeded');
+    if (eventFailure) throw new Error('ACP event forwarding failed');
     if (stopRequested) throw new Error('ACP host stopped during session startup');
     const modelId = baseline?.model ?? session.models?.currentModelId;
     host = new AcpSpaceHost({ protocol, adapter: handle.adapter, sessionId: config.managedSessionId ?? randomUUID(), agentSessionId: handle.adapter.sessionId, cwd,
