@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import * as protocol from './index.js';
 import { AcpSpaceHost } from '../../scripts/acp/space-host.mjs';
-import { runSpaceHost } from '../../scripts/acp/space-run.mjs';
+import { borrowedUserEvent, runSpaceHost } from '../../scripts/acp/space-run.mjs';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,6 +110,21 @@ describe('ACP Space host', () => {
     host.event({ sessionId:'managed-space-session', type:'text', text:'must be filtered' });
     expect(host.snapshot.messages[0]?.text).toBe('borrowed output');
     host.close();
+  });
+  it('shows confirmed borrowed user input before replies, deduplicates native completion and keeps identities private', () => {
+    const f=fixture();
+    const native={method:'item/started',params:{threadId:'test-session',item:{type:'userMessage',id:'native-user-item',content:[{type:'text',text:'my input'}]}}};
+    f.host.event(borrowedUserEvent(native,'test-session'));
+    f.host.event({sessionId:'test-session',type:'text',text:'Codex reply'});
+    f.host.event(borrowedUserEvent({...native,method:'item/completed'},'test-session'));
+    f.host.state(false,'completed');
+    expect(f.host.snapshot.messages.map(m=>[m.role,m.text,m.status])).toEqual([['user','my input','complete'],['assistant','Codex reply','complete']]);
+    expect(JSON.stringify(f.host.snapshot)).not.toContain('native-user-item');
+    f.host.event({...borrowedUserEvent(native,'test-session'),sessionId:'foreign',messageId:'foreign'});
+    expect(f.host.snapshot.messages).toHaveLength(2);
+    f.host.event(borrowedUserEvent({...native,params:{...native.params,item:{...native.params.item,id:'second',content:[{type:'text',text:'next input'}]}}},'test-session'));
+    expect(f.host.snapshot.messages.at(-1)?.text).toBe('next input');
+    expect(f.calls).toBe(0);f.host.close();
   });
   it('rejects nonlocal gateways and weak tokens before opening a connection', () => {
     expect(() => fixture('ws://example.com/')).toThrow(/loopback/);

@@ -54,7 +54,7 @@
 
 `root` 必须包含 `node_modules/@agentclientprotocol/sdk/` 与 `node_modules/@agentclientprotocol/codex-acp/`；当前 host 固定要求 ACP SDK `2.1.0` 与 `codex-acp 2.5.0`。`codex` 是本机原生 CLI 的绝对路径；`env` 只能在此本机配置中明确指定，并拒绝覆盖 Pi/Café/ACP 内部变量与 `NODE_OPTIONS`/`NODE_PATH`。不把配置环境、Codex 登录状态或 host token返回网页。常规创建使用本机操作者的 Codex 登录态。
 
-可选 `socket` 启用已加载会话枚举和挂接；目前此部分**只支持 Windows 主机**。网页只展示被本机批准项目覆盖的会话名称、项目目录、状态，不请求对话内容；最多列出 100 项。选择时浏览器只持有随机不透明键，原生 Codex 会话 ID 不发给浏览器。只有 `idle` 会话可选，manager 和 host 都会重查，避免过期状态误连。已加载不等于已有磁盘记录：当前 Codex 若对尚未对话的空会话返回 `no rollout found`，Café 会报告 `ACP_SESSION_NOT_SAVED`；需用户在原 Codex 中完成一次对话后重新打开同一登记，或选择已有记录的会话。Café 不替用户发送提示来生成记录。挂接不回放 transcript、不覆盖模型/权限/MCP/instructions；关闭只断开 Café，不结束原 Codex daemon、终端或 turn。此 metadata 会对拥有房间管理权限的 operator 可见，不是成员身份升级。
+可选 `socket` 启用已加载会话枚举和挂接；目前此部分**只支持 Windows 主机**。网页只展示被本机批准项目覆盖的会话名称、项目目录、状态，不请求对话内容；最多列出 100 项。选择时浏览器只持有随机不透明键，原生 Codex 会话 ID 不发给浏览器。只有 `idle` 会话可选，manager 和 host 都会重查，避免过期状态误连。已加载不等于已有磁盘记录：当前 Codex 若对尚未对话的空会话返回 `no rollout found`，Café 会报告 `ACP_SESSION_NOT_SAVED`；需用户在原 Codex 中完成一次对话后重新打开同一登记，或选择已有记录的会话。Café 不替用户发送提示来生成记录。挂接不回放 transcript、不覆盖模型/权限/MCP/instructions。挂接后，网页输入和原 Codex 客户端输入都以本机会话确认的实时用户消息显示，并与 ACP 回复组成对话；同一输入的 started/completed 事件去重，不把尚未确认的发送请求伪装成成功消息。关闭只断开 Café，不结束原 Codex daemon、终端或 turn。此 metadata 会对拥有房间管理权限的 operator 可见，不是成员身份升级。
 
 Café 新建的 Codex 会话以 `read-only` 模式启动。原生 Codex 会话 ID 和不透明选择键保存在本机受保护登记中；原生 ID 不暴露给浏览器或公开 managed inventory。新建前先持久化幂等尝试标记；会话 ID 未确认、断线或结果未知时不自动重建/重发。manager 重启后不会自动恢复进程或提示；operator 显式打开时恢复 Cafe 新建的 ACP session。权限审批全部拒绝；read-only ACP mode 不是 OS sandbox，也不限制 Agent 自有工具的本机权限。托管 ACP prompt budget 不限制已授权 operator 的会话使用；Café 不会自动重试。
 

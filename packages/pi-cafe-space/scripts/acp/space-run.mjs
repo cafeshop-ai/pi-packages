@@ -58,6 +58,14 @@ export function samePath(a, b, platform = process.platform) {
   return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+export function borrowedUserEvent(event, threadId) {
+  if (event.params?.threadId !== threadId || !['item/started', 'item/completed'].includes(event.method)) return null;
+  const item = event.params.item;
+  if (item?.type !== 'userMessage' || typeof item.id !== 'string' || !item.id || item.id.length > 256 || !Array.isArray(item.content)) return null;
+  const text = item.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n').slice(0, 16000);
+  return text ? { type: 'user', sessionId: threadId, messageId: item.id, text } : null;
+}
+
 export function createEventBuffer({ maxEvents = 512, maxBytes = 512 * 1024 } = {}) {
   assert(Number.isInteger(maxEvents) && maxEvents > 0 && Number.isInteger(maxBytes) && maxBytes > 0, 'Invalid ACP event buffer bounds');
   let host, bytes = 0;
@@ -102,6 +110,8 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
     await reservation.close();
   }
   let handle, observer, host;
+  const eventBuffer = createEventBuffer();
+  const onEvent = event => { try { eventBuffer.push(event); } catch { eventFailure = true; signal(); } };
   let nativeRunning = false, stopRequested = false, eventFailure = false;
   let stop;
   const stopped = new Promise(resolveStop => { stop = resolveStop; });
@@ -115,6 +125,9 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
       observer = await openObserver({ codex: config.codex, socket: config.socket, onDisconnect: signal, onEvent(event) {
         try {
         if (event.params?.threadId !== config.threadId) return;
+        // codex-acp v1 deliberately omits live user items; project only confirmed native input.
+        const user = borrowedUserEvent(event, config.threadId);
+        if (user) onEvent(user);
         if (event.method === 'turn/started') { nativeRunning = true; host?.state(true); }
         if (event.method === 'turn/completed') { nativeRunning = false; host?.state(false, event.params.turn?.status === 'failed' ? 'error' : 'completed'); }
         } catch { stop(); }
@@ -125,8 +138,6 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
       baseline = await observer.request('thread/resume', { threadId: config.threadId, excludeTurns: true });
     }
     if (stopRequested) throw new Error('ACP host stopped during startup');
-    const eventBuffer = createEventBuffer();
-    const onEvent = event => { try { eventBuffer.push(event); } catch { eventFailure = true; signal(); } };
     const promptTimeoutMs = config.managed === true ? null : undefined;
     handle = config.mode === 'attach'
       ? await launchSharedAgent({ sdk, ...config, cwd, promptTimeoutMs, parentOwnsTree: config.managed === true, reportPath: config.promptBudget == null ? undefined : join(config.stateDirectory, 'bridge-report.json'), onEvent, onDisconnect: signal })

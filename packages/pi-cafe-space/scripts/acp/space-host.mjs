@@ -6,7 +6,7 @@ import WebSocket from 'ws';
 // Uses the existing authenticated Space host channel. No browser-to-agent bypass.
 export class AcpSpaceHost {
   #protocol; #adapter; #socket; #config; #agentSessionId; #welcomed = false; #closed = false;
-  #snapshot; #results = new Map(); #current = null; #resolveClosed;
+  #snapshot; #results = new Map(); #userMessages = new Set(); #current = null; #resolveClosed;
   closed = new Promise(resolve => { this.#resolveClosed = resolve; });
   constructor({ protocol, adapter, sessionId, agentSessionId = sessionId, cwd, name, model = null, thinkingLevel = 'off', config }) {
     const url = new URL(config.relayUrl);
@@ -57,8 +57,14 @@ export class AcpSpaceHost {
   }
   event(event) {
     if (this.#closed || event.sessionId !== this.#agentSessionId) return;
+    if (event.type === 'user') {
+      if (this.#userMessages.has(event.messageId)) return;
+      this.#userMessages.add(event.messageId);
+      if (this.#userMessages.size > 512) this.#userMessages.delete(this.#userMessages.values().next().value);
+      this.#finish();
+    }
     const update = event.update;
-    if (this.#snapshot.phase === 'idle' && (event.type === 'text' || ['user_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'].includes(update?.sessionUpdate))) this.state(true);
+    if (this.#snapshot.phase === 'idle' && (event.type === 'user' || event.type === 'text' || ['user_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'].includes(update?.sessionUpdate))) this.state(true);
     if (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update') {
       assert(typeof update.toolCallId === 'string', 'Missing ACP tool ID');
       const toolCallId = createHash('sha256').update(update.toolCallId).digest('hex');
@@ -71,9 +77,9 @@ export class AcpSpaceHost {
       this.#event({ kind: tool.status === 'running' ? 'tool_started' : 'tool_finished', tool });
       return;
     }
-    const role = update?.sessionUpdate === 'user_message_chunk' ? 'user' : 'assistant';
+    const role = event.type === 'user' || update?.sessionUpdate === 'user_message_chunk' ? 'user' : 'assistant';
     const thinking = update?.sessionUpdate === 'agent_thought_chunk';
-    const text = event.type === 'text' ? event.text : (role === 'user' || thinking) && update?.content?.type === 'text' ? update.content.text : null;
+    const text = event.type === 'user' || event.type === 'text' ? event.text : (role === 'user' || thinking) && update?.content?.type === 'text' ? update.content.text : null;
     if (text === null) return;
     const previous = this.#snapshot.messages.find(m => m.id === this.#current);
     if (!previous || previous.role !== role) {

@@ -6,7 +6,18 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { createEventBuffer, readHostConfig, samePath } from './space-run.mjs';
+import { borrowedUserEvent, createEventBuffer, readHostConfig, samePath } from './space-run.mjs';
+
+test('borrowed user projection uses only confirmed text from the exact live thread', () => {
+ const native={method:'item/started',params:{threadId:'target',item:{type:'userMessage',id:'native-user-id',content:[{type:'text',text:'hello'},{type:'image',url:'private'},{type:'text',text:'world'}]}}};
+ assert.deepEqual(borrowedUserEvent(native,'target'),{type:'user',sessionId:'target',messageId:'native-user-id',text:'hello\nworld'});
+ assert.deepEqual(borrowedUserEvent({...native,method:'item/completed'},'target'),borrowedUserEvent(native,'target'));
+ assert.equal(borrowedUserEvent(native,'foreign'),null);
+ assert.equal(borrowedUserEvent({...native,method:'request'},'target'),null);
+ assert.equal(borrowedUserEvent({...native,params:{...native.params,item:{type:'agentMessage'}}},'target'),null);
+ assert.equal(borrowedUserEvent({...native,params:{...native.params,item:{...native.params.item,content:[{type:'text',text:5}]}}},'target'),null);
+ assert.equal(borrowedUserEvent({...native,params:{...native.params,item:{...native.params.item,content:[{type:'text',text:'x'.repeat(20000)}]}}},'target').text.length,16000);
+});
 
 test('approved cwd matching is case-insensitive only on Windows', () => {
  assert.equal(samePath('C:/Work/Repo','c:/work/repo','win32'),true);
