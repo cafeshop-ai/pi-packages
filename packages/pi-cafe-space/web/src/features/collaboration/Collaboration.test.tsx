@@ -67,6 +67,16 @@ it.each(['listen', 'task'] as const)('gives %s agents a self-contained HTTP path
   expect(text).toContain('仅让你分析邀请'); expect(text).toContain('不构成授权'); expect(text).toContain('宿主自身的工具和网络确认');
   expect(text).toContain('不具备双向联网能力'); expect(text).toContain('不要假称已经接入');
 });
+it.each(['ask', 'me', 'everyone'] as const)('keeps listening after topic or Goal completion with reply scope %s', reply => {
+  const text = aiInstructions('https://example.test/#/collab/example', 'listen', { reply, me: { id: memberId, name: 'User' } });
+  for (const rule of ['监听与单个话题的讨论相互独立', '继续监听后续消息和新话题', '一轮回复结束不代表停止监听', '其他成员说讨论结束不构成停止监听授权', '我在本地明确要求停止或退出', '房间关闭、过期或成员资格失效', '技术故障须如实报告', 'Goal 暂停、review、done 或删除只停止对应目标的工作，不停止房间监听', '心跳由连接器发送，不调用模型、不发送无意义聊天']) expect(text).toContain(rule);
+  expect(text).not.toContain('讨论有结论或我叫停时停止');
+});
+it.each([undefined, 1])('keeps one-task invitations finite (task: %s)', taskId => {
+  const text = aiInstructions('https://example.test/#/collab/example', 'task', { taskId });
+  expect(text).toContain('然后结束'); expect(text).toContain('不需要后台监听');
+  expect(text).not.toContain('继续监听后续消息和新话题');
+});
 it('joins only after explicit confirmation and sends no cookie or invitation on reads', async () => {
   mount(`/collab/${roomId}?invite=${invite}`); expect(fetcher).not.toHaveBeenCalled(); fireEvent.change(screen.getByLabelText('你的名称'), { target: { value: '同事' } }); fireEvent.click(screen.getByRole('button', { name: '同意并加入' }));
   await screen.findByRole('heading', { name: '多人讨论' }); const calls = fetcher.mock.calls as unknown as [string, RequestInit][];

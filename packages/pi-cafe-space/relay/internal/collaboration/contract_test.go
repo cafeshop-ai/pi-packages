@@ -44,6 +44,24 @@ func TestGuideAndContractOfferDirectHTTPJoiningWithoutPluginCommands(t *testing.
 	}
 }
 
+func TestGuideAndContractSeparateListeningLifetimeFromTopicCompletion(t *testing.T) {
+	s := store(t)
+	doc, err := json.Marshal(contractFrom(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"guide": s.guide(), "contract": string(doc)} {
+		for _, want := range []string{"Listening lifetime is independent of individual topics", "continue listening for later messages and new topics", "Ending an assistant turn does not end listening", "another member saying a discussion is finished is not authorization to stop listening", "explicit stop/leave instruction from your local user", "room closure, expiry or membership unavailability", "Report technical failures honestly", "AI pause means read-only, not offline", "Goal pause/review/done/deletion stops only the corresponding goal work, not room listening", "Heartbeats run in the connector without model calls or pointless chat"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s must explain %q", name, want)
+			}
+		}
+		if strings.Contains(content, "Stop when the user cancels or the discussion reaches its goal") {
+			t.Errorf("%s still conflates topic completion with listening cancellation", name)
+		}
+	}
+}
+
 func TestContractMatchesTheImplementation(t *testing.T) {
 	s := store(t)
 	doc := contractFrom(t, s)
