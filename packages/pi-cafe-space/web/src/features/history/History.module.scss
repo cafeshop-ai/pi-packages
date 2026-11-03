@@ -11,8 +11,10 @@
 .managed ul { list-style: none; margin: 0; padding: 0; }
 .managed li { padding: 8px 10px; border-bottom: 1px solid var(--cafe-line); }
 .managedIdentity { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.managedIdentity strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; }
-.managedIdentity small, .managed li > small { color: var(--cafe-muted); font-size: 10px; }
+.managedIdentity strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; }
+.managedIdentity small { flex-shrink: 0; white-space: nowrap; }
+.managedMeta { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
+.managedIdentity small, .managedMeta small, .managed li > small { color: var(--cafe-muted); font-size: 11px; }
 .managedActions { display: flex; gap: 4px; }
 .managedActions button { font-size: 11px; padding-inline: 8px; }
 .list { margin-top: 22px; min-width: 0; }

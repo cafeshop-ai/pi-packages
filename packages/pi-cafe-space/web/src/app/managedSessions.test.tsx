@@ -60,6 +60,37 @@ it('discards a late create result after logout and never replays the write',asyn
   expect(screen.getByLabelText('Client token')).toBeInTheDocument();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(app.owner.store.getSnapshot().selectedHostId).toBeNull();
   expect(vi.mocked(managedRequest).mock.calls.filter(([,q])=>q.operation==='create')).toHaveLength(1);app.unmount();
 });
+it('does not offer Pi history, reload or file commands for a fixed ACP agent, and restores legacy Pi hints',async()=>{
+  const app=await mount();
+  const before=app.socket.frames.length;
+  await act(async()=>app.socket.emit({type:'snapshot',hostId:'h1',snapshot:{...fixture.expectedFinal,phase:'idle',sessionControl:false,inputAssist:false,historyTruncated:true,messages:[],tools:[],agent:{name:'Codex ACP',modelControl:false,deliveryControl:false}}}));
+  expect(screen.queryByRole('button',{name:'Load history'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Rename current session'})).toBeNull();
+  expect(screen.queryByText(/Run \/reload/)).toBeNull();
+  expect(screen.queryByText('/ commands · @ files')).toBeNull();
+  expect(screen.getAllByText('Only messages received since this agent connected are shown; earlier history is not replayed.').length).toBeGreaterThan(0);
+  expect(app.socket.frames.slice(before).some(f=>JSON.parse(f).payload?.name==='list_sessions')).toBe(false);
+  const input=screen.getByRole('textbox',{name:'Message'});
+  for (const command of ['/help','/new']) {
+    fireEvent.change(input,{target:{value:command}});
+    await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Send'})));
+    expect(screen.getByRole('alert')).not.toHaveTextContent('/reload');
+  }
+  fireEvent.change(input,{target:{value:'mention @notes.txt as text'}});
+  await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Send'})));
+  const prompt=app.socket.frames.map(f=>JSON.parse(f)).find(f=>f.payload?.name==='prompt');
+  expect(prompt.payload).toEqual({name:'prompt',content:'mention @notes.txt as text'});
+  await act(async()=>{window.location.hash='#/rooms/managed-test/history/old-session';});
+  await screen.findByRole('link',{name:'Return to live conversation'});
+  expect(app.socket.frames.slice(before).some(f=>JSON.parse(f).payload?.name==='get_session')).toBe(false);
+  fireEvent.click(screen.getByRole('link',{name:'Return to live conversation'}));
+  await screen.findByRole('textbox',{name:'Message'});
+  await act(async()=>app.socket.emit({type:'snapshot',hostId:'h1',snapshot:{...fixture.expectedFinal,phase:'idle',inputAssist:false}}));
+  expect(await screen.findByRole('button',{name:'Load history'})).toBeInTheDocument();
+  expect(screen.getByText('Run /reload in the selected Pi to enable session controls.')).toBeInTheDocument();
+  expect(app.socket.frames.slice(before).some(f=>JSON.parse(f).payload?.name==='list_sessions')).toBe(true);
+  app.unmount();
+});
 it('validates inventory room, bounds, duplicates and host identity',()=>{
   const record={id:'12345678-1234-4123-8123-123456789abc',room:'r',projectId:'p',name:'name',hostId:'managed-12345678-1234-4123-8123-123456789abc',status:'ready'};
   expect(parseManagedInventory({projects:[],sessions:[record],maxActive:8},'r').sessions).toHaveLength(1);

@@ -43,10 +43,12 @@ function Message() {
 }
 function Transcript({ readOnly, empty, snapshot, connected, navigation }: { readOnly: boolean; empty: boolean; snapshot: SessionSnapshot; connected: boolean; navigation?: ReactNode }) {
   const labels = useChatLabels();
+  const { t } = useTranslation();
+  const liveOnly = !!snapshot.agent && snapshot.sessionControl === false;
   return <ThreadPrimitive.Root className={styles.thread}>
     {readOnly && <p className={styles.notice}>{labels.history}</p>}
-    {(snapshot.historyTruncated || snapshot.messages.some(message => message.partsTruncated)) && <p className={styles.notice}>{labels.incomplete}</p>}
-    {empty && <div className={styles.empty}><Icon name="message" /><h2>{labels.emptyConversation}</h2><p>{labels.emptyConversationHelp}</p></div>}
+    {(snapshot.historyTruncated || snapshot.messages.some(message => message.partsTruncated)) && <p className={styles.notice}>{liveOnly ? t('agentLiveOnlyHint') : labels.incomplete}</p>}
+    {empty && <div className={styles.empty}><Icon name="message" /><h2>{labels.emptyConversation}</h2><p>{liveOnly ? t('agentConversationHelp') : labels.emptyConversationHelp}</p></div>}
     <div className={styles.transcriptArea} data-empty={empty}>
     <div className={styles.messages} data-empty={empty} role="log" aria-label={labels.conversation} aria-live="off">
       <ThreadPrimitive.Messages>{() => <Message />}</ThreadPrimitive.Messages>

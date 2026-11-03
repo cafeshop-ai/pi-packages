@@ -7,7 +7,7 @@ export function ChoiceSelect({ label, value, items, disabled, onValueChange, lab
   labelHidden?: boolean;
   native?: boolean;
   value: string;
-  items: { value: string; label: string; disabled?: boolean }[];
+  items: { value: string; label: string; description?: string; disabled?: boolean }[];
   disabled?: boolean;
   onValueChange: (value: string) => void;
 }) {
@@ -20,8 +20,8 @@ export function ChoiceSelect({ label, value, items, disabled, onValueChange, lab
       if (next !== null && items.some(item => item.value === next)) onValueChange(next);
     }}>
       <SelectTrigger id={id} aria-label={label} className="w-auto min-w-0 max-w-[min(12rem,100%)] text-xs"><SelectValue /></SelectTrigger>
-      <SelectContent container={container}><SelectGroup>
-        {items.map(item => <SelectItem key={item.value} value={item.value} disabled={item.disabled}>{item.label}</SelectItem>)}
+      <SelectContent container={container} className={items.some(item => item.description) ? "w-[min(24rem,calc(100vw-24px))] max-w-(--available-width)" : undefined}><SelectGroup>
+        {items.map(item => <SelectItem key={item.value} value={item.value} label={item.label} disabled={item.disabled}><span>{item.label}</span>{item.description && <small className="text-xs text-muted-foreground">{item.description}</small>}</SelectItem>)}
       </SelectGroup></SelectContent>
     </Select>}
   </Field>;

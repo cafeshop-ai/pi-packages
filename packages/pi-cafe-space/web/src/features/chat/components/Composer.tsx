@@ -19,6 +19,7 @@ export interface ComposerProps {
   navigation?: ReactNode;
   inputAssist?: boolean;
   deliveryControl?: boolean;
+  agent?: boolean;
   readCompletions?: CompletionRead;
   localCommands?: CompletionItem[];
   send: (text: string, delivery?: Delivery, files?: string[]) => Promise<GatewayResult>;
@@ -31,7 +32,7 @@ function boundedText(value: string) {
   if (end < value.length && end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1]!)) end--;
   return value.slice(0, end);
 }
-export function Composer({ scopeId, enabled, phase, readOnly = false, send, abort, context, navigation, inputAssist = false, deliveryControl = true, readCompletions, localCommands = [], onApprovalRequired }: ComposerProps) {
+export function Composer({ scopeId, enabled, phase, readOnly = false, send, abort, context, navigation, inputAssist = false, deliveryControl = true, agent = false, readCompletions, localCommands = [], onApprovalRequired }: ComposerProps) {
   const { t, i18n } = useTranslation(); const hintId = useId();
   const zh = i18n.language.startsWith('zh');
   const [draft, update] = useImmer(initial);
@@ -63,7 +64,7 @@ export function Composer({ scopeId, enabled, phase, readOnly = false, send, abor
   };
   const running = phase === 'running' || phase === 'waiting_local_ui';
   const command = draft.text.trimStart().startsWith('/');
-  const files = command ? [] : referencedFiles(draft.text);
+  const files = command || agent && !inputAssist ? [] : referencedFiles(draft.text);
   const canSend = enabled && !readOnly && !draft.sending && !!draft.text.trim() && files.length <= 8 && (!running || deliveryControl && !!draft.delivery && !command);
   const execute = async (operation: 'send' | 'abort') => {
     if (!enabled || readOnly) return;
@@ -97,7 +98,7 @@ export function Composer({ scopeId, enabled, phase, readOnly = false, send, abor
       {!completions.loading && !completions.error && !completions.items.length && <p role="status">{t('noCompletions')}</p>}
       {completions.truncated && <p>{t('completionTruncated')}</p>}
     </div>}
-    <FieldGroup className={styles.inputShell} data-focused={focused} data-composer-surface><Field data-disabled={!enabled}><FieldLabel className="sr-only" htmlFor={`${hintId}-input`}>{t('message')}</FieldLabel><Textarea ref={input} id={`${hintId}-input`} aria-autocomplete="list" aria-haspopup="listbox" aria-controls={completions.target ? `${hintId}-completions` : undefined} aria-activedescendant={completions.target && completions.items.length ? `${hintId}-option-${selected}` : undefined} aria-label={t('message')} aria-describedby={hintId} placeholder={t('composerPlaceholder')} value={draft.text} maxLength={65536} disabled={!enabled} rows={1}
+    <FieldGroup className={styles.inputShell} data-focused={focused} data-composer-surface><Field data-disabled={!enabled}><FieldLabel className="sr-only" htmlFor={`${hintId}-input`}>{t('message')}</FieldLabel><Textarea ref={input} id={`${hintId}-input`} aria-autocomplete="list" aria-haspopup="listbox" aria-controls={completions.target ? `${hintId}-completions` : undefined} aria-activedescendant={completions.target && completions.items.length ? `${hintId}-option-${selected}` : undefined} aria-label={t('message')} aria-describedby={hintId} placeholder={t(agent ? 'agentComposerPlaceholder' : 'composerPlaceholder')} value={draft.text} maxLength={65536} disabled={!enabled} rows={1}
       onChange={event => { setCursor(event.target.selectionStart); update(d => { d.text = boundedText(event.target.value); }); }}
       onSelect={event => setCursor(event.currentTarget.selectionStart)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
@@ -125,9 +126,9 @@ export function Composer({ scopeId, enabled, phase, readOnly = false, send, abor
       <div className={styles.actions}>{running && <Button variant="quiet" aria-label={t('abort')} loading={draft.aborting} disabled={!enabled || !running || draft.aborting} onClick={() => void execute('abort')}><Icon name="stop" /><span className={styles.actionLabel}>{t('abort')}</span></Button>}
       <Button type="submit" variant="primary" aria-label={t('send')} loading={draft.sending} disabled={!canSend}><Icon name="send" /><span className={styles.actionLabel}>{t('send')}</span></Button></div>
     </div></FieldGroup>
-    <p id={hintId} className={styles.hint}>{t('composerHint')} · {t('inputAssistHint')}</p>
-    {!inputAssist && (command || files.length > 0) && <p>{t('inputReloadHint')}</p>}
-    {command && running && <p>{t('slashIdleHint')}</p>}
+    <p id={hintId} className={styles.hint}>{t('composerHint')}{(inputAssist || !agent) && <> · {t('inputAssistHint')}</>}</p>
+    {!agent && !inputAssist && (command || files.length > 0) && <p>{t('inputReloadHint')}</p>}
+    {command && running && (inputAssist || !agent) && <p>{t('slashIdleHint')}</p>}
     {files.length > 0 && <p>{t('attachedFiles', { count: files.length })} {files.join(' · ')}</p>}
     {files.length > 8 && <p role="alert">{t('errors.TOO_MANY_FILES')}</p>}
     {draft.result && <p className={draft.result.status === 'unknown' || draft.result.status === 'rejected' ? undefined : 'sr-only'} role={draft.result.status === 'unknown' || draft.result.status === 'rejected' ? 'alert' : 'status'}>

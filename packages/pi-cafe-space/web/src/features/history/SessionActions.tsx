@@ -44,6 +44,7 @@ export function SessionActions({ owner, roomBase = '', sessionId, title, request
       }
     } finally { latch.current = false; setBusy(false); }
   };
+  if (snapshot?.agent && snapshot.sessionControl === false) return null;
   return <div className={styles.actions}>
     {sessionId ? <Button disabled={!enabled || busy} onClick={event => open('resume_session', event.currentTarget)}>{t('resumeSession')}</Button> : !request && <Button variant="quiet" aria-label={t('renameSession')} title={t('renameSession')} disabled={!enabled || busy} onClick={event => open('rename_session', event.currentTarget)}><Icon name="edit" /></Button>}
     {!request && snapshot && snapshot.sessionControl !== true && <p className={styles.hint}>{t('sessionReloadHint')}</p>}
