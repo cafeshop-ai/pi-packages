@@ -665,8 +665,13 @@ func (m *Manager) read(p *process, id string, stdout io.Reader) {
 		}
 		if p.kind == "acp" {
 			var event acpReadyEvent
-			if json.Unmarshal(line, &event) == nil && event.Type == "cafe_space_ready" {
-				m.markACPReady(p, id, event)
+			if json.Unmarshal(line, &event) == nil {
+				switch event.Type {
+				case "cafe_space_ready":
+					m.markACPReady(p, id, event)
+				case "cafe_space_error":
+					m.markACPFailed(p, id, event.Error)
+				}
 			}
 			line = line[:0]
 			continue

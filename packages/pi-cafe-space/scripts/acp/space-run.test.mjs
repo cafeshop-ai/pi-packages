@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { createEventBuffer, readHostConfig, samePath } from './space-run.mjs';
 
 test('approved cwd matching is case-insensitive only on Windows', () => {
@@ -27,6 +30,16 @@ test('load replay evicts by bytes and tolerates single oversized events', () => 
  assert.equal(seen.at(-1).text,'tail');
  assert(Buffer.byteLength(seen.map(event=>JSON.stringify(event)).join(''))<=100);
  assert(!seen.some(event=>event.text.length>100));
+});
+
+test('startup failure closes control input and returns a safe error without waiting for stdin EOF', async () => {
+ const root=await mkdtemp(join(tmpdir(),'cafe-acp-failed-start-'));
+ const config={mode:'new',relayUrl:'ws://127.0.0.1:1234/ws',roomId:'main',hostId:'test',token:'host-private-marker',acpRoot:root,codex:process.execPath,cwd:root,stateDirectory:root,promptBudget:0};
+ const child=spawn(process.execPath,[fileURLToPath(new URL('./space-run.mjs',import.meta.url)),'--config-env'],{env:{...process.env,CAFE_ACP_CONFIG_JSON:JSON.stringify(config)},stdio:['pipe','pipe','pipe']});
+ const exited=once(child,'close');let output='',errors='',timedOut=false;child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>errors+=x);child.stdin.on('error',()=>{});
+ const timer=setTimeout(()=>{timedOut=true;child.kill();},5000);
+ try {const [code]=await exited;assert.equal(timedOut,false);assert.equal(code,1);assert.deepEqual(JSON.parse(output),{type:'cafe_space_error',error:'MANAGED_PROCESS_EXITED'});assert(!(output+errors).includes(config.token));}
+ finally {clearTimeout(timer);child.stdin.destroy();if(child.exitCode===null&&child.signalCode===null)child.kill();await rm(root,{recursive:true,force:true});}
 });
 
 test('explicit local host config validates budgets, paths, borrowed identity and unknown options', async () => {

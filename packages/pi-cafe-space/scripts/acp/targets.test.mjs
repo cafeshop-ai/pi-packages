@@ -3,12 +3,20 @@ import test from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listLoadedThreads, projectLoadedThreads } from './shared-probe.mjs';
+import { listLoadedThreads, observerRequestError, projectLoadedThreads } from './shared-probe.mjs';
 import { readTargetsConfig } from './targets.mjs';
 
 const one = '11111111-1111-4111-8111-111111111111';
 const two = '22222222-2222-4222-8222-222222222222';
 const projects = [{ id:'work', cwd:'C:/work' }];
+
+test('missing rollout errors become actionable without exposing native details', () => {
+  const error=observerRequestError({code:-32600,message:'no rollout found for thread id '+one});
+  assert.equal(error.code,'ACP_SESSION_NOT_SAVED');
+  assert.equal(error.message,'Observer request failed (-32600)');
+  assert(!JSON.stringify(error).includes(one));
+  for(const value of [{code:-32000,message:'no rollout found for thread id '+one},{code:-32600,message:'private details'}]) assert.equal(observerRequestError(value).code,undefined);
+});
 
 test('loaded session projection exposes only approved project metadata', () => {
   const response = projectLoadedThreads(projects, [

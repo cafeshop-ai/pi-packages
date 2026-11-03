@@ -23,6 +23,7 @@ const targetCacheDuration = 5 * time.Second
 
 type acpReadyEvent struct {
 	Type           string `json:"type"`
+	Error          string `json:"error,omitempty"`
 	Mode           string `json:"mode"`
 	HostID         string `json:"hostId"`
 	SessionID      string `json:"sessionId"`
@@ -455,6 +456,19 @@ func (m *Manager) startACP(index int, fresh bool) error {
 		}
 	}()
 	return nil
+}
+
+func (m *Manager) markACPFailed(p *process, id, code string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active[id] != p {
+		return
+	}
+	if code != "ACP_SESSION_NOT_SAVED" {
+		code = "MANAGED_PROCESS_EXITED"
+	}
+	m.fail(id, code)
+	p.stdin.Close()
 }
 
 func (m *Manager) markACPReady(p *process, id string, event acpReadyEvent) {

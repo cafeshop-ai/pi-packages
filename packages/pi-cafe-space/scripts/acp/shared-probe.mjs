@@ -11,6 +11,12 @@ import { parseArgs } from 'node:util';
 import { connectProxy } from './shared-check.mjs';
 import { launchAgent, reserveLiveAttempt, SMOKE_PROMPT } from './probe.mjs';
 
+export function observerRequestError(error) {
+  const failure = new Error(`Observer request failed (${Number.isInteger(error?.code) ? error.code : 'unknown'})`);
+  if (error?.code === -32600 && /^no rollout found for thread id /i.test(error.message ?? '')) failure.code = 'ACP_SESSION_NOT_SAVED';
+  return failure;
+}
+
 export async function openObserver({ codex, socket, onEvent = () => {}, onDisconnect = () => {} }) {
   const child = spawn(codex, ['app-server', 'proxy', '--sock', socket], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
   child.stdin.on('error', () => {});
@@ -46,7 +52,7 @@ export async function openObserver({ codex, socket, onEvent = () => {}, onDiscon
         const { value, done } = await transport.reader.read(); if (done) break;
         const waiter = waiters.get(value.id);
         if (waiter) {
-          if (value.error) waiter.reject(new Error(`Observer request failed (${Number.isInteger(value.error.code) ? value.error.code : 'unknown'})`));
+          if (value.error) waiter.reject(observerRequestError(value.error));
           else waiter.resolve(value.result);
         } else if (value.method && value.id == null) onEvent(value);
         // Never answer permissions for another client.

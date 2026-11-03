@@ -171,16 +171,20 @@ export async function runSpaceHost(config, { protocol, onReady = () => {}, shutd
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  let control;
   try {
     const { values } = parseArgs({ options: { config: { type: 'string' }, 'config-env': { type: 'boolean' } }, strict: true });
     assert((values.config !== undefined) !== (values['config-env'] === true), 'Choose a config file or environment config');
     const config = await readHostConfig(values['config-env'] ? null : values.config);
-    const control = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    control = createInterface({ input: process.stdin, crlfDelay: Infinity });
     const shutdown = new AbortController();
     control.on('line', line => { try { if (JSON.parse(line)?.type === 'stop') shutdown.abort(); } catch {} });
     control.on('close', () => shutdown.abort());
     const protocol = await import('../../dist/protocol/index.js');
     await runSpaceHost(config, { protocol, shutdownSignal: shutdown.signal, onReady: info => console.log(JSON.stringify(info)) });
-    control.close();
-  } catch { console.error('ACP host stopped. Check the local config, build and state reservation; no automatic retry was made.'); process.exitCode = 1; }
+  } catch (error) {
+    console.log(JSON.stringify({ type: 'cafe_space_error', error: error?.code === 'ACP_SESSION_NOT_SAVED' ? error.code : 'MANAGED_PROCESS_EXITED' }));
+    console.error('ACP host stopped. Check the local config, build and state reservation; no automatic retry was made.');
+    process.exitCode = 1;
+  } finally { control?.close(); }
 }

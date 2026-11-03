@@ -8,6 +8,31 @@ import (
 	"testing"
 )
 
+func TestACPFailureKeepsSafeCauseAndIgnoresStaleProcess(t *testing.T) {
+	for _, code := range []string{"ACP_SESSION_NOT_SAVED", "private-native-error"} {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &process{stdin: writer}
+		m := &Manager{active: map[string]*process{"test": p}, records: []Record{{ID: "test", Status: "starting"}}}
+		m.markACPFailed(&process{}, "test", code)
+		if m.records[0].Status != "starting" {
+			t.Fatal("stale failure changed active process")
+		}
+		m.markACPFailed(p, "test", code)
+		want := code
+		if code != "ACP_SESSION_NOT_SAVED" {
+			want = "MANAGED_PROCESS_EXITED"
+		}
+		if m.records[0].Status != "failed" || m.records[0].Error != want {
+			t.Fatal("startup cause was lost or leaked")
+		}
+		reader.Close()
+		writer.Close()
+	}
+}
+
 func TestValidateACPRuntimePinsReviewedVersions(t *testing.T) {
 	root := t.TempDir()
 	for path, version := range map[string]string{
