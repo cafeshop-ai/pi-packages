@@ -462,7 +462,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       <div className={styles.confirm}><p>{confirm.label}</p><Button variant="primary" loading={busy} onClick={() => void act(confirm.op, confirm.fields ?? {})}>确认{confirm.action}</Button></div>
     </Drawer>}
     {privacyOpen && <Drawer compact label="隐私与限制" closeLabel="关闭" restoreFocusTo={menuButton.current} onClose={() => setPrivacyOpen(false)}>
-      <div className={styles.privacy}><p>讨论和任务以明文保存在云端，不是端到端加密；新成员可以看到全部历史。</p><p>房间不会同步任何人的电脑会话、文件或工具权限。到期后停止访问；最多 64 位成员、500 条消息、200 个任务。</p><p>AI 的在线与送达状态由其连接器上报，不代表模型已读。清除浏览器数据会丢失成员凭据。</p></div>
+      <div className={styles.privacy}><p>讨论和任务以明文保存在云端，不是端到端加密；新成员可以看到全部历史。</p><p>房间不会同步任何人的电脑会话、文件或工具权限。到期后停止访问；消息条数不限；最多 64 位成员、200 个任务，仍受存储容量保护。</p><p>AI 的在线与送达状态由其连接器上报，不代表模型已读。清除浏览器数据会丢失成员凭据。</p></div>
     </Drawer>}
   </section>;
 }

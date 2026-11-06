@@ -3,10 +3,32 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
-import { RoomClient, RoomError, readMembership, type Membership } from './client.js';
+import { RoomClient, RoomError, parseMessage, readMembership, type Membership } from './client.js';
 const auth: Membership = { origin: 'https://space.example.test', roomId: 'a'.repeat(32), memberId: 'b'.repeat(32), token: 'c'.repeat(64) };
 const snapshot = { roomId: auth.roomId, memberId: auth.memberId, cursor: 0, more: false, members: [{ id: auth.memberId, name: 'Local AI', kind: 'ai' }], messages: [] };
 const directories: string[] = [];
+
+it('reads, acknowledges and replies beyond message 500 without accepting unsafe sequences', async () => {
+  const peer = 'd'.repeat(32);
+  const incoming = { seq: 501, id: 'message-501', memberId: peer, text: 'Continue', replyTo: 500 };
+  const request = vi.fn<typeof fetch>(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.op === 'ack') return new Response(JSON.stringify({ ok: true }));
+    if (body.op === 'send') return new Response(JSON.stringify({ ...body, seq: 502, memberId: auth.memberId }));
+    return new Response(JSON.stringify({ ...snapshot, cursor: 501, members: [...snapshot.members, { id: peer, name: 'Peer', kind: 'human' }], messages: body.after === 500 ? [incoming] : [] }));
+  });
+  const client = new RoomClient(auth, request);
+  expect((await client.read(500)).messages[0]?.seq).toBe(501);
+  await client.ack({ fetched: 501, delivered: 501, paused: false });
+  expect((await client.reply({ id: 'message-502', text: 'Reply', to: peer, replyTo: 501 })).seq).toBe(502);
+  for (const seq of [501.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(() => parseMessage({ ...incoming, seq })).toThrow('INVALID_ROOM_RESPONSE');
+    await expect(client.read(seq)).rejects.toThrow('INVALID_CURSOR');
+    await expect(client.ack({ fetched: seq, delivered: 501, paused: false })).rejects.toThrow('INVALID_ACK');
+    await expect(client.reply({ id: 'invalid-reply', text: 'Reply', to: peer, replyTo: seq })).rejects.toThrow('INVALID_REPLY');
+  }
+  expect(request).toHaveBeenCalledTimes(4);
+});
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function file(value: unknown) { const dir = mkdtempSync(join(tmpdir(), 'cafe-room-client-')); directories.push(dir); const path = join(dir, 'member.json'); writeFileSync(path, JSON.stringify(value), { mode: 0o600 }); return path; }
 it('requires a private room membership, not a separate sender allowlist', () => {
@@ -64,7 +86,7 @@ it('validates ack progress and sends only connector counters with the member cre
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }))).mockResolvedValueOnce(new Response('{}'));
   const client = new RoomClient(auth, request);
   await expect(client.ack({ fetched: 1, delivered: 2, paused: false })).rejects.toThrow('INVALID_ACK');
-  await expect(client.ack({ fetched: 501, delivered: 0, paused: false })).rejects.toThrow('INVALID_ACK');
+  await expect(client.ack({ fetched: Number.MAX_SAFE_INTEGER + 1, delivered: 0, paused: false })).rejects.toThrow('INVALID_ACK');
   expect(request).not.toHaveBeenCalled();
   await client.ack({ fetched: 2, delivered: 1, paused: false });
   expect(JSON.parse(String(request.mock.calls[0]![1]?.body))).toEqual({ op: 'ack', roomId: auth.roomId, fetched: 2, delivered: 1, paused: false });

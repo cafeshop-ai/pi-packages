@@ -4,6 +4,12 @@ import { consumeGoal, goalState, mergeGoal, pendingGoal } from './collaboration-
 const goal = { id: 1, title: 'Verify release', criteria: 'Tests pass\nKeep the data', reviewer: 'a'.repeat(32), createdBy: 'a'.repeat(32), status: 'active', updatedAt: '2030-01-01T00:00:00Z' };
 const page = (revision, value = goal) => ({ goalRevision: revision, goal: value });
 
+test('accepts Goal evidence beyond message 500 but rejects unsafe sequences', () => {
+  const submitted = { ...goal, status: 'review', result: 501, resultBy: goal.createdBy };
+  assert.equal(goalState(page(1, submitted)).goal.result, 501);
+  assert.throws(() => goalState(page(1, { ...submitted, result: Number.MAX_SAFE_INTEGER + 1 })), /invalid goal response/);
+});
+
 test('Goal changes have a durable acknowledgement separate from chat cursors', () => {
   const state = { fetched: 8, consumed: 4 };
   mergeGoal(state, page(1));

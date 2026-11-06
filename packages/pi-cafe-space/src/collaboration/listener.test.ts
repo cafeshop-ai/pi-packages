@@ -12,6 +12,17 @@ function fixture(messages = [message(1)]) {
   const listener = new RoomListener(client, host, 0);
   return { listener, host, read, client };
 }
+it('resumes delivery and checkpoints beyond message 500', async () => {
+  const { client, host } = fixture([message(502)]);
+  const listener = new RoomListener(client, host, 501, 501);
+  await listener.poll();
+  expect(host.deliver).toHaveBeenCalledWith(message(502));
+  listener.acknowledge(502);
+  expect(listener.cursor).toBe(502);
+  expect(host.checkpoint).toHaveBeenCalledWith(502);
+  listener.pause();
+  expect(() => new RoomListener(client, host, Number.MAX_SAFE_INTEGER + 1)).toThrow('INVALID_CURSOR');
+});
 it('does not confuse dispatch with a native host receipt, and does not redeliver', async () => {
   const { listener, host } = fixture();
   await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(1); expect(listener.cursor).toBe(0);

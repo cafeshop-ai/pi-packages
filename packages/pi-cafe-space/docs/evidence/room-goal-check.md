@@ -7,7 +7,7 @@
 | 检查 | 结果 / 边界 |
 | --- | --- |
 | `npm run refactor:relay:build` | Windows 原生 Go + Web + 扩展构建通过；包含带 `webembed` 的 Go 全套测试。Vite 仍有既有的大 chunk 警告。 |
-| `go test ./internal/collaboration -count=1`、`go vet ./...` | 通过。覆盖生命周期、指定人类验收、证据归属、任务冻结、旧 revision、验收人离开/移除、保存失败不污染内存、持久化、删除不复用 ID、500 条消息满容量时仍可控制 Goal。 |
+| `go test ./internal/collaboration -count=1`、`go vet ./...` | 通过。覆盖生命周期、指定人类验收、证据归属、任务冻结、旧 revision、验收人离开/移除、保存失败不污染内存、持久化、删除不复用 ID、旧 500 条消息边界时仍可控制 Goal（当前版本已取消消息条数上限）。 |
 | Web 测试、Web/源代码 TypeScript | Web 55 文件、310 测试通过；两份 TypeScript 检查通过。 |
 | `npm run test -- src/collaboration` | 65 个原有 Pi 桥接测试通过。这只证明聊天兼容，不证明 Pi 接收 Goal。 |
 | `collaboration-smoke.mjs` + Windows Edge | 12 组隔离 HTTP/浏览器检查通过。真实 create/pause/resume/submit/accept/delete；房主不是验收人时没有通过权限；删除后任务仍在；两个隔离浏览器同步。1440、1280、390、320px 无水平溢出，320px 的长条件创建表单也检查通过，无页面异常。 |

@@ -25,8 +25,9 @@ function fixture() {
       const value = existing ?? { seq: messages.length + 1, id: body.id, memberId: me, text: body.text, to: body.to, replyTo: body.replyTo };
       if (!existing) messages.push(value); return new Response(JSON.stringify(value));
     }
-    return new Response(JSON.stringify({ roomId, memberId: me, cursor: messages.length, more: false, presence: {},
-      members: [me, peer, human].map(id => ({ id, name: id, kind: id === human ? 'human' : 'ai' })), messages: messages.filter(m => m.seq > body.after).map(m => ({ ...m, to: m.to || undefined })) }));
+    const page = messages.filter(m => m.seq > body.after).slice(0, 100), cursor = body.after + page.length;
+    return new Response(JSON.stringify({ roomId, memberId: me, cursor, more: cursor < messages.length, presence: {},
+      members: [me, peer, human].map(id => ({ id, name: id, kind: id === human ? 'human' : 'ai' })), messages: page.map(m => ({ ...m, to: m.to || undefined })) }));
   });
   vi.stubGlobal('fetch', fetcher);
   const bus = new EventEmitter();
@@ -123,6 +124,22 @@ it('restores host receipts from the branch without replaying a delivered message
   const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000);
   await f.command('pause'); await f.command('connect C:/private/room.json'); await vi.advanceTimersByTimeAsync(5000);
   expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('delivers, replies and restores native receipts beyond message 500', async () => {
+  const f = fixture();
+  f.messages.push(...Array.from({ length: 501 }, (_, i) => message(i + 1)));
+  await f.command('connect C:/private/room.json');
+  expect(f.pi.sendMessage).not.toHaveBeenCalled();
+  f.messages.push(message(502));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(502);
+  expect((await f.tool('cafe_room_reply', { replyTo: 502, text: 'Continue the discussion' })).details.seq).toBe(503);
+  f.reload();
+  await f.command('resume');
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_reply', { replyTo: 502, text: 'Continue the discussion' })).details.seq).toBe(503);
 });
 it('an unconfirmed host dispatch blocks silent replay on reconnect', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000);

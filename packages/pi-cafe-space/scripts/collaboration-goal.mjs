@@ -7,7 +7,7 @@ export function goalState(page) {
   if (!integer(page.goalRevision)) throw Error('invalid goal revision');
   const g = page.goal;
   if (g === null) return { goalRevision: page.goalRevision, goal: null };
-  if (!g || !integer(g.id, 1) || page.goalRevision === 0 || !text(g.title, 200) || !text(g.criteria, 4000) || !member(g.reviewer) || !member(g.createdBy) || !['active', 'paused', 'review', 'done'].includes(g.status) || typeof g.updatedAt !== 'string' || !Number.isFinite(Date.parse(g.updatedAt)) || g.result !== undefined && (!integer(g.result, 1) || g.result > 500 || !member(g.resultBy)) || g.resultBy !== undefined && g.result === undefined || ['review', 'done'].includes(g.status) && !g.result) throw Error('invalid goal response');
+  if (!g || !integer(g.id, 1) || page.goalRevision === 0 || !text(g.title, 200) || !text(g.criteria, 4000) || !member(g.reviewer) || !member(g.createdBy) || !['active', 'paused', 'review', 'done'].includes(g.status) || typeof g.updatedAt !== 'string' || !Number.isFinite(Date.parse(g.updatedAt)) || g.result !== undefined && (!integer(g.result, 1) || !member(g.resultBy)) || g.resultBy !== undefined && g.result === undefined || ['review', 'done'].includes(g.status) && !g.result) throw Error('invalid goal response');
   return { goalRevision: page.goalRevision, goal: { id: g.id, title: g.title, criteria: g.criteria, reviewer: g.reviewer, status: g.status, createdBy: g.createdBy, updatedAt: g.updatedAt, ...(g.result ? { result: g.result, resultBy: g.resultBy } : {}) } };
 }
 export function mergeGoal(state, page) {

@@ -3,6 +3,7 @@ package collaboration
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -222,12 +223,90 @@ func TestPersistenceFailureDoesNotPublishAndCorruptionFailsClosed(t *testing.T) 
 func TestExpirationAndBounds(t *testing.T) {
 	s := store(t)
 	id, owner := create(t, s)
-	s.rooms[id].Messages = make([]Message, 500)
-	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "last-message", "text": "over capacity"}, owner, 409)
 	s.now = func() time.Time { return time.Now().Add(8 * 24 * time.Hour) }
 	call(t, s, map[string]any{"op": "read", "roomId": id}, owner, 404)
 	if _, err := New("relative", testOrigin, Options{}); err == nil {
 		t.Fatal("relative directory accepted")
+	}
+}
+
+func TestMessagesContinuePast500AndRestart(t *testing.T) {
+	s := store(t)
+	id, owner := create(t, s)
+	room := s.rooms[id]
+	for i := 1; i <= 500; i++ {
+		room.Messages = append(room.Messages, Message{Seq: i, ID: fmt.Sprintf("existing-%d", i), MemberID: room.Members[0].ID, Text: "Existing message", At: s.now()})
+	}
+	if err := s.save(room); err != nil {
+		t.Fatal(err)
+	}
+	if limits := call(t, s, map[string]any{"op": "status"}, "", 200); limits["maxMessages"] != nil {
+		t.Fatal("status still advertises a message count limit")
+	}
+	limits := contractFrom(t, s)["x-limits"].(map[string]any)
+	if limits["messagesPerRoom"] != nil || limits["roomBytes"] != float64(maxRoomBytes) {
+		t.Fatal("contract must remove the count limit without removing storage protection")
+	}
+	woken := make(chan map[string]any, 1)
+	go func() {
+		status, page := post(s, map[string]any{"op": "read", "roomId": id, "after": 500, "wait": 1}, owner)
+		if status != 200 {
+			page["errorStatus"] = status
+		}
+		woken <- page
+	}()
+	waiters(t, s, 1)
+	message := map[string]any{"op": "send", "roomId": id, "id": "message-501", "text": "Continue in the same room", "replyTo": 500}
+	for i := 0; i < 2; i++ {
+		if sent := call(t, s, message, owner, 200); sent["seq"] != float64(501) {
+			t.Fatal("message 501 must be accepted and deduplicated")
+		}
+	}
+	select {
+	case page := <-woken:
+		if page["cursor"] != float64(501) || len(page["messages"].([]any)) != 1 || page["more"] != false {
+			t.Fatal("listener did not receive message 501")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("message 501 did not wake the listener")
+	}
+	restored, err := New(s.directory, testOrigin, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, cursor := 0, 0
+	for {
+		page := call(t, restored, map[string]any{"op": "read", "roomId": id, "after": cursor}, owner, 200)
+		messages := page["messages"].([]any)
+		if len(messages) > 100 {
+			t.Fatal("read page exceeded 100 messages")
+		}
+		for _, raw := range messages {
+			count++
+			if raw.(map[string]any)["seq"] != float64(count) {
+				t.Fatal("history was truncated or reordered")
+			}
+		}
+		cursor = int(page["cursor"].(float64))
+		if page["more"] == false {
+			break
+		}
+	}
+	if count != 501 || cursor != 501 {
+		t.Fatal("restart must retain all history past message 500")
+	}
+	call(t, restored, map[string]any{"op": "ack", "roomId": id, "fetched": 501, "delivered": 501}, owner, 200)
+	message["id"], message["replyTo"] = "message-502", 501
+	if sent := call(t, restored, message, owner, 200); sent["seq"] != float64(502) {
+		t.Fatal("replying past message 500 failed")
+	}
+	restored.options.MaxStoreBytes = restored.sizes[id]
+	message["id"] = "message-503"
+	if result := call(t, restored, message, owner, 507); result["error"] != "STORAGE_LIMIT" {
+		t.Fatal("storage byte protection was removed")
+	}
+	if len(restored.rooms[id].Messages) != 502 {
+		t.Fatal("failed persistence published a message")
 	}
 }
 func TestConcurrentDuplicateDelivery(t *testing.T) {

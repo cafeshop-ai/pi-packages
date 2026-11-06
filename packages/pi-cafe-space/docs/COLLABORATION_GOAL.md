@@ -36,7 +36,7 @@ Goal 不自动删除已完成任务。每个任务的 `goalId` 标明归属；�
 
 ## 通用客户端与通知
 
-目标变化不占用 500 条聊天容量，也没有消息 seq。持久化成功后会唤醒 `read + wait`，即使返回的 messages 为空、cursor 不变。连接器须比较独立的 `goalRevision`，包括 `goal=null` 的删除通知，不能用聊天 cursor 代替。
+目标变化不新增聊天消息，也没有消息 seq。持久化成功后会唤醒 `read + wait`，即使返回的 messages 为空、cursor 不变。连接器须比较独立的 `goalRevision`，包括 `goal=null` 的删除通知，不能用聊天 cursor 代替。
 
 源码中的 `scripts/space-agent.mjs` 复用同一私有目录和短事务锁：
 

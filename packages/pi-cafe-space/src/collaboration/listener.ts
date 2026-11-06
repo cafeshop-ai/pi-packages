@@ -16,7 +16,7 @@ export class RoomListener {
   private awaitingReceipt = false;
   private dispatchedAt = 0;
   constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0) {
-    if (!Number.isInteger(cursor) || cursor < 0 || cursor > 500 || !Number.isInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor) throw new RoomError('INVALID_CURSOR');
+    if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor) throw new RoomError('INVALID_CURSOR');
     this.cursor = cursor;
   }
   get undispatched(): Message | undefined { return this.awaitingReceipt ? undefined : this.pending; }

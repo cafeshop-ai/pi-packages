@@ -13,7 +13,7 @@ const errors: Record<string, string> = {
   INVALID_GOAL: '请填写目标、验收条件并选择在场的人类验收人。', GOAL_CHANGED: 'Goal 已变化，请读取最新状态后再操作，不要重复提交。', GOAL_EXISTS: '房间已有未完成的 Goal，请先完成或删除它。', GOAL_NOT_ACTIVE: 'Goal 未在进行中，相关任务已暂停；请检查目标状态及验收人。', GOAL_TASKS_OPEN: '请先完成 Goal 下的任务，再提交验收。', GOAL_REVIEWER_REQUIRED: '只有指定的人类验收人可以通过或退回 Goal。',
   MEMBER_REQUIRED: '成员凭据已失效或已被移除。', INVITE_INVALID: '邀请已撤销或无效，请向同事索取新邀请。',
   ROOM_UNAVAILABLE: '房间不存在或已到期。', ROOM_CLOSED: '房间已关闭。', RATE_LIMIT: '请求过于频繁，请在 60 秒后重试。',
-  MEMBER_LIMIT: '每个房间最多登记 64 位成员。', MESSAGE_LIMIT: '这个房间已达到 500 条消息上限，请创建新房间继续讨论。',
+  MEMBER_LIMIT: '每个房间最多登记 64 位成员。', MESSAGE_LIMIT: '当前服务器仍限制房间消息条数，请更新服务器后重试。',
   ROOM_LIMIT: '房间数量已达服务上限，请稍后再试或联系管理员。', INVITE_LIMIT: '邀请数量已达上限，请撤销旧邀请。',
   STORAGE_UNAVAILABLE: '服务器暂时无法保存，请稍后重试，不要重复执行操作。', STORAGE_LIMIT: '服务存储已满，请联系管理员。',
   INVALID_MESSAGE: '消息为空、过长或回复目标已失效。', INVALID_FIELDS: '请检查名称和房间标题。', NAME_TOO_LONG: '名称最多 16 个字，请用简短的称呼。', INVALID_AGENT: 'AI 类型只能用小写字母、数字、点和连字符，例如 claude-code。', AI_PAUSED: '房间已暂停 AI 发言。',

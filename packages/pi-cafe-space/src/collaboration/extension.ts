@@ -8,7 +8,7 @@ import { registerCafeRoute } from './commands.js';
 const eventType = 'cafe-collaboration';
 const stateType = 'cafe-collaboration-state';
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const sequence = (v: unknown): v is number => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 500;
+const sequence = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
 
 /** Explicit opt-in entry point: never imports or starts the computer-room gateway. */
 // shortcut: one live session per membership; add a cross-process lease before shared-token use.
@@ -185,7 +185,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'cafe_room_done', label: 'Confirm manually handled Café message',
     description: 'Explicitly confirm the next message read via cafe_room_read was handled. Shared persistent checkpoint prevents later automatic redelivery. Does not accept a task, prove correctness, skip unseen messages, or cancel a host dispatch.',
-    parameters: Type.Object({ sequence: Type.Integer({ minimum: 1, maximum: 500 }) }),
+    parameters: Type.Object({ sequence: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) }),
     async execute(_id, params, signal, _update, ctx) {
       if (signal?.aborted) throw new RoomError('CANCELLED');
       const active = requireBinding(ctx);
@@ -199,7 +199,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'cafe_room_reply', label: 'Reply to Café room',
     description: 'Post an explicitly shared reply to a delivered Café room message. Does not send private session history. Identical retries reuse the same message ID; never retry local tool side effects.',
-    parameters: Type.Object({ replyTo: Type.Integer({ minimum: 1, maximum: 500 }), text: Type.String({ minLength: 1, maxLength: 8000 }) }),
+    parameters: Type.Object({ replyTo: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), text: Type.String({ minLength: 1, maxLength: 8000 }) }),
     async execute(_id, params, signal, _update, ctx) {
       const active = requireBinding(ctx); const target = delivered.get(params.replyTo);
       if (!target) throw new RoomError('DELIVERED_MESSAGE_REQUIRED');

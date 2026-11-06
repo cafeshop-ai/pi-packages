@@ -8,7 +8,7 @@ export interface Snapshot { roomId: string; memberId: string; cursor: number; mo
 const id = /^[a-f0-9]{32}$/;
 const messageId = /^[a-zA-Z0-9_-]{8,80}$/;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const integer = (v: unknown, min: number, max: number): v is number => Number.isInteger(v) && Number(v) >= min && Number(v) <= max;
+const integer = (v: unknown, min: number, max = Number.MAX_SAFE_INTEGER): v is number => Number.isSafeInteger(v) && Number(v) >= min && Number(v) <= max;
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && [...v].length <= max && !/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(v);
 export class RoomError extends Error {
   constructor(readonly code: string, readonly retryable = false, readonly retryAfterMs = 5000) { super(code); }
@@ -24,11 +24,11 @@ export function readMembership(path: string): Membership {
   return { origin, roomId: value.roomId, memberId: value.memberId, token: value.token };
 }
 export function parseMessage(value: unknown): Message {
-  if (!object(value) || !integer(value.seq, 1, 500) || typeof value.id !== 'string' || !messageId.test(value.id) || typeof value.memberId !== 'string' || !id.test(value.memberId) || !text(value.text, 8000) || (value.to !== undefined && (typeof value.to !== 'string' || !id.test(value.to))) || (value.replyTo !== undefined && !integer(value.replyTo, 0, value.seq - 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
+  if (!object(value) || !integer(value.seq, 1) || typeof value.id !== 'string' || !messageId.test(value.id) || typeof value.memberId !== 'string' || !id.test(value.memberId) || !text(value.text, 8000) || (value.to !== undefined && (typeof value.to !== 'string' || !id.test(value.to))) || (value.replyTo !== undefined && !integer(value.replyTo, 0, value.seq - 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
   return { seq: value.seq, id: value.id, memberId: value.memberId, text: value.text, to: value.to as string ?? '', replyTo: value.replyTo as number ?? 0 };
 }
 export function parseSnapshot(value: unknown, auth: Membership, after: number): Snapshot {
-  if (!object(value) || value.roomId !== auth.roomId || value.memberId !== auth.memberId || !integer(value.cursor, after, 500) || typeof value.more !== 'boolean' || !Array.isArray(value.members) || value.members.length > 64 || !Array.isArray(value.messages) || value.messages.length > 100) throw new RoomError('INVALID_ROOM_RESPONSE');
+  if (!object(value) || value.roomId !== auth.roomId || value.memberId !== auth.memberId || !integer(value.cursor, after) || typeof value.more !== 'boolean' || !Array.isArray(value.members) || value.members.length > 64 || !Array.isArray(value.messages) || value.messages.length > 100) throw new RoomError('INVALID_ROOM_RESPONSE');
   const members = value.members.map(v => {
     if (!object(v) || typeof v.id !== 'string' || !id.test(v.id) || !text(v.name, 48) || (v.kind !== 'human' && v.kind !== 'ai') || (v.removed !== undefined && typeof v.removed !== 'boolean')) throw new RoomError('INVALID_ROOM_RESPONSE');
     return { id: v.id, name: v.name, kind: v.kind, removed: v.removed === true } satisfies Member;
@@ -65,7 +65,7 @@ export class RoomClient {
     catch { throw new RoomError('INVALID_ROOM_RESPONSE'); }
   }
   async read(after: number, signal?: AbortSignal): Promise<Snapshot> {
-    if (!integer(after, 0, 500)) throw new RoomError('INVALID_CURSOR');
+    if (!integer(after, 0)) throw new RoomError('INVALID_CURSOR');
     const value = await this.post({ op: 'read', after }, signal);
     const snapshot = parseSnapshot(value, this.membership, after);
     // Presence is returned by relays that support ack; old read/send relays keep working.
@@ -73,12 +73,12 @@ export class RoomClient {
     return snapshot;
   }
   async ack(progress: { fetched: number; delivered: number; paused: boolean }, signal?: AbortSignal): Promise<void> {
-    if (!integer(progress.fetched, 0, 500) || !integer(progress.delivered, 0, progress.fetched) || typeof progress.paused !== 'boolean') throw new RoomError('INVALID_ACK');
+    if (!integer(progress.fetched, 0) || !integer(progress.delivered, 0, progress.fetched) || typeof progress.paused !== 'boolean') throw new RoomError('INVALID_ACK');
     const value = await this.post({ op: 'ack', ...progress }, signal);
     if (!object(value) || value.ok !== true) throw new RoomError('INVALID_ROOM_RESPONSE');
   }
   async reply(input: { id: string; text: string; to: string; replyTo: number }, signal?: AbortSignal): Promise<Message> {
-    if (!messageId.test(input.id) || !text(input.text, 8000) || input.text.trim() !== input.text || !id.test(input.to) || input.to === this.membership.memberId || !integer(input.replyTo, 1, 500)) throw new RoomError('INVALID_REPLY');
+    if (!messageId.test(input.id) || !text(input.text, 8000) || input.text.trim() !== input.text || !id.test(input.to) || input.to === this.membership.memberId || !integer(input.replyTo, 1)) throw new RoomError('INVALID_REPLY');
     // This preflight respects pause on old relays; only a server-side check can close the read/send race.
     if ((await this.read(input.replyTo, signal)).aiPaused) throw new RoomError('ROOM_AI_PAUSED');
     // Never retry a write here: callers reconcile unknown outcomes with the same ID and body.

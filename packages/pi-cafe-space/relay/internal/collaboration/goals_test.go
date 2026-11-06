@@ -141,13 +141,13 @@ func TestGoalChangesWakeReadsWithoutSpendingChatCapacity(t *testing.T) {
 		}
 		goalChange(t, s, id, owner, "pause", bad, status)
 	}
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 501; i++ {
 		s.rooms[id].Messages = append(s.rooms[id].Messages, Message{Seq: i + 1, ID: fmt.Sprintf("capacity-%d", i), MemberID: ownerID.(string), Text: "Existing message", At: s.now()})
 	}
 	goalChange(t, s, id, owner, "pause", nil, 200)
 	goalChange(t, s, id, owner, "delete", nil, 200)
-	if len(s.rooms[id].Messages) != 500 || s.rooms[id].Version != 2 {
-		t.Fatal("full chat must not block control or discard the upgraded storage format")
+	if len(s.rooms[id].Messages) != 501 || s.rooms[id].Version != 2 {
+		t.Fatal("long chat must not block control or discard the upgraded storage format")
 	}
 	goalChange(t, s, id, owner, "create", map[string]any{"title": "Goal", "criteria": strings.Repeat("x", 4001), "reviewer": ownerID}, 400)
 	// Legacy rooms (without any Goal fields) still load; malformed goal state does not.

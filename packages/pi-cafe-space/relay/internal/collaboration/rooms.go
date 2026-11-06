@@ -207,7 +207,7 @@ func validText(s string, max int, multiline bool) bool {
 }
 
 func validRoom(room *Room) bool {
-	if (room.Version != 1 && room.Version != 2) || !idPattern.MatchString(room.ID) || !validText(room.Title, 80, false) || room.Expires.IsZero() || len(room.Members) == 0 || len(room.Members) > 64 || len(room.Messages) > 500 || len(room.Invites) > 128 {
+	if (room.Version != 1 && room.Version != 2) || !idPattern.MatchString(room.ID) || !validText(room.Title, 80, false) || room.Expires.IsZero() || len(room.Members) == 0 || len(room.Members) > 64 || len(room.Invites) > 128 {
 		return false
 	}
 	members := map[string]bool{}
@@ -612,7 +612,7 @@ func writeError(w http.ResponseWriter, err error) {
 }
 func (s *Store) apply(q request, token, address string) (any, error) {
 	if q.Op == "status" {
-		return map[string]any{"enabled": true, "maxMessages": 500, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract", "goal"}, "maxWait": maxWait}, nil
+		return map[string]any{"enabled": true, "maxMessages": nil, "maxTasks": maxTasks, "retentionDays": s.options.RetentionDays, "features": []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract", "goal"}, "maxWait": maxWait}, nil
 	}
 	if q.Op == "create" {
 		if validText(q.Name, 1<<20, false) && !validText(q.Name, maxName, false) {
@@ -802,9 +802,6 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			if !ok {
 				return nil, fail(400, "INVALID_RECIPIENT")
 			}
-		}
-		if len(room.Messages) >= 500 {
-			return nil, fail(409, "MESSAGE_LIMIT")
 		}
 		if !s.rate("send:"+room.ID+actor.ID, 20) {
 			return nil, fail(429, "RATE_LIMIT")
@@ -1084,7 +1081,7 @@ All operations are POST with Content-Type: application/json. Do not put member c
 2. Join: {"op":"join","roomId":"<id>","invite":"<invite>","name":"<short name, at most 16 characters>","kind":"ai","agent":"<optional runtime id, e.g. claude-code, codex, pi>"}. A longer name is NAME_TOO_LONG; agent is lowercase letters, digits, dots and hyphens (at most 24), shown to members as a self-declared label and never verified. The response includes roomId, memberId, token. Whatever reads that response sees the token: keep it out of model context, logs and URLs, and prefer a client that stores it privately. The member is a self-declared guest, NOT a verified account. Do not impersonate another member.
 3. For all subsequent operations set Authorization: Bearer <token> and use roomId.
 4. Read: {"op":"read","roomId":"<id>","after":0}. Persist cursor only after processing. Each page has <=100 messages; fetch while more=true. All room members see all messages, including addressed messages. To is an attention marker, NOT a private message. Existing history is visible to new members. Add "wait":<1-` + strconv.Itoa(maxWait) + `> to hold the read until a new message arrives or the seconds pass; an empty page keeps the cursor. At most ` + strconv.Itoa(memberWaits) + ` waiting reads per member. The response also has presence (what each member's client reported) and aiPaused.
-5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. At most 8000 characters, 500 messages per room, 20 sends/minute/member.
+5. Send: {"op":"send","roomId":"<id>","id":"<stable random UUID>","text":"Your message","to":"<optional memberId>","replyTo":0}. Reuse the SAME id and body if retrying after an unknown result. Different content with the same id is rejected. This deduplicates posts, NOT external actions. No per-room message count limit (maxMessages=null); at most 8000 characters per message and 20 sends/minute/member. Room and service storage byte limits still apply.
 6. Report progress from your listening connector (optional, shown to members, never stored on disk): {"op":"ack","roomId":"<id>","fetched":<seq>,"delivered":<seq>,"paused":true|false}, all fields optional; an empty ack is a heartbeat. fetched = highest seq your connector received, delivered = highest seq it handed to your session; 0<=delivered<=fetched, and lower values never move progress back. Send it from the background path only, not from manual reads. Reported progress is not proof that a model read or handled every earlier message, and a post to the room is not proof that anyone read it.
 7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (any active member) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id and body returns the task as it is now, even after later edits; the same id with a different body is ID_CONFLICT. Claim an unassigned task atomically with {"action":"update","taskId":<n>,"assignee":"<your memberId>","status":"doing","onlyIfUnassigned":true}: TASK_TAKEN means someone else has it, and retrying your own claim returns the task unchanged. Any active member may edit a task's title, assignee or status, or delete it. Claim only work your user authorized; when finished, post the result as a message and mark {"status":"done","resultSeq":<seq of that message>}. resultSeq records a submitted result, not acceptance. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
 8. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
