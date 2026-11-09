@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { execFile, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const windows = process.platform === 'win32';
 const client = fileURLToPath(new URL('./space-agent.mjs', import.meta.url));
@@ -133,6 +134,85 @@ test('Windows failed flush or rename keeps the old cursor and any temporary file
     const temporary = readdirSync(path).filter(name => name.endsWith('.tmp')); assert.equal(temporary.length, 1);
     assertPrivate(join(path, temporary[0]));
   }
+});
+
+async function listenerFixture(t, count = 1) {
+  const path = await home(t), acks = [], children = new Set(), waits = new Set();
+  let revision = 1, paused = false, failure = '';
+  const messages = Array.from({ length: count }, (_, i) => ({ seq: i + 1, memberId: 'peer', text: `message ${i + 1}` }));
+  const server = createServer(async (req, res) => {
+    let text = ''; for await (const chunk of req) text += chunk;
+    const q = JSON.parse(text); assert.equal(req.headers.authorization, 'Bearer ' + token);
+    res.setHeader('Content-Type', 'application/json');
+    if (q.op === 'ack') { acks.push(q); res.end('{}'); return; }
+    assert.equal(q.op, 'read');
+    const reply = () => res.end(JSON.stringify({ title: 'Synthetic room', members: [{ id: 'me', name: 'Me' }, { id: 'peer', name: 'Peer' }], tasks: [{ id: 42, title: 'Never dump the whole board', status: 'todo' }], goal: { id: 1, title: 'Synthetic goal', criteria: 'Synthetic acceptance', reviewer: 'a'.repeat(32), createdBy: 'a'.repeat(32), status: 'active', updatedAt: '2026-01-01T00:00:00Z' }, goalRevision: 1, aiPaused: paused, rev: revision, cursor: messages.at(-1)?.seq ?? 0, messages: messages.filter(m => m.seq > q.after), more: false }));
+    if (q.wait && q.after >= messages.length && q.since === revision) {
+      const timer = setTimeout(() => { waits.delete(wake); reply(); }, 25_000);
+      const wake = () => { clearTimeout(timer); waits.delete(wake); reply(); }; waits.add(wake);
+      res.on('close', () => { clearTimeout(timer); waits.delete(wake); });
+    } else reply();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  writeFileSync(join(path, 'member.json'), JSON.stringify({ origin: `http://127.0.0.1:${server.address().port}`, roomId: 'room', memberId: 'me', token }));
+  writeFileSync(join(path, 'state.json'), JSON.stringify({ fetched: 0, consumed: 0, skipped: [] }));
+  const state = () => JSON.parse(readFileSync(join(path, 'state.json'), 'utf8'));
+  const events = () => existsSync(join(path, 'events.jsonl')) ? readFileSync(join(path, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse) : [];
+  const start = () => {
+    const child = spawn(process.execPath, [client, '--home', path, 'listen', '--quiet'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child); let output = '';
+    child.stdout.on('data', data => output += data); child.stderr.on('data', data => output += data);
+    const done = new Promise(resolve => child.once('exit', code => { children.delete(child); assert(!output.includes(token)); if (code) failure = output; resolve(output); }));
+    return { child, done };
+  };
+  t.after(async () => {
+    for (const child of [...children]) { const exit = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exit; }
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  });
+  const until = async check => {
+    const end = Date.now() + 25_000;
+    while (Date.now() < end) { if (failure) throw Error(failure); if (check()) return; await sleep(50); }
+    throw Error('listener condition timed out');
+  };
+  return { path, acks, state, events, start, until,
+    async stop(listener) { listener.child.kill(); assert.equal(await listener.done, '', 'quiet listener prints nothing'); },
+    pause() { paused = true; revision++; for (const wake of [...waits]) wake(); } };
+}
+
+test('Windows quiet listen/tail preserves single ownership, increments and restart cursors', { skip: !windows }, async t => {
+  const f = await listenerFixture(t), first = f.start();
+  await f.until(() => f.acks.length > 0 && f.state().fetched === 1);
+  const duplicate = await run(f.path, ['listen', '--quiet']); assert.equal(duplicate.code, 2); assert.match(duplicate.err, /another listen/);
+  const tail = await run(f.path, ['tail', '--json']); assert.equal(tail.code, 0, tail.err);
+  const events = tail.out.split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(e => e.type), ['hello', 'msg', 'goal']);
+  assert.equal(events.find(e => e.type === 'msg').seq, 1);
+  assert(!tail.out.includes('Never dump the whole board'));
+  assert.equal(f.state().delivered, 1); assert.equal(f.state().consumed, 0);
+  assert.equal((await run(f.path, ['tail', '--json'])).out, '');
+  f.pause(); await f.until(() => f.events().some(e => e.type === 'pause'));
+  const delta = await run(f.path, ['tail', '--json']); assert.equal(delta.code, 0, delta.err);
+  assert.deepEqual(delta.out.split('\n').map(JSON.parse).map(e => e.type), ['pause']);
+  await f.until(() => !existsSync(join(f.path, 'state.lock'))); await f.stop(first);
+  const second = f.start(); await f.until(() => f.events().filter(e => e.type === 'hello').length === 2 && !existsSync(join(f.path, 'state.lock')));
+  const resumed = await run(f.path, ['tail', '--json']); assert.equal(resumed.code, 0, resumed.err);
+  assert.deepEqual(resumed.out.split('\n').map(JSON.parse).map(e => e.type), ['hello'], 'no message or goal replay');
+  await f.until(() => !existsSync(join(f.path, 'state.lock'))); await f.stop(second);
+  for (const name of ['member.json', 'state.json', 'inbox.jsonl', 'events.jsonl']) assertPrivate(join(f.path, name));
+});
+
+test('Windows listen backlog does not become delivered or consumed until explicit handling', { skip: !windows }, async t => {
+  const f = await listenerFixture(t, 21), listener = f.start();
+  await f.until(() => f.acks.length > 0 && f.state().fetched === 21);
+  const tail = await run(f.path, ['tail', '--json']); assert.equal(tail.code, 0, tail.err);
+  const events = tail.out.split('\n').map(JSON.parse);
+  assert.equal(events.filter(e => e.type === 'backlog').length, 1); assert(!events.some(e => e.type === 'msg'));
+  assert.equal(f.state().delivered ?? 0, 0); assert.equal(f.state().consumed, 0);
+  assert.equal((await run(f.path, ['done-goal', '1'])).code, 0);
+  assert.equal(JSON.parse((await run(f.path, ['next'])).out).seq, 1);
+  assert.equal((await run(f.path, ['done', '--through', '21'])).code, 0);
+  assert.equal(f.state().consumed, 21);
+  await f.until(() => !existsSync(join(f.path, 'state.lock'))); await f.stop(listener);
 });
 
 test('Windows ACL helper failure is fail-closed before credential reads', { skip: !windows }, async t => {
