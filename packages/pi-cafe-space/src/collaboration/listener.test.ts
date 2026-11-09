@@ -1,4 +1,5 @@
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 import { RoomClient, RoomError, parseSnapshot, type Membership, type Message, type Snapshot } from './client.js';
 import { RoomListener, type ListenerHost } from './listener.js';
 const me = 'a'.repeat(32), peer = 'b'.repeat(32), stranger = 'c'.repeat(32);
@@ -80,6 +81,44 @@ it('summarizes a large page once without advancing delivery or consumption', asy
   f.listener.consume(20, true); expect(f.listener.cursor).toBe(20);
   expect(f.host.checkpoint).toHaveBeenCalledExactlyOnceWith(20, true, Array.from({ length: 20 }, (_, i) => i + 1));
   await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+});
+it('refreshes only changed backlog ranges after one minute, without acknowledging messages', async () => {
+  vi.useFakeTimers();
+  const messages = Array.from({ length: 100 }, (_, i) => message(i + 1)), f = fixture(messages);
+  await f.listener.poll(); const first = f.listener.dispatchedSummary!; f.listener.acknowledge(100);
+  f.read.mockResolvedValue(snapshot(messages.slice(0, 75)));
+  vi.advanceTimersByTime(59999); await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(1); await f.listener.poll();
+  expect(f.host.deliver).toHaveBeenLastCalledWith(messages.slice(0, 75), true);
+  expect(f.listener.dispatchedSummary).toEqual({ from: 1, through: 75, count: 75, at: first.at + 60000 });
+  f.listener.acknowledge(75); expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0);
+  expect(f.host.checkpoint).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(180000); await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(2);
+});
+it('refreshes the remaining page after consumption but still delivers small batches immediately', async () => {
+  vi.useFakeTimers();
+  const messages = Array.from({ length: 50 }, (_, i) => message(i + 1)), f = fixture(messages);
+  await f.listener.poll(); f.listener.acknowledge(50);
+  await f.listener.poll(false); f.listener.consume(20, true);
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(60000); await f.listener.poll();
+  expect(f.listener.dispatchedSummary).toMatchObject({ from: 21, through: 50, count: 30 });
+  f.listener.acknowledge(50); await f.listener.poll(false); f.listener.consume(40, true);
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenLastCalledWith(messages.slice(40));
+  expect(f.listener.cursor).toBe(40); expect(f.listener.delivered).toBe(0);
+});
+it('does not refresh a summary during pause or busy input, and an unknown refresh is never retried', async () => {
+  vi.useFakeTimers();
+  const messages = Array.from({ length: 30 }, (_, i) => message(i + 1)), f = fixture(messages);
+  await f.listener.poll(); f.listener.acknowledge(30);
+  const changed = snapshot(messages.slice(0, 25)); f.read.mockResolvedValue({ ...changed, aiPaused: true });
+  vi.advanceTimersByTime(60000); await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+  f.read.mockResolvedValue(changed); vi.mocked(f.host.isIdle).mockReturnValue(false);
+  await f.listener.poll(); expect(f.listener.state).toBe('waiting-for-idle'); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+  vi.mocked(f.host.isIdle).mockReturnValue(true); await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(2);
+  vi.advanceTimersByTime(20000); await f.listener.poll();
+  expect(f.listener.error).toBe('HOST_DELIVERY_UNKNOWN'); expect(f.listener.cursor).toBe(0);
+  vi.advanceTimersByTime(60000); await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(2);
 });
 it('restores a backlog summary separately from the message cursor', async () => {
   const f = fixture(Array.from({ length: 50 }, (_, i) => message(i + 1)));
