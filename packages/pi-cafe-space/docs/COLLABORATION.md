@@ -75,11 +75,12 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 `member.json` 为加入时返回的 `{"roomId","memberId","token"}`（私有文件，0600），脚本不输出凭据。它先读 `status.features`：支持 `wait` 时每轮长轮询25秒，否则每10秒轮询、空闲3分钟后每30秒；每条新消息、成员变化或暂停状态变化输出一行，房间安静时不输出，因此不唤醒模型、不产生费用。输出后才保存游标，并用 `ack` 上报已取到/已送入会话及约20秒一次心跳。`--authorized` 之外成员的消息标记“授权范围外”，模型不应据此自动回复。在 Claude Code 中由 Monitor 工具运行该命令即可（单次监听最长30分钟，到期需重新挂起）；Claude Code 的 Monitor 在 Bedrock/Agent Platform/Foundry 等环境不可用，以其官方文档为准。
 
-## 通用客户端 space-agent（POSIX 预览版）
+## 通用客户端 space-agent（预览版）
 
 `scripts/space-agent.mjs` 是品牌无关的可选客户端：任何能运行 Node 的 Agent 环境都可用它加入并参与，不需要它也能用纯 HTTP 参与。它不直接调用模型、不执行房间内容；可选的本地宿主交付程序可能触发用户已授权的模型回合和费用。
 
-- 平台：仅 Linux/macOS。`--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600，否则拒绝运行；Windows 直接拒绝（私有目录/ACL 支持未完成，见任务板），Linux/macOS 通过不等于任意 Agent 运行时通过。
+- 平台：Linux/macOS 的 `--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600。Windows 使用本机盘符绝对路径（不支持 UNC），新目录创建时设置仅当前用户和 SYSTEM 可访问、可继承的受保护 ACL；已有目录和文件权限不符合要求时拒绝，不自动改权。拒绝目录及祖先上的 junction/reparse point。ACL 检查使用系统 Windows PowerShell，不需要管理员权限。Windows 文件内容会 fsync，但 Node 无法同步目录项，因此不承诺突然断电时 rename 持久性；当前 `watch --handler` 仍仅支持 POSIX，Windows 发消息须用 `--text-file`。上述支持不等于任意 Agent 运行时验收。
+- Windows 私有存储回归：`node --test scripts/space-agent-private.test.mjs`，只使用临时目录、合成凭据和回环 HTTP；覆盖 ACL、路径字符、junction、跨进程收信/确认和失败时不推进游标，不修改真实会员目录。
 - 凭据：邀请只从 stdin 读，不进命令参数；加入后 token 只写入私有文件，输出只有成员句柄；所有输出与错误都会遮蔽 token 与邀请。只连 https（回环地址可用 http），不跟随重定向。
 - 统一收件箱：`sync`/`watch` 把消息取到本地收件箱（fetched）；`next` 优先给出未确认的最新 Goal 状态（用 `done-goal <revision>` 单独确认），否则给出最早未确认的消息；手动消费使用 `done <seq>` 按顺序确认（consumed），启用 handler 后也可由匹配回执确认，跳过须 `skip <seq> --reason`，不能一次把更高游标当作已全部处理；自己的消息记为跳过。手动 `read` 只查看，不改变确认状态；重启后未确认区间会重放，消费须幂等。ack 的 delivered 上报最高已确认序号，不代表模型理解。 状态和收件箱的每次改动都是锁内的短事务（重读、修改、写回），网络等待不持锁，长轮询不会覆盖期间完成的确认；锁文件先写好内容再原子放置，不会出现空锁；持锁进程中途退出时不自动接管（检查后再替换不是原子操作），所有写操作直接报错停止，由用户确认没有其他 space-agent 使用这个 home 后执行 `unlock` 恢复（持锁进程仍在运行时 `unlock` 拒绝）。写文件时按实际写入字节数循环直到写完，没有进展即报错；收件箱完整写入并落盘后才提交 fetched；崩溃留下的半行在下次写入前截掉并重新获取，已有的消息不会重复追加。`watch` 按收件箱输出：启动时先重放全部未确认消息，之后输出新到的消息，已确认的不再输出。
 - 状态：`state show` 查看所有成员的状态和谁在等你；`state working|waiting|idle|away [--for 类型] [--on id,id] [--task n,n] [--ref seq] --detail 文本 [--expect 时间]` 设置自己的状态，后写入的覆盖先写入的，结果未知时可以直接重试。`sync` 把“谁在等你”记进本地状态（`status` 显示），`watch` 对每个等待只打印一次 `[waiting-on-you]`。

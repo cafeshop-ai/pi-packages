@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// space-agent: a POSIX preview client for Café Space collaboration rooms.
+// space-agent: a preview client for Café Space collaboration rooms.
 // It keeps the member token in a private directory and never prints it, keeps
 // one local inbox where "fetched" and "consumed" are separate, and recovers each
 // write according to what the protocol can prove (see RECOVERY below).
@@ -41,7 +41,7 @@
 //   task update, task delete ...... never retried: the intent is recorded, the task read back
 //   join .......................... never retried: it may have created a member
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { closeSync, constants, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, appendFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -54,18 +54,75 @@ const clean = text => { let out = String(text); for (const s of secrets) if (s) 
 const print = value => process.stdout.write(clean(typeof value === 'string' ? value : JSON.stringify(value)) + '\n');
 
 // --- private storage -------------------------------------------------------
+// Paths go through stdin, never PowerShell source; SID checks do not depend on the OS language.
+function windowsPrivate(path, directory = false, create = false) {
+  const script = `
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.Encoding]::UTF8
+$q = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$p = [IO.Path]::GetFullPath($q.path)
+for ($parent = $p; $parent; $parent = [IO.Path]::GetDirectoryName($parent)) {
+  if (Test-Path -LiteralPath $parent) {
+    if (([IO.File]::GetAttributes($parent) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse path' }
+  }
+}
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($q.create -and !(Test-Path -LiteralPath $p)) {
+  $acl = New-Object Security.AccessControl.DirectorySecurity
+  $acl.SetOwner($user)
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($sid in @($user.Value, 'S-1-5-18')) {
+    $identity = New-Object Security.Principal.SecurityIdentifier($sid)
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+  }
+  [void][IO.Directory]::CreateDirectory($p, $acl)
+}
+$item = Get-Item -LiteralPath $p -Force
+if ($item.PSIsContainer -ne $q.directory -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Wrong file type' }
+$acl = $item.GetAccessControl()
+if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'Wrong owner' }
+if ($q.directory -and !$acl.AreAccessRulesProtected) { throw 'Unprotected directory' }
+$owned = $false
+$full = [Security.AccessControl.FileSystemRights]::FullControl
+$children = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+  if ($rule.AccessControlType -ne 'Allow') { continue }
+  $sid = $rule.IdentityReference.Value
+  if ($sid -ne $user.Value -and $sid -ne 'S-1-5-18') { throw 'Public ACL' }
+  if ($sid -eq $user.Value -and ($rule.FileSystemRights -band $full) -eq $full -and $rule.PropagationFlags -eq 'None') {
+    if (!$q.directory -or ($rule.InheritanceFlags -band $children) -eq $children) { $owned = $true }
+  }
+}
+if (!$owned) { throw 'Missing owner access or child inheritance' }
+[Console]::Out.Write('ok')
+`;
+  try {
+    const result = execFileSync(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { input: JSON.stringify({ path, directory, create }), encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (result !== 'ok') throw Error('ACL check did not finish');
+  } catch { throw new Fail(`${path} requires a private Windows ACL (owner and SYSTEM only), inheritable for directories, with no reparse points`); }
+}
 function privateHome(home) {
-  if (process.platform === 'win32') throw new Fail('space-agent is a POSIX preview client: Windows private-directory ACLs are not supported yet');
-  if (!home || !home.startsWith('/')) throw new Fail('--home must be an absolute private directory');
-  if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
-  const info = lstatSync(home);
-  if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${home} must be a directory you own with mode 0700`);
+  if (process.platform === 'win32') {
+    // shortcut: only fully qualified local drive paths; add UNC support with remote ACL tests when needed.
+    if (!home || !/^[a-z]:[\\/]/i.test(home)) throw new Fail('--home must be an absolute local-drive private directory');
+    windowsPrivate(home, true, true);
+  } else {
+    if (!home || !home.startsWith('/')) throw new Fail('--home must be an absolute private directory');
+    if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
+    const info = lstatSync(home);
+    if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${home} must be a directory you own with mode 0700`);
+  }
   return home;
 }
 function readPrivate(path, fallback) {
   if (!existsSync(path)) return fallback;
   const info = lstatSync(path);
-  if (!info.isFile() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${path} must be a file you own with mode 0600`);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Fail(`${path} must be a private regular file`);
+  if (process.platform === 'win32') windowsPrivate(path);
+  else if ((info.mode & 0o077) !== 0 || info.uid !== process.getuid()) throw new Fail(`${path} must be a file you own with mode 0600`);
   return readFileSync(path, 'utf8');
 }
 // writeSync may legally write fewer bytes than asked: keep going until all of it is written, and
@@ -79,13 +136,18 @@ function writeAll(fd, text, position = 0) {
   }
 }
 function writePrivate(path, text) {
+  if (process.platform === 'win32') windowsPrivate(dirname(path), true);
   const tmp = `${path}.${process.pid}.tmp`;
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   try { writeAll(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path); syncDirectory(dirname(path));
 }
 // A rename survives power loss only once the directory entry is on disk too.
-function syncDirectory(path) { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path) {
+  // shortcut: Node cannot fsync Windows directories; file data is flushed, power-loss rename durability needs a native helper.
+  if (process.platform === 'win32') return;
+  const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 const readJSON = (path, fallback) => { const text = readPrivate(path, null); return text === null ? fallback : JSON.parse(text); };
 
 // --- one writer at a time ----------------------------------------------------
