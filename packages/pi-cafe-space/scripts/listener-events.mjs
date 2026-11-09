@@ -84,7 +84,7 @@ export function helloEvent(page, me) {
 }
 
 const flat = text => String(text).replace(/\r?\n/g, ' ⏎ ').replace(/[\t ]+/g, ' ').trim();
-const who = (names, id, me) => id === me ? '你' : names?.[id] ?? (id ? id.slice(0, 6) : '?');
+const who = (names, id, me) => id === me ? '你' : flat(names?.[id] ?? (id ? id.slice(0, 6) : '?'));
 const taskStatus = { todo: 'todo', doing: 'doing', done: 'done' };
 
 /** One line per event, with a fixed prefix the model can scan. */

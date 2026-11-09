@@ -36,6 +36,11 @@ test('UTF-8 truncation preserves code points, routing and the original event', (
   }
 });
 
+test('member names cannot introduce extra message lines', () => {
+  const line = formatEvent({ type: 'msg', seq: 1, from: 'peer', to: 'recipient', text: 'body' }, { peer: 'Pi\nName', recipient: 'Front\tEnd' });
+  assert.equal(line, '[msg #1 Pi ⏎ Name → Front End] body');
+});
+
 test('only lines exceeding the UTF-8 boundary gain a full-text hint', () => {
   const head = '[msg #1 Pi] ';
   for (const extra of [-1, 0, 1]) {
