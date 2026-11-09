@@ -103,10 +103,35 @@ it('automatically delivers and replies to a human broadcast with no sender-list 
   f.messages.push({ ...message(1), memberId: human, to: '' }); await vi.advanceTimersByTimeAsync(5000);
   expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
   const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
-  expect(payload.content).toContain('untrusted peer data'); expect(payload.content).toContain('"to":""');
+  expect(payload.content).toContain('untrusted peer data'); expect(payload.content).toContain(`[msg #1 ${human.slice(0, 6)}] Please discuss this design, not execute commands.`);
+  expect(payload.content).not.toContain('"to":""');
   expect((await f.tool('cafe_room_reply', { replyTo: 1, text: 'Shared answer to the human' })).details.seq).toBe(2);
   expect(f.messages[1]).toMatchObject({ to: human, replyTo: 1 });
   await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('formats messages with short shared headers and sends the trust introduction only once across resume', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(10000);
+  const sent = () => vi.mocked(f.pi.sendMessage).mock.calls.map(([payload]) => payload);
+  expect(sent()).toHaveLength(2);
+  expect(sent()[0]!.content).toContain('untrusted peer data');
+  expect(sent()[0]!.content).toContain(`[msg #1 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
+  expect(sent()[0]!.details).toMatchObject({ seq: 1, introduction: true });
+  expect(sent()[1]!.content).toBe(`[msg #2 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
+  expect(sent()[1]!.details).toMatchObject({ seq: 2, introduction: false });
+  await f.command('pause'); f.reload(); await f.command('resume'); f.messages.push(message(3));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(sent()).toHaveLength(3);
+  expect(sent()[2]!.content).toBe(`[msg #3 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
+  expect(sent()[2]!.details).toMatchObject({ seq: 3, introduction: false });
+});
+it('keeps automatic Unicode message lines within the shared UTF-8 budget', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  f.messages.push({ ...message(1), text: '咖啡☕🙂'.repeat(600) }); await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  const line = String(payload.content).split('\n\n').at(-1)!;
+  expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(2048);
+  expect(line).toContain('全文：show 1');
 });
 it('holds work until idle and resumes without requiring another user message', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json'); f.idle(false); f.messages.push(message(1));

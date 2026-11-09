@@ -11,12 +11,14 @@ test('release allowlist includes the independent room bridge without source, tes
  assert(files.includes('dist/extension/private-json.js'));
  assert(files.includes('scripts/space-agent.mjs'), 'the universal client must be available in the installed package');
  assert(files.includes('scripts/collaboration-goal.mjs'), 'the universal client must include its Goal dependency');
+ assert(files.includes('scripts/listener-events.mjs'), 'the Pi bridge must include its shared event formatter');
 });
 test('the bridge shared script imports exist in the release allowlist', async () => {
  const files = releaseFiles(['windows-amd64']);
- const client = await readFile(new URL('../../src/collaboration/client.ts', import.meta.url), 'utf8');
- const scripts = [...client.matchAll(/from ['"]\.\.\/\.\.\/(scripts\/[^'"]+\.mjs)['"]/g)].map(match => match[1]);
+ const sources = await Promise.all(['client.ts', 'extension.ts'].map(name => readFile(new URL('../../src/collaboration/' + name, import.meta.url), 'utf8')));
+ const scripts = [...sources.join('\n').matchAll(/from ['"]\.\.\/\.\.\/(scripts\/[^'"]+\.mjs)['"]/g)].map(match => match[1]);
  assert(scripts.includes('scripts/collaboration-goal.mjs'));
+ assert(scripts.includes('scripts/listener-events.mjs'));
  for (const script of scripts) { assert(files.includes(script), script); await readFile(new URL('../../' + script, import.meta.url)); }
 });
 test('every module space-agent imports ships with it', async () => {
