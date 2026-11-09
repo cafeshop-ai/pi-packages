@@ -1,8 +1,9 @@
 import { RoomClient, RoomError, type Message } from './client.js';
+import { maxBatchMessages } from '../../scripts/listener-events.mjs';
 
 export interface ListenerHost {
   isIdle(): boolean;
-  deliver(message: Message): void;
+  deliver(messages: readonly Message[]): void;
   checkpoint(cursor: number, consumed?: boolean): void;
 }
 /** Receipt means Pi stored the external message, not that a model read it or completed work. */
@@ -10,7 +11,8 @@ export class RoomListener {
   cursor: number;
   state: 'listening' | 'waiting-for-idle' | 'awaiting-host-receipt' | 'room-paused' | 'paused' = 'listening';
   error: string | undefined;
-  pending: Message | undefined;
+  names: Record<string, string> = {};
+  private queued: Message[] = [];
   private readonly abort = new AbortController();
   private polling: Promise<number> | undefined;
   private awaitingReceipt = false;
@@ -19,20 +21,21 @@ export class RoomListener {
     if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor) throw new RoomError('INVALID_CURSOR');
     this.cursor = cursor;
   }
+  get pending(): Message | undefined { return this.queued[0]; }
   get undispatched(): Message | undefined { return this.awaitingReceipt ? undefined : this.pending; }
   pause() { this.state = 'paused'; this.abort.abort(); }
   acknowledge(sequence: number) {
-    if (!this.awaitingReceipt || this.pending?.seq !== sequence) return;
+    if (!this.awaitingReceipt || this.queued.at(-1)?.seq !== sequence) return;
     // Only the host's actual message event acknowledges dispatch, never sendMessage() returning void.
     this.commit(sequence);
     this.deliveredCursor = Math.max(this.deliveredCursor, sequence);
-    this.pending = undefined;
+    this.queued = [];
     this.awaitingReceipt = false;
     if (this.state !== 'paused') this.state = 'listening';
   }
   consume(sequence: number) {
     if (this.state === 'paused' || this.awaitingReceipt || this.pending?.seq !== sequence) throw new RoomError('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
-    this.commit(sequence, true); this.pending = undefined;
+    this.commit(sequence, true); this.queued.shift();
     if (this.state !== 'room-paused') this.state = 'listening';
   }
   private commit(sequence: number, consumed = false) {
@@ -52,14 +55,17 @@ export class RoomListener {
       if (this.abort.signal.aborted) return 5000;
       const active = new Set(snapshot.members.filter(m => !m.removed).map(m => m.id));
       const me = this.client.membership.memberId;
-      if (this.pending && !active.has(this.pending.memberId)) {
+      this.names = Object.fromEntries(snapshot.members.map(m => [m.id, m.name]));
+      if (this.queued.some(m => !active.has(m.memberId))) {
         this.error = 'SENDER_REMOVED'; this.pause(); return 5000;
       }
-      if (!this.pending) {
+      if (!this.awaitingReceipt) {
+        this.queued = [];
         for (const message of snapshot.messages) {
           if (message.seq <= this.cursor) continue;
-          if (message.memberId !== me && active.has(message.memberId)) { this.pending = message; break; }
-          this.commit(message.seq);
+          if (message.memberId !== me && active.has(message.memberId)) this.queued.push(message);
+          else if (!this.queued.length) this.commit(message.seq);
+          if (this.queued.length === maxBatchMessages) break;
         }
       }
       this.error = undefined;
@@ -73,7 +79,7 @@ export class RoomListener {
         this.awaitingReceipt = true;
         this.state = 'awaiting-host-receipt';
         this.dispatchedAt = Date.now();
-        try { this.host.deliver(this.pending); }
+        try { this.host.deliver(this.queued); }
         catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
       }
       return 5000;

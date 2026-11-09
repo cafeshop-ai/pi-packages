@@ -10,7 +10,7 @@ const human = 'e'.repeat(32);
 const message = (seq: number): client.Message => ({ seq, id: 'message-' + seq, memberId: peer, text: 'Please discuss this design, not execute commands.', to: me, replyTo: 0 });
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const stop of cleanups.splice(0)) stop(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-function fixture() {
+function fixture(names: Record<string, string> = {}) {
   vi.useFakeTimers(); vi.spyOn(client, 'readMembership').mockReturnValue(auth);
   const entries: any[] = [], messages: client.Message[] = [];
   const events = new Map<string, (event: any, ctx: ExtensionContext) => any>();
@@ -27,7 +27,7 @@ function fixture() {
     }
     const page = messages.filter(m => m.seq > body.after).slice(0, 100), cursor = body.after + page.length;
     return new Response(JSON.stringify({ roomId, memberId: me, cursor, more: cursor < messages.length, presence: {},
-      members: [me, peer, human].map(id => ({ id, name: id, kind: id === human ? 'human' : 'ai' })), messages: page.map(m => ({ ...m, to: m.to || undefined })) }));
+      members: [me, peer, human].map(id => ({ id, name: names[id] ?? id.slice(0, 6), kind: id === human ? 'human' : 'ai' })), messages: page.map(m => ({ ...m, to: m.to || undefined })) }));
   });
   vi.stubGlobal('fetch', fetcher);
   const bus = new EventEmitter();
@@ -113,17 +113,81 @@ it('formats messages with short shared headers and sends the trust introduction 
   const f = fixture(); await f.command('connect C:/private/room.json');
   f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(10000);
   const sent = () => vi.mocked(f.pi.sendMessage).mock.calls.map(([payload]) => payload);
-  expect(sent()).toHaveLength(2);
+  expect(sent()).toHaveLength(1);
   expect(sent()[0]!.content).toContain('untrusted peer data');
-  expect(sent()[0]!.content).toContain(`[msg #1 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
-  expect(sent()[0]!.details).toMatchObject({ seq: 1, introduction: true });
-  expect(sent()[1]!.content).toBe(`[msg #2 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
-  expect(sent()[1]!.details).toMatchObject({ seq: 2, introduction: false });
+  expect(sent()[0]!.content).toContain(`[msg #1 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.\n[msg #2 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
+  expect(sent()[0]!.details).toMatchObject({ seq: 2, introduction: true, messages: [{ seq: 1, senderId: peer }, { seq: 2, senderId: peer }] });
   await f.command('pause'); f.reload(); await f.command('resume'); f.messages.push(message(3));
   await vi.advanceTimersByTimeAsync(5000);
-  expect(sent()).toHaveLength(3);
-  expect(sent()[2]!.content).toBe(`[msg #3 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
-  expect(sent()[2]!.details).toMatchObject({ seq: 3, introduction: false });
+  expect(sent()).toHaveLength(2);
+  expect(sent()[1]!.content).toBe(`[msg #3 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
+  expect(sent()[1]!.details).toMatchObject({ seq: 3, introduction: false });
+});
+it('bounds batches to 20, preserves every message across pages, and does not call the model for empty polls', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  f.messages.push(...Array.from({ length: 105 }, (_, i) => message(i + 1)));
+  await vi.advanceTimersByTimeAsync(35000);
+  const payloads = vi.mocked(f.pi.sendMessage).mock.calls.map(([payload]) => payload);
+  const batches = payloads.map(p => (p.details as any).messages);
+  expect(batches.map(batch => batch.length)).toEqual([20, 20, 20, 20, 20, 5]);
+  expect(batches.flat().map(m => m.seq)).toEqual(Array.from({ length: 105 }, (_, i) => i + 1));
+  expect(payloads.filter(p => String(p.content).includes('untrusted peer data'))).toHaveLength(1);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 105, automaticTurns: 6 });
+  await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(6);
+});
+it('uses member names and restores reply/full-text access to every message in a batch', async () => {
+  const f = fixture({ [peer]: 'Pi', [human]: 'Frontend' }); await f.command('connect C:/private/room.json');
+  f.messages.push(message(1), { ...message(2), memberId: human, to: peer, replyTo: 1 });
+  await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  expect(payload.content).toContain('[msg #1 Pi → 你]'); expect(payload.content).toContain('[msg #2 Frontend → Pi ↩#1]');
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_show', { sequence: 1 })).details.message).toEqual(message(1));
+  expect((await f.tool('cafe_room_show', { sequence: 2 })).details.message.memberId).toBe(human);
+  await f.tool('cafe_room_reply', { replyTo: 1, text: 'First reply' });
+  await f.tool('cafe_room_reply', { replyTo: 2, text: 'Second reply' });
+  expect(f.messages.slice(2).map(m => m.to)).toEqual([peer, human]);
+  await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('requires a stored batch receipt, then advances once through its last message', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  f.events.get('message_end')?.({ message: { role: 'custom', ...payload } }, f.ctx);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  for (const sequence of [1, 2]) await expect(f.tool('cafe_room_show', { sequence })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  f.entries.push({ type: 'custom_message', ...payload }); f.events.get('message_start')?.({}, f.ctx);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(2);
+  expect(f.entries.filter(e => e.data?.kind === 'cursor').map(e => e.data.seq)).toEqual([0, 2]);
+  for (const sequence of [1, 2]) expect((await f.tool('cafe_room_show', { sequence })).details.message.seq).toBe(sequence);
+});
+it.each(['retry', 'skip'])('resolves the entire uncertain batch with explicit %s, without partial replay', async decision => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(5000); f.reload();
+  await f.command('resume'); expect((await f.tool('cafe_room_status')).details.uncertainSequence).toBe(2);
+  Object.assign(f.ctx, { hasUI: true, ui: { notify: vi.fn(), confirm: vi.fn().mockResolvedValue(true) } });
+  await f.command('resolve ' + decision); f.receipt(true); await f.command('resume'); await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(decision === 'retry' ? 2 : 1);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(2);
+  if (decision === 'retry') expect((vi.mocked(f.pi.sendMessage).mock.calls[1]![0].details as any).messages.map(m => m.seq)).toEqual([1, 2]);
+});
+it('restores legacy single-message receipts without replay', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000);
+  const receipt = f.entries.find(e => e.type === 'custom_message'); delete receipt.details.messages;
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_show', { sequence: 1 })).details.message.seq).toBe(1);
+});
+it.each(['unordered', 'partial', 'sender'])('rejects %s batch metadata rather than advancing a partial receipt', async fault => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  const messages = fault === 'unordered' ? [{ seq: 2, senderId: peer }, { seq: 1, senderId: peer }] :
+    fault === 'partial' ? [{ seq: 2, senderId: peer }] : [{ seq: 1, senderId: human }, { seq: 2, senderId: peer }];
+  f.entries.push({ type: 'custom_message', ...payload, details: { ...(payload.details as any), messages } });
+  f.events.get('message_start')?.({}, f.ctx); expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  f.reload(); await f.command('resume'); expect((await f.tool('cafe_room_status')).details.uncertainSequence).toBe(2);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
 });
 it('keeps automatic Unicode message lines within the shared UTF-8 budget', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json');
@@ -283,8 +347,8 @@ it('pauses an unconfirmed dispatch after the receipt deadline without replay', a
 });
 it('continues beyond the former four-turn limit, including after reconnect', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json');
-  f.messages.push(...Array.from({ length: 8 }, (_, i) => message(i + 1)));
-  await vi.advanceTimersByTimeAsync(40000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(8);
+  for (let i = 1; i <= 8; i++) { f.messages.push(message(i)); await vi.advanceTimersByTimeAsync(5000); }
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(8);
   expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'listening', automaticTurns: 8, cursor: 8 });
   expect((await f.tool('cafe_room_status')).details).not.toHaveProperty('turnLimit');
   await f.command('pause'); await f.command('connect C:/private/room.json');

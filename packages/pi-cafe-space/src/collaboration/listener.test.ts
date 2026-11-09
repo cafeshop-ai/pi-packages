@@ -16,12 +16,44 @@ it('resumes delivery and checkpoints beyond message 500', async () => {
   const { client, host } = fixture([message(502)]);
   const listener = new RoomListener(client, host, 501, 501);
   await listener.poll();
-  expect(host.deliver).toHaveBeenCalledWith(message(502));
+  expect(host.deliver).toHaveBeenCalledWith([message(502)]);
   listener.acknowledge(502);
   expect(listener.cursor).toBe(502);
   expect(host.checkpoint).toHaveBeenCalledWith(502);
   listener.pause();
   expect(() => new RoomListener(client, host, Number.MAX_SAFE_INTEGER + 1)).toThrow('INVALID_CURSOR');
+});
+it('keeps a dispatched batch stable until its final sequence is acknowledged', async () => {
+  const f = fixture([message(1), message(2)]); await f.listener.poll();
+  f.read.mockResolvedValue(snapshot([message(1), message(2), message(3)]));
+  f.listener.acknowledge(1); await f.listener.poll();
+  expect(f.listener.cursor).toBe(0); expect(f.host.checkpoint).not.toHaveBeenCalled();
+  expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith([message(1), message(2)]);
+  expect(() => f.listener.consume(1)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  f.listener.acknowledge(2); expect(f.host.checkpoint).toHaveBeenCalledExactlyOnceWith(2);
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenLastCalledWith([message(3)]);
+});
+it('manual confirmation removes only the first message before automatic batching', async () => {
+  const f = fixture([message(1), message(2), message(3)]);
+  await f.listener.poll(false); f.listener.consume(1);
+  expect(f.listener.pending?.seq).toBe(2); expect(f.listener.cursor).toBe(1);
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith([message(2), message(3)]);
+});
+it('does not skip an unacknowledged batch across self echoes and removed senders', async () => {
+  const f = fixture([message(1), message(2, { memberId: me }), message(3, { memberId: stranger }), message(4)]);
+  const page = snapshot([message(1), message(2, { memberId: me }), message(3, { memberId: stranger }), message(4)]);
+  page.members[2]!.removed = true; f.read.mockResolvedValue(page);
+  await f.listener.poll(); expect(f.listener.cursor).toBe(0);
+  expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith([message(1), message(4)]);
+  f.listener.acknowledge(1); expect(f.listener.cursor).toBe(0);
+  f.listener.acknowledge(4); expect(f.listener.cursor).toBe(4);
+});
+it('stops if any queued sender is removed, not only the first', async () => {
+  const f = fixture([message(1), message(2, { memberId: stranger })]);
+  vi.mocked(f.host.isIdle).mockReturnValue(false); await f.listener.poll();
+  const page = snapshot([message(1), message(2, { memberId: stranger })]); page.members[2]!.removed = true;
+  f.read.mockResolvedValue(page); vi.mocked(f.host.isIdle).mockReturnValue(true); await f.listener.poll();
+  expect(f.listener.error).toBe('SENDER_REMOVED'); expect(f.listener.cursor).toBe(0); expect(f.host.deliver).not.toHaveBeenCalled();
 });
 it('does not confuse dispatch with a native host receipt, and does not redeliver', async () => {
   const { listener, host } = fixture();
@@ -43,15 +75,15 @@ it('delivers queued input when the current session becomes idle', async () => {
 it('delivers all active members’ room messages without a sender list or mention, but skips self echoes', async () => {
   const messages = [message(1, { memberId: me }), message(2, { memberId: stranger, to: '' }), message(3, { to: '' }), message(4, { to: stranger }), message(5)];
   const { listener, host } = fixture(messages);
-  vi.mocked(host.deliver).mockImplementation(m => listener.acknowledge(m.seq));
+  vi.mocked(host.deliver).mockImplementation(batch => listener.acknowledge(batch.at(-1)!.seq));
   for (let i = 0; i < 5; i++) await listener.poll();
-  expect(vi.mocked(host.deliver).mock.calls.map(([m]) => m)).toEqual(messages.slice(1));
+  expect(vi.mocked(host.deliver).mock.calls.map(([batch]) => batch)).toEqual([messages.slice(1)]);
   expect(listener.cursor).toBe(5);
 });
 it('does not deliver messages from removed members', async () => {
   const { listener, host, read } = fixture();
   const changed = snapshot([message(1, { memberId: stranger, to: '' }), message(2)]); changed.members[2]!.removed = true; read.mockResolvedValue(changed);
-  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(2)); expect(listener.cursor).toBe(1);
+  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith([message(2)]); expect(listener.cursor).toBe(1);
 });
 it('does not inject a late read result after cancellation or start overlapping polls', async () => {
   const { listener, host, read } = fixture(); let resolve!: (s: Snapshot) => void;
@@ -80,10 +112,11 @@ it('continues delivering without a turn-count or listening-duration quota', asyn
   vi.useFakeTimers();
   try {
     const { listener, host } = fixture(Array.from({ length: 100 }, (_, i) => message(i + 1)));
-    vi.mocked(host.deliver).mockImplementation(m => listener.acknowledge(m.seq));
+    vi.mocked(host.deliver).mockImplementation(batch => listener.acknowledge(batch.at(-1)!.seq));
     for (let i = 0; i < 100; i++) { vi.advanceTimersByTime(60000); await listener.poll(); }
-    expect(host.deliver).toHaveBeenCalledTimes(100); expect(listener.cursor).toBe(100); expect(listener.state).toBe('listening');
-    listener.pause(); await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(100);
+    expect(host.deliver).toHaveBeenCalledTimes(5); expect(listener.cursor).toBe(100); expect(listener.state).toBe('listening');
+    expect(vi.mocked(host.deliver).mock.calls.flatMap(([batch]) => batch.map(m => m.seq))).toEqual(Array.from({ length: 100 }, (_, i) => i + 1));
+    listener.pause(); await listener.poll(); expect(host.deliver).toHaveBeenCalledTimes(5);
   } finally { vi.useRealTimers(); }
 });
 it('recovers from transient failure without requiring user renewal', async () => {
@@ -96,7 +129,7 @@ it('manual reads and consumption share the room inbox without starting a turn', 
   await listener.poll(false); expect(listener.undispatched?.seq).toBe(2); expect(listener.cursor).toBe(1); expect(host.deliver).not.toHaveBeenCalled();
   expect(() => listener.consume(3)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
   listener.consume(2); expect(host.checkpoint).toHaveBeenCalledWith(2, true);
-  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith(message(3));
+  await listener.poll(); expect(host.deliver).toHaveBeenCalledExactlyOnceWith([message(3)]);
   expect(() => listener.consume(3)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
   expect(listener.undispatched).toBeUndefined();
 });
@@ -119,9 +152,10 @@ it('reports fetched separately from persisted host delivery, even while busy', a
   expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 0, paused: false }, expect.any(AbortSignal));
   vi.mocked(host.isIdle).mockReturnValue(true); await listener.poll();
   await listener.poll(); expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 0, paused: false }, expect.any(AbortSignal));
-  listener.acknowledge(1); await listener.poll();
-  expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 1, paused: false }, expect.any(AbortSignal));
-  expect(host.deliver).toHaveBeenCalledTimes(2);
+  listener.acknowledge(1); expect(listener.cursor).toBe(0);
+  listener.acknowledge(2); await listener.poll();
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 2, delivered: 2, paused: false }, expect.any(AbortSignal));
+  expect(host.deliver).toHaveBeenCalledExactlyOnceWith([message(1), message(2)]);
 });
 it('manual reads and consumption do not advertise background presence or automatic delivery', async () => {
   const { listener, client } = fixture(); client.supportsPresence = true;
