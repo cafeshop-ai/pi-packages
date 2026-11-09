@@ -13,6 +13,7 @@ afterEach(() => { for (const stop of cleanups.splice(0)) stop(); vi.useRealTimer
 function fixture(names: Record<string, string> = {}) {
   vi.useFakeTimers(); vi.spyOn(client, 'readMembership').mockReturnValue(auth);
   const entries: any[] = [], messages: client.Message[] = [];
+  const controls: Partial<client.Snapshot> = {};
   const events = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const commands = new Map<string, any>(), tools = new Map<string, any>();
   let idle = true, receipt = true, session = 'session-one';
@@ -27,7 +28,7 @@ function fixture(names: Record<string, string> = {}) {
     }
     const page = messages.filter(m => m.seq > body.after).slice(0, 100), cursor = body.after + page.length;
     return new Response(JSON.stringify({ roomId, memberId: me, cursor, more: cursor < messages.length, presence: {},
-      members: [me, peer, human].map(id => ({ id, name: names[id] ?? id.slice(0, 6), kind: id === human ? 'human' : 'ai' })), messages: page.map(m => ({ ...m, to: m.to || undefined })) }));
+      members: [me, peer, human].map(id => ({ id, name: names[id] ?? id.slice(0, 6), kind: id === human ? 'human' : 'ai' })), messages: page.map(m => ({ ...m, to: m.to || undefined })), ...controls }));
   });
   vi.stubGlobal('fetch', fetcher);
   const bus = new EventEmitter();
@@ -43,8 +44,77 @@ function fixture(names: Record<string, string> = {}) {
   const command = (args: string) => commands.get('cafe').handler('collab ' + args, ctx);
   const tool = (name: string, params = {}, signal?: AbortSignal) => tools.get(name).execute('call', params, signal, undefined, ctx);
   const reload = () => { events.get('session_shutdown')?.({}, ctx); bus.removeAllListeners(); commands.clear(); extension(pi); };
-  return { pi, ctx, entries, messages, events, commands, command, tool, fetcher, reload, idle: (value: boolean) => { idle = value; }, receipt: (value: boolean) => { receipt = value; }, session: (value: string) => { session = value; } };
+  return { pi, ctx, entries, messages, controls, events, commands, command, tool, fetcher, reload, idle: (value: boolean) => { idle = value; }, receipt: (value: boolean) => { receipt = value; }, session: (value: string) => { session = value; } };
 }
+it('delivers controls through backlog at a fixed message cursor and restores receipts without granting message access', async () => {
+  const f = fixture(); f.controls.tasks = []; f.controls.waitingOnYou = [];
+  await f.command('connect C:/private/room.json');
+  f.messages.push(...Array.from({ length: 50 }, (_, i) => message(i + 1))); await vi.advanceTimersByTimeAsync(5000);
+  f.controls.tasks = [{ id: 1, title: 'Only this task', status: 'doing' }];
+  f.controls.waitingOnYou = [peer];
+  await vi.advanceTimersByTimeAsync(10000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[1]![0];
+  expect(payload.content).toContain('[task #1 新建 doing 未指派] Only this task');
+  expect(payload.content).toContain('[waiting-on-you'); expect(payload.content).not.toContain('untrusted peer data');
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  await expect(f.tool('cafe_room_show', { sequence: 1 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(15000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(2);
+  const reports = f.fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(q => q.op === 'ack');
+  expect(reports.at(-1)).toMatchObject({ fetched: 50, delivered: 0 });
+});
+it('confirms only host-delivered Goal revisions and retains explicit confirmation across resume', async () => {
+  const f = fixture(); f.controls.goal = null; f.controls.goalRevision = 1;
+  await f.command('connect C:/private/room.json');
+  await expect(f.tool('cafe_room_done_goal', { revision: 1 })).rejects.toThrow('DELIVERED_GOAL_REQUIRED');
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(vi.mocked(f.pi.sendMessage).mock.calls[0]![0].content).toContain('[goal r1 已删除]');
+  expect((await f.tool('cafe_room_done_goal', { revision: 1 })).details.goalConsumed).toBe(1);
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_done_goal', { revision: 1 })).details.goalConsumed).toBe(1);
+  await expect(f.tool('cafe_room_done_goal', { revision: 2 })).rejects.toThrow('DELIVERED_GOAL_REQUIRED');
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+});
+it.each(['retry', 'skip'])('requires local resolution for an unknown control dispatch: %s', async decision => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify, confirm: async () => true } });
+  f.controls.waitingOnYou = [peer]; f.receipt(false); await f.command('connect C:/private/room.json');
+  await vi.advanceTimersByTimeAsync(25000); f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_status')).details.uncertainSequence).toBe(1);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  await f.command('resolve ' + decision);
+  // A late receipt for a locally resolved attempt must not consume the pending batch again.
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  f.entries.push({ type: 'custom_message', ...payload });
+  f.receipt(true); await f.command('resume');
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(decision === 'retry' ? 2 : 1);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+});
+it('records pause transitions without automatic turns until resume, and without replay afterwards', async () => {
+  const f = fixture(); f.controls.aiPaused = false; await f.command('connect C:/private/room.json');
+  f.controls.aiPaused = true; await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).not.toHaveBeenCalled(); expect((await f.tool('cafe_room_status')).details.state).toBe('room-paused');
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).not.toHaveBeenCalled();
+  f.controls.aiPaused = false; await vi.advanceTimersByTimeAsync(10000);
+  const sent = vi.mocked(f.pi.sendMessage).mock.calls.map(([p]) => p.content);
+  expect(sent).toHaveLength(2); expect(sent[0]).toContain('[pause on]'); expect(sent[1]).toContain('[pause off]');
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(2); expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+});
+it('rejects partial control receipts and restores the original pending batch', async () => {
+  const f = fixture(); f.controls.tasks = []; f.controls.waitingOnYou = [];
+  await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.controls.tasks = [{ id: 1, title: 'Task', status: 'todo' }]; f.controls.waitingOnYou = [peer];
+  await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0] as any;
+  f.entries.push({ type: 'custom_message', ...payload, details: { ...payload.details, control: { ...payload.details.control, events: payload.details.control.events.slice(0, 1) } } });
+  await f.events.get('message_end')!({}, f.ctx); await vi.advanceTimersByTimeAsync(20000);
+  expect((await f.tool('cafe_room_status')).details.error).toBe('HOST_DELIVERY_UNKNOWN');
+  f.reload(); await f.command('resume'); expect((await f.tool('cafe_room_status')).details.uncertainSequence).toBe(1);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
 it('only registers /cafe, and usage and status never read credentials or start a network request', async () => {
   const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } });
   expect([...f.commands.keys()]).toEqual(['cafe']);

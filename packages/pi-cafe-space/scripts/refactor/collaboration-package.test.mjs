@@ -6,7 +6,7 @@ import { releaseFiles } from './release.mjs';
 test('release allowlist includes the independent room bridge without source, tests or credentials', () => {
  const files = releaseFiles(['windows-amd64']);
  assert(files.includes('MANAGED_SESSIONS.md'));
- assert.deepEqual(files.filter(file => file.startsWith('dist/collaboration/')), ['client', 'commands', 'extension', 'listener'].map(name => 'dist/collaboration/' + name + '.js'));
+ assert.deepEqual(files.filter(file => file.startsWith('dist/collaboration/')), ['client', 'commands', 'controls', 'extension', 'listener'].map(name => 'dist/collaboration/' + name + '.js'));
  assert(!files.some(file => file.startsWith('src/') || file.includes('.test.') || file.endsWith('.map') || file.includes('credentials') || file.includes('member.json')));
  assert(files.includes('dist/extension/private-json.js'));
  assert(files.includes('scripts/space-agent.mjs'), 'the universal client must be available in the installed package');
@@ -15,7 +15,7 @@ test('release allowlist includes the independent room bridge without source, tes
 });
 test('the bridge shared script imports exist in the release allowlist', async () => {
  const files = releaseFiles(['windows-amd64']);
- const sources = await Promise.all(['client.ts', 'extension.ts'].map(name => readFile(new URL('../../src/collaboration/' + name, import.meta.url), 'utf8')));
+ const sources = await Promise.all(['client.ts', 'controls.ts', 'extension.ts', 'listener.ts'].map(name => readFile(new URL('../../src/collaboration/' + name, import.meta.url), 'utf8')));
  const scripts = [...sources.join('\n').matchAll(/from ['"]\.\.\/\.\.\/(scripts\/[^'"]+\.mjs)['"]/g)].map(match => match[1]);
  assert(scripts.includes('scripts/collaboration-goal.mjs'));
  assert(scripts.includes('scripts/listener-events.mjs'));
