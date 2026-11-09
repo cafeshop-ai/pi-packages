@@ -13,7 +13,7 @@ export function releaseFiles(tags) {
   ...['index','connection-warning','file-commands','private-json','local-relay','local-relay-go','cafe','cafe-actions','cafe-client','cafe-render','cafe-approvals','cafe-owner-client','thinking-capability','execution-tracker'].map(name=>`dist/extension/${name}.js`),'dist/protocol/index.js','dist/protocol/execution.js',
   ...['client','commands','extension','listener'].map(name=>`dist/collaboration/${name}.js`),
   ...tags.map(tag=>`dist/relay/bin/${tag}/pi-cafe-relay${tag.startsWith('windows')?'.exe':''}`),
-  'scripts/space-agent.mjs','scripts/collaboration-goal.mjs',...acpRuntimeScripts.map(name=>`scripts/acp/${name}`),...runtimeScripts.map(name=>`scripts/${name}`),...remoteScripts.map(name=>`scripts/remote/${name}`),...['build.mjs','assets.mjs','hash-router-only.mjs'].map(name=>`scripts/build-tools/${name}`),'scripts/build-tools/licenses/metadata-only.json'].sort();
+  'scripts/space-agent.mjs','scripts/collaboration-goal.mjs','scripts/listener-events.mjs',...acpRuntimeScripts.map(name=>`scripts/acp/${name}`),...runtimeScripts.map(name=>`scripts/${name}`),...remoteScripts.map(name=>`scripts/remote/${name}`),...['build.mjs','assets.mjs','hash-router-only.mjs'].map(name=>`scripts/build-tools/${name}`),'scripts/build-tools/licenses/metadata-only.json'].sort();
 }
 async function inventory(directory,allowed,prefix='') {
  const files=[];
@@ -67,6 +67,7 @@ export async function stageRelease(requireAll = false, selectedTags) {
  const scripts = join(target, 'scripts'); await mkdir(scripts);
  await copyFile(join(root, 'scripts/space-agent.mjs'), join(scripts, 'space-agent.mjs'));
  await copyFile(join(root, 'scripts/collaboration-goal.mjs'), join(scripts, 'collaboration-goal.mjs'));
+ await copyFile(join(root, 'scripts/listener-events.mjs'), join(scripts, 'listener-events.mjs'));
  const sourceScripts=join(root,'scripts/refactor/candidate-overrides/scripts');
  if(JSON.stringify((await readdir(sourceScripts)).sort())!==JSON.stringify(runtimeScripts))throw Error('Unexpected candidate script source');
  for (const file of runtimeScripts) await copyFile(join(sourceScripts, file), join(scripts, file));

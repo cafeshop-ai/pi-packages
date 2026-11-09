@@ -19,6 +19,14 @@ test('the bridge shared script imports exist in the release allowlist', async ()
  assert(scripts.includes('scripts/collaboration-goal.mjs'));
  for (const script of scripts) { assert(files.includes(script), script); await readFile(new URL('../../' + script, import.meta.url)); }
 });
+test('every module space-agent imports ships with it', async () => {
+ // The unified listener once shipped without listener-events.mjs, so the packaged client failed on import.
+ const files = releaseFiles(['windows-amd64']);
+ const agent = await readFile(new URL('../space-agent.mjs', import.meta.url), 'utf8');
+ const local = [...agent.matchAll(/from ['"]\.\/([^'"]+\.mjs)['"]/g)].map(match => 'scripts/' + match[1]);
+ assert(local.includes('scripts/listener-events.mjs') && local.includes('scripts/collaboration-goal.mjs'));
+ for (const script of local) assert(files.includes(script), script);
+});
 test('release packages the managed ACP host and target enumerator without offline-test fixtures', () => {
  const files=releaseFiles(['windows-amd64']);
  const runtime=files.filter(file=>file.startsWith('scripts/acp/'));
