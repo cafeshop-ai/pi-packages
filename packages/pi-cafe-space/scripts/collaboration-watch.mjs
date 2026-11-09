@@ -47,7 +47,7 @@ const wait = features.includes('wait'), ack = features.includes('ack');
 say(`[watch] room ${roomId.slice(0, 6)} after #${cursor}; ${wait ? 'long-poll wait' : 'polling'}${ack ? ', reporting ack' : ''}`);
 
 const goal = {};
-const names = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
+const names = new Map(), waits = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
 // Brief outages (a restart) recover in seconds; longer ones back off to 30s.
 const retry = async () => { backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff); };
 // Report presence at once instead of after the first long poll.
@@ -73,6 +73,14 @@ for (;;) {
   members = new Map(page.members.map(m => [m.id, m]));
   if (paused !== null && page.aiPaused !== paused) say(page.aiPaused ? '[room] 房间已暂停 AI 发言：只读，不要发帖' : '[room] 房间已恢复 AI 发言');
   paused = !!page.aiPaused;
+  // Members waiting on me: one line per wait (and one when it ends), so a stuck colleague
+  // wakes the host without a chat message. Relays without states send no waitingOnYou.
+  if (Array.isArray(page.waitingOnYou)) {
+    const now = new Map(page.waitingOnYou.map(id => [id, page.states?.[id] ?? {}]));
+    for (const [id, st] of now) { const key = [st.since, st.ref, st.detail].join('|'); if (waits.get(id) === key) continue; waits.set(id, key);
+      say(`[waiting-on-you] ${names.get(id) ?? id.slice(0, 6)} ${st.waitingFor ?? 'member'}: ${flat(st.detail ?? '').slice(0, 300)}${st.ref ? ` (#${st.ref})` : ''}`); }
+    for (const id of [...waits.keys()]) if (!now.has(id)) { waits.delete(id); say(`[waiting-on-you] ${names.get(id) ?? id.slice(0, 6)} 不再等你`); }
+  }
   for (const message of page.messages) {
     if (message.memberId === me) continue;
     const who = names.get(message.memberId) ?? message.memberId.slice(0, 6);

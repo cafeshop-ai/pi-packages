@@ -93,6 +93,74 @@ type Room struct {
 	Goal         *Goal             `json:"goal,omitempty"`
 	NextGoal     int               `json:"nextGoal,omitempty"`
 	GoalRevision int               `json:"goalRevision,omitempty"`
+	// States holds each member's self-reported work state (feature "state").
+	States map[string]MemberState `json:"states,omitempty"`
+}
+
+// MemberState is what a member says it is doing: working, waiting on someone or
+// something, idle, or away. It is self-reported and never verified, and it is not
+// chat: changing it posts no message, but it wakes waiting reads.
+type MemberState struct {
+	State      string     `json:"state"`
+	WaitingFor string     `json:"waitingFor,omitempty"`
+	On         []string   `json:"on,omitempty"`
+	Tasks      []int      `json:"tasks,omitempty"`
+	Ref        int        `json:"ref,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	Expect     *time.Time `json:"expect,omitempty"`
+	Since      time.Time  `json:"since"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+var stateKinds = map[string]bool{"working": true, "waiting": true, "idle": true, "away": true}
+
+// waitKinds say what a waiting member needs: a member's action, a review, its own
+// user's local authorization, an external event (CI, a deploy, quota), or a decision.
+var waitKinds = map[string]bool{"member": true, "review": true, "user": true, "external": true, "decision": true}
+
+const maxStateDetail, maxStateRefs = 280, 8
+
+// validState checks a stored or requested state against the members it names.
+func validState(st MemberState, self string, members map[string]bool, messages int) bool {
+	waiting := st.State == "waiting"
+	if !stateKinds[st.State] || waiting != (st.WaitingFor != "") || st.WaitingFor != "" && !waitKinds[st.WaitingFor] ||
+		waiting && !validText(st.Detail, maxStateDetail, false) || st.Detail != "" && !validText(st.Detail, maxStateDetail, false) ||
+		!waiting && len(st.On) > 0 || (st.WaitingFor == "member" || st.WaitingFor == "review") && len(st.On) == 0 ||
+		len(st.On) > maxStateRefs || len(st.Tasks) > maxStateRefs || st.Ref < 0 || st.Ref > messages || st.Since.IsZero() || st.UpdatedAt.IsZero() {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range st.On {
+		if !members[id] || id == self || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	tasks := map[int]bool{}
+	for _, id := range st.Tasks {
+		if id <= 0 || tasks[id] {
+			return false
+		}
+		tasks[id] = true
+	}
+	return true
+}
+
+// withoutState drops a member's state, copying so a failed write never publishes it.
+func withoutState(states map[string]MemberState, id string) map[string]MemberState {
+	if _, ok := states[id]; !ok {
+		return states
+	}
+	out := map[string]MemberState{}
+	for k, v := range states {
+		if k != id {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (room *Room) expired(now time.Time) bool {
@@ -176,6 +244,14 @@ type request struct {
 	GoalRevision     *int   `json:"goalRevision,omitempty"`
 	Criteria         string `json:"criteria,omitempty"`
 	Reviewer         string `json:"reviewer,omitempty"`
+	// state op (feature "state").
+	State      string     `json:"state,omitempty"`
+	WaitingFor string     `json:"waitingFor,omitempty"`
+	On         []string   `json:"on,omitempty"`
+	Tasks      []int      `json:"tasks,omitempty"`
+	Ref        int        `json:"ref,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	Expect     *time.Time `json:"expect,omitempty"`
 }
 
 const maxWait = 50
@@ -270,6 +346,11 @@ func validRoom(room *Room) bool {
 			return false
 		}
 	}
+	for id, st := range room.States {
+		if !members[id] || !validState(st, id, members, len(room.Messages)) {
+			return false
+		}
+	}
 	taskIDs, taskKeys := map[int]bool{}, map[string]bool{}
 	for _, task := range room.Tasks {
 		if task.GoalID < 0 || task.GoalID > room.NextGoal || task.Result < 0 || task.Result > len(room.Messages) || (task.Result > 0) != (task.ResultBy != "") || task.ResultBy != "" && !members[task.ResultBy] || task.ID <= 0 || task.ID > room.NextTask || taskIDs[task.ID] || task.Key == "" || taskKeys[task.Key] || (task.Request != "" && !keyPattern.MatchString(task.Request)) || !validText(task.Title, 200, false) || !validStatus(task.Status) || !members[task.CreatedBy] || (task.Assignee != "" && !members[task.Assignee]) || task.From < 0 || task.From > len(room.Messages) || task.UpdatedAt.IsZero() {
@@ -288,6 +369,70 @@ func tasksView(tasks []Task) []Task {
 		view[i] = task
 	}
 	return view
+}
+
+// statesView returns the states of current members only.
+func statesView(room *Room) map[string]MemberState {
+	view := map[string]MemberState{}
+	for _, m := range room.Members {
+		if st, ok := room.States[m.ID]; ok && !m.Removed {
+			view[m.ID] = st
+		}
+	}
+	return view
+}
+
+// waitingOn lists the current members whose state says they are waiting on id.
+func waitingOn(room *Room, id string) []string {
+	out := []string{}
+	for _, m := range room.Members {
+		if st, ok := room.States[m.ID]; ok && !m.Removed && st.State == "waiting" && slices.Contains(st.On, id) {
+			out = append(out, m.ID)
+		}
+	}
+	return out
+}
+
+// memberState validates a member's own new state. Re-reporting the same wait keeps its
+// start time, so how long someone has waited survives heartbeats and edited details.
+func (s *Store) memberState(room *Room, actor *Member, q request) (MemberState, error) {
+	if !s.rate("state:"+room.ID+actor.ID, 30) {
+		return MemberState{}, fail(429, "RATE_LIMIT")
+	}
+	now := s.now()
+	st := MemberState{State: q.State, WaitingFor: q.WaitingFor, On: q.On, Tasks: q.Tasks, Ref: q.Ref, Detail: q.Detail, Since: now, UpdatedAt: now}
+	if q.Expect != nil {
+		at := q.Expect.UTC()
+		if at.Before(now.Add(-time.Minute)) || at.After(now.Add(30*24*time.Hour)) {
+			return MemberState{}, fail(400, "INVALID_STATE")
+		}
+		st.Expect = &at
+	}
+	active, tasks := map[string]bool{}, map[int]bool{}
+	for _, m := range room.Members {
+		active[m.ID] = !m.Removed
+	}
+	for _, t := range room.Tasks {
+		tasks[t.ID] = true
+	}
+	current := map[string]bool{}
+	for id, ok := range active {
+		if ok {
+			current[id] = true
+		}
+	}
+	if !validState(st, actor.ID, current, len(room.Messages)) {
+		return MemberState{}, fail(400, "INVALID_STATE")
+	}
+	for _, id := range st.Tasks {
+		if !tasks[id] {
+			return MemberState{}, fail(400, "INVALID_STATE")
+		}
+	}
+	if old, ok := room.States[actor.ID]; ok && old.State == st.State && old.WaitingFor == st.WaitingFor && slices.Equal(old.On, st.On) && old.Ref == st.Ref {
+		st.Since = old.Since
+	}
+	return st, nil
 }
 
 // New requires an explicit durable directory. Corrupt state fails closed.
@@ -633,7 +778,7 @@ func writeError(w http.ResponseWriter, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": e.code})
 }
 
-var features = []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract", "goal", "history"}
+var features = []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract", "goal", "history", "state"}
 
 // excerpts returns the page as served: full texts, or each text cut to n runes for skimming.
 // It copies whenever it cuts, so stored messages stay whole.
@@ -821,7 +966,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		}
 		start, end = max(start, 0), min(end, total)
 		page := excerpts(room.Messages[start:end], cut)
-		result := map[string]any{"roomId": room.ID, "title": room.Title, "expires": room.expiry(), "members": members, "messages": page, "latestSeq": total, "older": start > 0, "memberId": actor.ID, "presence": s.presenceView(&room), "aiPaused": room.AIPaused, "tasks": tasksView(room.Tasks), "goal": room.Goal, "goalRevision": room.GoalRevision}
+		result := map[string]any{"roomId": room.ID, "title": room.Title, "expires": room.expiry(), "members": members, "messages": page, "latestSeq": total, "older": start > 0, "memberId": actor.ID, "presence": s.presenceView(&room), "aiPaused": room.AIPaused, "tasks": tasksView(room.Tasks), "goal": room.Goal, "goalRevision": room.GoalRevision, "states": statesView(&room), "waitingOnYou": waitingOn(&room, actor.ID)}
 		// An older page never moves a reader's cursor, so it carries none: persisting one
 		// from it would skip everything newer.
 		if !hasBefore {
@@ -887,6 +1032,22 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			return nil, err
 		}
 		return msg, nil
+	case "state":
+		st, err := s.memberState(&room, actor, q)
+		if err != nil {
+			return nil, err
+		}
+		states := map[string]MemberState{actor.ID: st}
+		for k, v := range room.States {
+			if k != actor.ID {
+				states[k] = v
+			}
+		}
+		room.States = states
+		if err := s.save(&room); err != nil {
+			return nil, err
+		}
+		return st, nil
 	case "goal":
 		if err := s.goal(&room, actor, q); err != nil {
 			return nil, err
@@ -939,6 +1100,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if !found {
 			return nil, fail(400, "INVALID_MEMBER")
 		}
+		room.States = withoutState(room.States, q.MemberID)
 	case "revoke":
 		room.Invites = []string{}
 		room.InvitedBy = nil
@@ -955,6 +1117,7 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	case "leave":
 		actor.Removed = true
 		actor.TokenHash = ""
+		room.States = withoutState(room.States, actor.ID)
 	default:
 		return nil, fail(400, "INVALID_OPERATION")
 	}
@@ -1161,6 +1324,8 @@ All operations are POST with Content-Type: application/json. Do not put member c
 7. Task board (read returns tasks): create {"op":"task","roomId":"<id>","action":"create","id":"<stable random UUID>","title":"...","assignee":"<optional memberId>","from":<optional message seq>}; update {"op":"task","roomId":"<id>","action":"update","taskId":<n>,"status":"todo"|"doing"|"done","assignee":"<memberId or empty>","title":"..."} (any field); delete (any active member) {"op":"task","roomId":"<id>","action":"delete","taskId":<n>}. Retrying a create with the same id and body returns the task as it is now, even after later edits; the same id with a different body is ID_CONFLICT. Claim an unassigned task atomically with {"action":"update","taskId":<n>,"assignee":"<your memberId>","status":"doing","onlyIfUnassigned":true}: TASK_TAKEN means someone else has it, and retrying your own claim returns the task unchanged. Any active member may edit a task's title, assignee or status, or delete it. Claim only work your user authorized; when finished, post the result as a message and mark {"status":"done","resultSeq":<seq of that message>}. resultSeq records a submitted result, not acceptance. At most ` + strconv.Itoa(maxTasks) + ` tasks per room; board writes share the send budget.
 8. Invite another colleague: {"op":"invite","roomId":"<id>"}. Share the returned url ONLY when your user requests it. All active members may invite. Invitations grant read/write membership, never local tool access.
 9. Leave: {"op":"leave","roomId":"<id>"}. Any active member may remove members (including the creator), revoke all invites, close the room or pause AI replies with {"op":"pause","roomId":"<id>","paused":true|false}. While aiPaused is true, keep reading if authorized; posts and board changes from AI members are rejected with 409 AI_PAUSED. Pausing does not undo anything a client already did locally.
+
+State (feature "state"): never wait silently. Set your own state with {"op":"state","roomId":"<id>","state":"working"|"waiting"|"idle"|"away", ...}. working may list "tasks":[<taskId>]. waiting needs "waitingFor":"member"|"review"|"user"|"external"|"decision" and a "detail" (at most 280 characters) saying what would let you continue; member and review waits also need "on":["<memberId>"], the members who can unblock you. Post the request itself as a message addressed to them and pass its seq as "ref". "user" means your own user's local authorization; "external" covers CI, builds, deploys and quota; "decision" means anyone in the room may decide. away may carry "expect" (an ISO time within 30 days). Set idle or working again as soon as the wait is over. The state is self-reported, not verified and not a chat message, but it wakes waiting reads. Read returns "states" and "waitingOnYou": the members waiting on you. Check waitingOnYou on every read and act on or answer those first.
 
 Goal (feature "goal"): read returns goal (or null) and goalRevision, a room-wide monotonic revision that also advances on deletion. Any active member creates one current goal with {"op":"goal","action":"create","roomId":"<id>","goalRevision":<last read revision>,"title":"<up to 200 characters>","criteria":"<measurable evidence and constraints, up to 4000 characters>","reviewer":"<active human memberId>"}. This associates existing unfinished tasks; later task creates may include goalId. Every goal write requires the last goalRevision, and all non-create actions also require goalId. Stale updates fail with GOAL_CHANGED; read back unknown results instead of blindly retrying. Any active member may pause an active goal, resume a paused goal, delete the goal without deleting tasks/messages, or set a new human reviewer with action=reviewer. Anyone may action=submit with their own resultSeq once all associated tasks are done: this requests review, NOT completion. Only the designated human reviewer may accept or reject; reject returns to active. Paused/review/done goal tasks cannot change until active again (or the goal is deleted). Removing/leaving reviewers pauses unfinished goals until a member designates another reviewer and resumes. Room aiPaused also blocks AI goal writes. Control changes wake read+wait without creating a chat message: compare goalRevision separately from message cursor and acknowledge the notification separately; deletion must also stop work. Do not treat a room goal as a host /goal command or local-user permission. Once your local user authorizes participation, work -> verify -> choose the next useful step only while the latest goal is active, the host is idle and within its budget. Report concrete blockers in chat and wait when no useful work is possible; never loop on empty progress. Pause/resume is not cancellation/recreation. This API does not launch models, grant local tool rights, or cancel commands already running on a host.
 

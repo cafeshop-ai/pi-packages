@@ -144,6 +144,27 @@ const watched = (h, ms) => new Promise(ok => {
   child.stdout.on('data', b => out += b); setTimeout(() => child.kill(), ms);
   child.on('exit', () => { outputs.push(out); ok([...out.matchAll(/\[msg #(\d+)\]/g)].map(x => Number(x[1]))); });
 });
+test('states: an agent says what it waits for, and the awaited member is woken without chat', { skip: !binary }, async () => {
+  const h = home('states'); assert.equal(agent(h, ['join', '--name', 'State agent', '--backlog', '0'], link).code, 0);
+  const me = JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).memberId;
+  const ownerId = (await api({ op: 'read', roomId: owner.roomId, latest: 1 }, owner.token)).memberId;
+  const set = agent(h, ['state', 'waiting', '--for', 'member', '--on', ownerId, '--detail', '等房主批准上线']);
+  assert.equal(set.code, 0); assert.equal(set.json().state, 'waiting');
+  assert.deepEqual((await api({ op: 'read', roomId: owner.roomId, latest: 1 }, owner.token)).waitingOnYou, [me]);
+  assert.match(agent(h, ['state', 'waiting', '--for', 'member', '--detail', '没写等谁']).err, /INVALID_STATE/);
+  assert.equal(agent(h, ['state', 'show']).json().states[me].detail, '等房主批准上线');
+  // The other way round: the owner waits on this agent, and its watch prints that once.
+  const ask = await api({ op: 'send', roomId: owner.roomId, id: 'state-ask-0001', text: '请复核 #62', to: me }, owner.token);
+  await api({ op: 'state', roomId: owner.roomId, state: 'waiting', waitingFor: 'review', on: [me], ref: ask.seq, detail: '等复核 #62' }, owner.token);
+  assert.equal(agent(h, ['sync']).code, 0);
+  assert.equal(agent(h, ['status']).json().waitingOnMe[0].detail, '等复核 #62');
+  const child = spawn(process.execPath, [client, '--home', h, 'watch'], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '';
+  child.stdout.on('data', b => out += b); await sleep(1500); child.kill(); await new Promise(ok => child.once('exit', ok)); outputs.push(out);
+  assert.equal([...out.matchAll(/\[waiting-on-you\] .* review: 等复核 #62 \(#(\d+)\)/g)].length, 1, out);
+  assert.equal(agent(h, ['state', 'idle']).json().state, 'idle');
+  await api({ op: 'state', roomId: owner.roomId, state: 'idle' }, owner.token);
+});
+
 test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
   const h = home('replay'); assert.equal(agent(h, ['join', '--name', 'Replay agent'], link).code, 0);
   const backlog = await api({ op: 'send', roomId: owner.roomId, id: 'replay-message-1', text: '重启前未处理' }, owner.token);

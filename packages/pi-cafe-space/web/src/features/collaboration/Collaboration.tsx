@@ -5,13 +5,17 @@ import { Button, IconButton, Input, Label, Textarea } from '../../components/ui/
 import { UiProvider } from '../../components/ui/UiProvider';
 import { Drawer } from '../../components/ui/Drawer';
 import { Icon } from '../../components/ui/Icon';
-import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiMode, type AiReply, type Member, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
+import { aiInstructions, checkStorage, collaboration, CollaborationError, forgetMembership, membership, saveMembership, type AiMode, type AiReply, type Member, type MemberState, type Membership, type Message, type Presence, type Snapshot, type Task, type TaskStatus } from './api';
 import { MessageText } from './MessageText';
+import { MyState, StateChip, StateDetail, WaitingOnMe, WaitingSummary } from './MemberStates';
+import { waitsOf } from './state';
 import { GoalPanel } from './GoalPanel';
 import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
 import styles from './Collaboration.module.scss';
 
+/** Retry delay after the n-th failed poll in a row: 2s, 4s, 8s, 16s, then every 30s, with jitter. */
+export const reconnectDelay = (failures: number, jitter = Math.random()) => Math.min(30_000, 2000 * 2 ** Math.max(0, failures - 1)) + Math.round(jitter * 500);
 /** Adds new messages by seq. Returns the same array when nothing is new, so a quiet poll does not rerun the timeline's per-message work (the room still re-renders for presence; memoized text and avatars are skipped). */
 const merge = (old: Message[], added: Message[]) => {
   const seen = new Set(old.map(m => m.seq)); const fresh = added.filter(m => !seen.has(m.seq));
@@ -238,27 +242,42 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const [older, setOlder] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false);
   const timeline = useRef<HTMLDivElement>(null); const primed = useRef(false); const oldest = useRef(0); const anchor = useRef<number | null>(null); const target = useRef(0); const loading = useRef(false);
   const liveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); const [peek, setPeek] = useState<Message | null>(null);
+  // Failed polls in a row, shown while reconnecting; retryNow skips the remaining backoff.
+  const [retrying, setRetrying] = useState(0); const retryNow = useRef<(() => void) | undefined>(undefined); const [openState, setOpenState] = useState('');
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
   const bottom = useRef<HTMLDivElement>(null); const follow = useRef(true); const inviteButton = useRef<HTMLButtonElement>(null); const sideButton = useRef<HTMLButtonElement>(null); const menuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const abort = new AbortController(); let timer: ReturnType<typeof setTimeout>; let stopped = false;
+    const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; let stopped = false; let failures = 0; let running = false;
+    const schedule = (delay: number) => { clearTimeout(timer); if (!stopped) timer = setTimeout(() => void poll(), delay); };
     const poll = async () => {
-      let delay = 5000;
+      if (running || stopped) return; running = true; let delay = 5000;
       try {
         const first = !primed.current;
-        const value = await collaboration<Snapshot>(first ? { op: 'read', roomId: auth.roomId, latest: historyPage } : { op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, abort.signal);
+        // A request that hangs (a restarting server behind the proxy) must not stall polling forever.
+        const signal = typeof AbortSignal.any === 'function' ? AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]) : abort.signal;
+        const value = await collaboration<Snapshot>(first ? { op: 'read', roomId: auth.roomId, latest: historyPage } : { op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, signal);
         if (stopped) return; if (first) { primed.current = true; setOlder(value.older === true); }
         setSnapshot(old => (old?.goalRevision ?? 0) > (value.goalRevision ?? 0) ? { ...value, goal: old?.goal, goalRevision: old?.goalRevision, tasks: old?.tasks } : value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
         setMessages(old => merge(old, value.messages));
+        if (failures) { failures = 0; setRetrying(0); }
         if (value.more) delay = 0;
       } catch (e) {
-        if (stopped) return; setConnected(false); setError(messageError(e));
-        if (e instanceof CollaborationError && ['MEMBER_REQUIRED', 'ROOM_CLOSED', 'ROOM_UNAVAILABLE'].includes(e.code)) { setTerminal(true); return; }
-        delay = 60000;
-      }
-      if (!stopped) timer = setTimeout(() => void poll(), delay);
+        if (stopped) return; setConnected(false);
+        if (e instanceof CollaborationError && ['MEMBER_REQUIRED', 'ROOM_CLOSED', 'ROOM_UNAVAILABLE'].includes(e.code)) { setError(messageError(e)); setTerminal(true); return; }
+        // A deploy or network blip is not an error to dismiss: the status line shows the retry,
+        // and the room carries on by itself once the server answers again.
+        failures++; setRetrying(failures);
+        delay = e instanceof CollaborationError && e.code === 'RATE_LIMIT' ? 60_000 : reconnectDelay(failures);
+      } finally { running = false; }
+      schedule(delay);
     };
-    void poll(); return () => { stopped = true; abort.abort(); clearTimeout(timer); };
+    // Back online or back on the tab: try at once instead of waiting out the backoff.
+    const now = () => { if (failures > 0) { clearTimeout(timer); void poll(); } };
+    const visible = () => { if (document.visibilityState === 'visible') now(); };
+    window.addEventListener('online', now); document.addEventListener('visibilitychange', visible);
+    retryNow.current = () => { clearTimeout(timer); void poll(); };
+    void poll();
+    return () => { stopped = true; abort.abort(); clearTimeout(timer); window.removeEventListener('online', now); document.removeEventListener('visibilitychange', visible); retryNow.current = undefined; };
   }, [auth]);
   const newest = messages[messages.length - 1]?.seq ?? 0;
   useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [newest]);
@@ -300,6 +319,12 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       if (op === 'pause') setSnapshot(old => old ? { ...old, aiPaused: fields.paused === true } : old);
     } catch (e) { setError(messageError(e)); } finally { setBusy(false); setConfirm(null); }
   };
+  const saveState = async (fields: Record<string, unknown>) => {
+    setError('');
+    try { const value = await call<MemberState>({ op: 'state', ...fields });
+      setSnapshot(old => old ? { ...old, states: { ...(old.states ?? {}), [auth.memberId]: value } } : old); setNotice('状态已更新'); return true;
+    } catch (e) { setError(messageError(e)); return false; }
+  };
   const taskAct = async (fields: Record<string, unknown>, done?: string) => {
     setError('');
     try {
@@ -339,6 +364,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const now = Date.now(); const tasks = snapshot?.tasks ?? []; const goalFrozen = !!snapshot?.goal && snapshot.goal.status !== 'active'; const openTasks = tasks.filter(t => t.status !== 'done').length;
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
   const aiOnline = active.filter(m => presenceOf(m) === 'online').length;
+  const states = snapshot?.states ?? {}; const waits = waitsOf(states, members, auth.memberId);
   const bySeq = useMemo(() => new Map(messages.map(m => [m.seq, m])), [messages]);
   const replies = useMemo(() => repliesOf(messages), [messages]);
   const thinking = thinkingOf(members, messages, presence, now);
@@ -389,6 +415,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
           <button type="button" className={styles.check} data-status={task.status} aria-label={canClaim ? `认领「${task.title}」` : `${statusAction[task.status]}「${task.title}」`} title={!canMove && !canClaim ? `由 ${assignee?.name ?? '负责人'} 推进` : undefined} disabled={terminal || (!canMove && !canClaim)}
             onClick={() => void taskAct(canClaim ? { action: 'update', taskId: task.id, assignee: auth.memberId, status: 'doing', onlyIfUnassigned: true } : { action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
           <div className={styles.taskMain}><p>{task.title}</p>{task.goalId && <span className={styles.meta}>Goal #{task.goalId}{frozen ? ' · 已停止推进' : ''}</span>}
+            {(() => { const st = task.assignee ? states[task.assignee] : undefined; const stuck = st?.state === 'waiting' && (st.tasks?.length ? st.tasks.includes(task.id) : task.status === 'doing');
+              return stuck && <p className={styles.taskWait} title="负责人自报，未经验证">等待：{st!.detail}{st!.on?.length ? `（等 ${st!.on.map(nameOf).join('、')}）` : ''}</p>; })()}
             {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
           <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
@@ -399,11 +427,16 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       </section>; })}
     </div>;
   };
-  const people = (): ReactNode => <ul className={styles.people}>{active.map(m => { const state = m.kind === 'ai' ? connectorState(presence[m.id], now) : null; const report = presence[m.id]; return <li key={m.id}>
+  const people = (): ReactNode => <>
+    <MyState key={states[auth.memberId]?.updatedAt ?? 'none'} current={states[auth.memberId]} others={active.filter(m => m.id !== auth.memberId)} disabled={terminal} onSave={saveState} />
+    <WaitingOnMe members={waits.onMe} states={states} name={nameOf} onJump={jump} onReply={(m, seq) => { setReply(seq); setTo(m.id); setSideOpen(false); }} />
+    <ul className={styles.people}>{active.map(m => { const state = m.kind === 'ai' ? connectorState(presence[m.id], now) : null; const report = presence[m.id]; return <li key={m.id}>
     <Avatar member={m} fallback={m.id} presence={presenceOf(m)} />
     <div className={styles.person}>
       <p className={styles.personName}><strong>{m.name}</strong>{m.kind === 'ai' && <AgentTag member={m} />}{m.id === auth.memberId && <span className={styles.you}>你</span>}</p>
       <p className={styles.meta}>{m.owner ? '创建者' : m.kind === 'ai' ? '' : '成员'}{state && <>{m.owner ? ' · ' : ''}<span className={styles.connector} data-tone={state.tone} title={report ? `连接器上报：已取到 #${report.fetched}，已送入会话 #${report.delivered}` : '这个 AI 还没有用连接器上报状态'}>{state.label}</span></>}</p>
+      {states[m.id] && <StateChip st={states[m.id]!} name={nameOf} now={now} open={openState === m.id} onToggle={() => setOpenState(value => value === m.id ? '' : m.id)} />}
+      {states[m.id] && openState === m.id && <StateDetail st={states[m.id]!} name={nameOf} tasks={tasks} presence={presence} now={now} onJump={jump} />}
       {state?.tone === 'unknown' && <p className={styles.hint}>它没有上报后台监听，只在被提醒时读取房间。需要持续参与时，按“邀请 → 接入选项与说明 → 持续参与讨论”的说明检查后台接收能力。</p>}
       {state?.tone === 'offline' && <p className={styles.hint}>后台监听已停止。让它重新启动监听后会恢复在线。</p>}
       {m.kind === 'ai' && (() => { const last = probes.latest.get(m.id); const blocked = snapshot?.aiPaused ? 'AI 发言已暂停' : probeBlocked(last, probes.recent.get(m.id) ?? 0, now);
@@ -413,7 +446,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         </p>; })()}
     </div>
     {m.id !== auth.memberId && <IconButton label={`移除 ${m.name}`} variant="quiet" className={styles.remove} disabled={busy || managementLocked} onClick={() => setConfirm({ op: 'remove', fields: { memberId: m.id }, label: `移除 ${m.name}？若其仍持有效邀请，可能重新加入；必要时撤销全部邀请。`, action: '移除' })}><Icon name="close" /></IconButton>}
-  </li>; })}</ul>;
+  </li>; })}</ul>
+  </>;
   const side = (): ReactNode => <Tabs.Root value={tab} onValueChange={value => setTab(value as 'tasks' | 'people')} className={styles.sideTabs}>
     <Tabs.List className={styles.tabs} aria-label="任务与成员"><Tabs.Tab value="tasks" className={styles.tab}>任务{openTasks > 0 && <span>{openTasks}</span>}</Tabs.Tab><Tabs.Tab value="people" className={styles.tab}>成员<span>{active.length}</span></Tabs.Tab><Tabs.Indicator className={styles.tabIndicator} /></Tabs.List>
     <Tabs.Panel value="tasks" className={styles.tabPanel}>{board()}</Tabs.Panel>
@@ -425,10 +459,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       <Link to="/collab" className={styles.homeMark} aria-label="协作首页"><Cup /></Link>
       <div className={styles.titleBlock}>
         <h1>{snapshot?.title ?? '正在读取房间…'}</h1>
-        {(!connected || terminal) ? <p role="status" className={styles.connection}>{terminal ? '房间或成员已不可用' : '正在连接…'}</p>
+        {(!connected || terminal) ? <p role="status" className={styles.connection}>{terminal ? '房间或成员已不可用' : retrying > 0 ? <>连接中断，正在自动重连（第 {retrying} 次）<button type="button" className={styles.reconnect} onClick={() => retryNow.current?.()}>立即重试</button></> : '正在连接…'}</p>
           : <p className={styles.subtitle}>{active.length} 位成员{aiOnline > 0 && <> · <span className={styles.live}>{aiOnline} 个 AI 在线</span></>}</p>}
       </div>
       <div className={styles.toolbarActions}>
+        <WaitingSummary waiting={waits.waiting.length} onMe={waits.onMe.length} onOpen={() => openSide('people')} />
         <button type="button" className={styles.stack} aria-label={`成员 · ${active.length}`} disabled={!snapshot} onClick={() => openSide('people')}>{active.slice(0, 4).map(m => <Avatar key={m.id} member={m} fallback={m.id} presence={presenceOf(m)} small />)}{active.length > 4 && <span className={styles.more}>+{active.length - 4}</span>}</button>
         <Button ref={sideButton} className={styles.tasksToggle} aria-label={`任务${openTasks > 0 ? ` · ${openTasks}` : ''}`} disabled={!snapshot} onClick={() => openSide('tasks')}><Icon name="check" /><span className={styles.tasksLabel}>任务</span>{openTasks > 0 && <span className={styles.count}>{openTasks}</span>}</Button>
         <Button ref={inviteButton} variant="primary" className={styles.cta} aria-label="邀请同事 / AI" disabled={busy || terminal || !snapshot} onClick={openInvite}><Icon name="plus" /><span className={styles.inviteLabel}>邀请</span></Button>

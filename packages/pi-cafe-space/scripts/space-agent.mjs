@@ -22,6 +22,10 @@
 //   space-agent --home <dir> task claim <taskId>
 //   space-agent --home <dir> task update <taskId> [--status s] [--assignee id] [--result seq] [--title t]
 //   space-agent --home <dir> task delete <taskId>
+//   space-agent --home <dir> state show                 every member's self-reported state and who waits on you
+//   space-agent --home <dir> state working|waiting|idle|away [--for member|review|user|external|decision]
+//                                                      [--on id,id] [--task n,n] [--ref seq] [--detail text] [--expect iso]
+//                                                      never wait silently: say what would let you continue and on whom
 //   space-agent --home <dir> goal read
 //   space-agent --home <dir> goal create --title <t> --criteria-file <f> --reviewer <human id> --revision <n>
 //   space-agent --home <dir> goal pause|resume|delete|reviewer|submit|accept|reject <goalId> --revision <n> [--reviewer id] [--result seq]
@@ -29,7 +33,7 @@
 //   space-agent --home <dir> unlock                    recovery: clear a lock left by a process that died
 //
 // RECOVERY (unknown result = network error, timeout or 5xx):
-//   read, preview, ack ............ retried freely (ack only moves forward)
+//   read, preview, ack, state ..... retried freely (ack only moves forward; the last state wins)
 //   send, task create ............. retried with the same id and body; ID_CONFLICT stops. Without --id the id
 //                                   is derived from the content, so re-running the same command after an
 //                                   unknown result (exit 2, id printed) reuses it
@@ -265,6 +269,7 @@ async function watchHandler(home, path) {
     process.removeListener('SIGINT', signalStop); process.removeListener('SIGTERM', signalStop); process.removeListener('exit', killChild);
   }
 }
+const pick = st => st ? { waitingFor: st.waitingFor, detail: st.detail, ref: st.ref, since: st.since } : {};
 async function sync(home, wait) {
   const m = member(home); let after = loadState(home).fetched;
   const fetched = [];
@@ -276,7 +281,10 @@ async function sync(home, wait) {
     // done, skip or another sync may have run while this one waited: merge into the state on disk now.
     fetched.push(...await transact(home, state => {
       const fresh = page.messages.filter(x => x.seq > state.fetched);
-      appendInbox(home, fresh); state.fetched = Math.max(state.fetched, page.cursor); state.aiPaused = page.aiPaused; mergeGoal(state, page); return fresh;
+      appendInbox(home, fresh); state.fetched = Math.max(state.fetched, page.cursor); state.aiPaused = page.aiPaused; mergeGoal(state, page);
+      // Who waits on this member, as the relay reports it (relays without states leave it unset).
+      if (Array.isArray(page.waitingOnYou)) state.waitingOnMe = page.waitingOnYou.map(id => ({ memberId: id, ...pick(page.states?.[id]) }));
+      return fresh;
     }));
     after = Math.max(after, page.cursor); more = page.more; wait = 0;
   }
@@ -299,7 +307,7 @@ async function main(argv) {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
-    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (values.handler && command !== 'watch') throw new Fail('--handler is only valid with watch');
   if (command === 'preview' || command === 'join') {
@@ -333,7 +341,7 @@ async function main(argv) {
     if (pid > 0 && alive(pid)) throw new Fail(`pid ${pid} is still running; stop it first`);
     unlinkSync(lockPath(home)); return print({ unlocked: true, previousHolder: pid || 'unknown' });
   }
-  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.delivery ? { delivery: s.delivery } : {}), ...(s.deliveryWatcher ? { watcherPid: s.deliveryWatcher.pid } : {}) }); }
+  if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.waitingOnMe ? { waitingOnMe: s.waitingOnMe } : {}), ...(s.delivery ? { delivery: s.delivery } : {}), ...(s.deliveryWatcher ? { watcherPid: s.deliveryWatcher.pid } : {}) }); }
   if (command === 'read') {
     // A manual view: it never changes what counts as consumed.
     // Default is the newest page, not the start of a long history.
@@ -373,11 +381,14 @@ async function main(argv) {
     // Prints from the inbox, not from what this process fetched: a restart replays the whole
     // unconsumed backlog, messages another process fetched still show up, and nothing already
     // consumed is printed again.
-    const m = member(home); const shown = new Set(); let shownGoal = 0;
+    const m = member(home); const shown = new Set(), shownWaits = new Set(); let shownGoal = 0;
     const show = () => { const state = loadState(home); const { consumed, delivery } = state; const goal = pendingGoal(state);
       if (state.deliveryWatcher && alive(state.deliveryWatcher.pid)) throw new Fail('stop the handler watch before manual delivery', 2);
       if (delivery) throw new Fail(`delivery #${delivery.seq} is pending with the host; resolve it first`, 2);
       if (goal && goal.revision !== shownGoal) { shownGoal = goal.revision; print(goal); }
+      // A member waiting on you is printed once per wait, so a stuck colleague wakes you without chat.
+      for (const w of state.waitingOnMe ?? []) { const key = [w.memberId, w.since, w.ref, w.detail].join('|'); if (shownWaits.has(key)) continue;
+        shownWaits.add(key); print(`[waiting-on-you] ${w.memberId.slice(0, 6)} ${w.waitingFor ?? 'member'}: ${String(w.detail ?? '').replace(/\s+/g, ' ').slice(0, 300)}${w.ref ? ` (#${w.ref})` : ''}`); }
       for (const x of inbox(home)) {
       if (x.seq <= consumed || x.memberId === m.memberId || shown.has(x.seq)) continue;
       shown.add(x.seq); print(`[msg #${x.seq}] ${x.memberId.slice(0, 6)}${x.to ? ' → ' + x.to.slice(0, 6) : ''}: ${String(x.text).replace(/\s+/g, ' ').slice(0, 1500)}`);
@@ -419,6 +430,15 @@ async function main(argv) {
         print({ unknown: true, intent: { ...body, roomId: undefined }, current, note: 'not retried; compare and decide' }); throw new Fail('task change result unknown', 2);
       }
     }
+  }
+  if (command === 'state') {
+    const m = member(home);
+    if (!sub || sub === 'show') { const r = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: loadState(home).fetched }, m.token); if (r.status !== 200) throw failed(r); return print({ states: r.json.states ?? null, waitingOnYou: r.json.waitingOnYou ?? null }); }
+    if (!['working', 'waiting', 'idle', 'away'].includes(sub)) throw new Fail('state show | working | waiting | idle | away');
+    const list = value => String(value).split(',').map(x => x.trim()).filter(Boolean);
+    const body = { op: 'state', roomId: m.roomId, state: sub, ...(values.for ? { waitingFor: values.for } : {}), ...(values.on ? { on: list(values.on) } : {}),
+      ...(values.task ? { tasks: list(values.task).map(Number) } : {}), ...(values.ref ? { ref: Number(values.ref) } : {}), ...(values.detail ? { detail: values.detail.trim() } : {}), ...(values.expect ? { expect: values.expect } : {}) };
+    const r = await retrying(m.origin, body, m.token); if (r.status !== 200) throw failed(r); return print(r.json);
   }
   if (command === 'goal') {
     const m = member(home);

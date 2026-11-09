@@ -3,6 +3,7 @@ package collaboration
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,7 +40,7 @@ func TestLatestCatchesUpWithoutLoadingTheWholeHistory(t *testing.T) {
 	s := store(t)
 	id, owner := create(t, s)
 	history(t, s, id, 571, func(i int) string { return fmt.Sprintf("message %d", i) })
-	if features := call(t, s, map[string]any{"op": "status"}, "", 200)["features"].([]any); features[len(features)-1] != "history" {
+	if features := call(t, s, map[string]any{"op": "status"}, "", 200)["features"].([]any); !slices.Contains(features, any("history")) {
 		t.Fatal("status must advertise history reads")
 	}
 	page := call(t, s, map[string]any{"op": "read", "roomId": id, "latest": 30}, owner, 200)
