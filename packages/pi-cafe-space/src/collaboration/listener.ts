@@ -3,8 +3,8 @@ import { maxBatchMessages } from '../../scripts/listener-events.mjs';
 
 export interface ListenerHost {
   isIdle(): boolean;
-  deliver(messages: readonly Message[]): void;
-  checkpoint(cursor: number, consumed?: boolean): void;
+  deliver(messages: readonly Message[], backlog?: boolean): void;
+  checkpoint(cursor: number, consumed?: boolean, messages?: readonly number[]): void;
 }
 /** Receipt means Pi stored the external message, not that a model read it or completed work. */
 export class RoomListener {
@@ -17,30 +17,42 @@ export class RoomListener {
   private polling: Promise<number> | undefined;
   private awaitingReceipt = false;
   private dispatchedAt = 0;
-  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0) {
-    if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor) throw new RoomError('INVALID_CURSOR');
+  private summaryPending = false;
+  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0, private backlogThrough = 0) {
+    if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor || !Number.isSafeInteger(backlogThrough) || backlogThrough < 0) throw new RoomError('INVALID_CURSOR');
     this.cursor = cursor;
   }
   get pending(): Message | undefined { return this.queued[0]; }
-  get undispatched(): Message | undefined { return this.awaitingReceipt ? undefined : this.pending; }
+  get undispatched(): Message | undefined { return this.undispatchedBatch[0]; }
+  get undispatchedBatch(): readonly Message[] { return this.awaitingReceipt ? [] : this.queued.slice(0, maxBatchMessages); }
   pause() { this.state = 'paused'; this.abort.abort(); }
   acknowledge(sequence: number) {
     if (!this.awaitingReceipt || this.queued.at(-1)?.seq !== sequence) return;
     // Only the host's actual message event acknowledges dispatch, never sendMessage() returning void.
-    this.commit(sequence);
-    this.deliveredCursor = Math.max(this.deliveredCursor, sequence);
-    this.queued = [];
+    if (this.summaryPending) this.backlogThrough = Math.max(this.backlogThrough, sequence);
+    else {
+      this.commit(sequence);
+      this.deliveredCursor = Math.max(this.deliveredCursor, sequence);
+      this.queued = [];
+    }
+    this.summaryPending = false;
     this.awaitingReceipt = false;
     if (this.state !== 'paused') this.state = 'listening';
   }
-  consume(sequence: number) {
-    if (this.state === 'paused' || this.awaitingReceipt || this.pending?.seq !== sequence) throw new RoomError('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
-    this.commit(sequence, true); this.queued.shift();
+  consume(sequence: number, through = false) {
+    const index = this.queued.findIndex(m => m.seq === sequence);
+    if (this.state === 'paused' || this.awaitingReceipt || index < 0 || (!through && index !== 0) || index >= maxBatchMessages) throw new RoomError('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+    this.commit(sequence, true, through ? this.queued.slice(0, index + 1).map(m => m.seq) : undefined); this.queued.splice(0, index + 1);
     if (this.state !== 'room-paused') this.state = 'listening';
   }
-  private commit(sequence: number, consumed = false) {
+  private commit(sequence: number, consumed = false, messages?: readonly number[]) {
     if (sequence <= this.cursor) return;
-    try { if (consumed) this.host.checkpoint(sequence, true); else this.host.checkpoint(sequence); this.cursor = sequence; }
+    try {
+      if (messages) this.host.checkpoint(sequence, true, messages);
+      else if (consumed) this.host.checkpoint(sequence, true);
+      else this.host.checkpoint(sequence);
+      this.cursor = sequence;
+    }
     catch { this.error = 'CHECKPOINT_FAILED'; this.pause(); throw new RoomError('CHECKPOINT_FAILED'); }
   }
   poll(deliver = true): Promise<number> {
@@ -65,7 +77,6 @@ export class RoomListener {
           if (message.seq <= this.cursor) continue;
           if (message.memberId !== me && active.has(message.memberId)) this.queued.push(message);
           else if (!this.queued.length) this.commit(message.seq);
-          if (this.queued.length === maxBatchMessages) break;
         }
       }
       this.error = undefined;
@@ -75,11 +86,14 @@ export class RoomListener {
       if (snapshot.aiPaused) { this.state = 'room-paused'; return 5000; }
       if (!this.awaitingReceipt) this.state = 'listening';
       if (deliver && this.pending && !this.awaitingReceipt) {
+        const backlog = this.queued.length > maxBatchMessages;
+        if (backlog && this.pending.seq <= this.backlogThrough) return 5000;
         if (!this.host.isIdle()) { this.state = 'waiting-for-idle'; return 5000; }
+        this.summaryPending = backlog;
         this.awaitingReceipt = true;
         this.state = 'awaiting-host-receipt';
         this.dispatchedAt = Date.now();
-        try { this.host.deliver(this.queued); }
+        try { if (backlog) this.host.deliver(this.queued, true); else this.host.deliver(this.queued); }
         catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
       }
       return 5000;

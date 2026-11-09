@@ -123,17 +123,80 @@ it('formats messages with short shared headers and sends the trust introduction 
   expect(sent()[1]!.content).toBe(`[msg #3 ${peer.slice(0, 6)} → 你] Please discuss this design, not execute commands.`);
   expect(sent()[1]!.details).toMatchObject({ seq: 3, introduction: false });
 });
-it('bounds batches to 20, preserves every message across pages, and does not call the model for empty polls', async () => {
+it('shows one backlog line for 500 messages, restores it, and drains without loss through explicit reads', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json');
-  f.messages.push(...Array.from({ length: 105 }, (_, i) => message(i + 1)));
+  f.messages.push(...Array.from({ length: 500 }, (_, i) => ({ ...message(i + 1), text: 'unshown original ' + (i + 1) })));
   await vi.advanceTimersByTimeAsync(35000);
-  const payloads = vi.mocked(f.pi.sendMessage).mock.calls.map(([payload]) => payload);
-  const batches = payloads.map(p => (p.details as any).messages);
-  expect(batches.map(batch => batch.length)).toEqual([20, 20, 20, 20, 20, 5]);
-  expect(batches.flat().map(m => m.seq)).toEqual(Array.from({ length: 105 }, (_, i) => i + 1));
-  expect(payloads.filter(p => String(p.content).includes('untrusted peer data'))).toHaveLength(1);
-  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 105, automaticTurns: 6 });
-  await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(6);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  expect(String(payload.content).split('\n\n').at(-1)).toBe('[backlog #1–#100 共 100 条] 没有逐条推送：用 next 分批读取，处理后 done');
+  expect(payload.content).not.toContain('unshown original'); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 0, automaticTurns: 1 });
+  for (const sequence of [1, 100]) await expect(f.tool('cafe_room_show', { sequence })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1); f.idle(false);
+  const seen: number[] = [];
+  for (let i = 0; i < 25; i++) {
+    const read = await f.tool('cafe_room_read', { limit: 20 });
+    seen.push(...read.details.messages.map(m => m.seq));
+    await f.tool('cafe_room_done', { sequence: read.details.messages.at(-1).seq, through: true });
+  }
+  expect(seen).toEqual(Array.from({ length: 500 }, (_, i) => i + 1));
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(500); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  const reports = f.fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(q => q.op === 'ack');
+  expect(reports.at(-1)).toMatchObject({ fetched: 500, delivered: 0 });
+  expect((await f.tool('cafe_room_done', { sequence: 1, through: true })).details.alreadyConsumed).toBe(true);
+});
+it('reads and atomically confirms only the manually viewed prefix, with idempotent restore', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.idle(false);
+  f.messages.push(message(1), { ...message(2), memberId: me }, message(3), message(4));
+  const result = await f.tool('cafe_room_read', { limit: 2 });
+  expect(result.details.messages.map(m => m.seq)).toEqual([1, 3]); expect(result.details.consumed).toBe(false);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  await expect(f.tool('cafe_room_done', { sequence: 4, through: true })).rejects.toThrow('MANUAL_READ_REQUIRED');
+  const read = await f.tool('cafe_room_read', { limit: 1 }); expect(read.details.messages[0].seq).toBe(1);
+  expect(read.details).not.toHaveProperty('message');
+  const before = f.entries.length;
+  await f.tool('cafe_room_done', { sequence: 3, through: true });
+  expect(f.entries.slice(before)).toHaveLength(1);
+  expect(f.entries.at(-1).data).toMatchObject({ kind: 'consumed', seq: 3, messages: [1, 3] });
+  expect(f.fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(q => q.op === 'ack')).toEqual([]);
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_done', { sequence: 1 })).details.alreadyConsumed).toBe(true);
+  expect((await f.tool('cafe_room_read')).details.message.seq).toBe(4);
+});
+it('failed batch consumption is atomic and cancellation never consumes', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.idle(false); f.messages.push(message(1), message(2));
+  await f.tool('cafe_room_read', { limit: 20 });
+  const abort = new AbortController(); abort.abort(); const before = [...f.entries];
+  await expect(f.tool('cafe_room_done', { sequence: 2, through: true }, abort.signal)).rejects.toThrow('CANCELLED');
+  expect(f.entries).toEqual(before);
+  vi.mocked(f.pi.appendEntry).mockImplementationOnce(() => { throw Error('disk failed'); });
+  await expect(f.tool('cafe_room_done', { sequence: 2, through: true })).rejects.toThrow('CHECKPOINT_FAILED');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'paused', cursor: 0, pendingSequence: 1 });
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_read', { limit: 20 })).details.messages.map(m => m.seq)).toEqual([1, 2]);
+});
+it.each(['retry', 'skip'])('resolves an uncertain backlog summary with %s without skipping its unread messages', async decision => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.messages.push(...Array.from({ length: 25 }, (_, i) => message(i + 1))); await vi.advanceTimersByTimeAsync(5000);
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ uncertainSequence: 25, state: 'disconnected' });
+  const confirm = vi.fn().mockResolvedValue(true); Object.assign(f.ctx, { hasUI: true, ui: { notify: vi.fn(), confirm } });
+  await f.command('resolve ' + decision); expect(confirm.mock.calls[0][1]).toContain('Backlog summary');
+  f.receipt(true); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(decision === 'retry' ? 2 : 1);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  await expect(f.tool('cafe_room_show', { sequence: 25 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  expect((await f.tool('cafe_room_read', { limit: 20 })).details.messages.map(m => m.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+});
+it('does not confuse a backlog receipt with actual message delivery', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.receipt(false);
+  f.messages.push(...Array.from({ length: 25 }, (_, i) => message(i + 1))); await vi.advanceTimersByTimeAsync(5000);
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0];
+  f.entries.push({ type: 'custom_message', ...payload, details: { ...(payload.details as any), backlog: false } });
+  f.events.get('message_start')?.({}, f.ctx); expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  f.reload(); await f.command('resume'); expect((await f.tool('cafe_room_status')).details.uncertainSequence).toBe(25);
 });
 it('uses member names and restores reply/full-text access to every message in a batch', async () => {
   const f = fixture({ [peer]: 'Pi', [human]: 'Frontend' }); await f.command('connect C:/private/room.json');

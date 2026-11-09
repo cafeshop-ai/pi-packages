@@ -22,6 +22,26 @@ it('resumes delivery and checkpoints beyond message 500', async () => {
   expect(host.checkpoint).toHaveBeenCalledWith(502);
   listener.pause();
   expect(() => new RoomListener(client, host, Number.MAX_SAFE_INTEGER + 1)).toThrow('INVALID_CURSOR');
+  expect(() => new RoomListener(client, host, 0, 0, -1)).toThrow('INVALID_CURSOR');
+});
+it('summarizes a large page once without advancing delivery or consumption', async () => {
+  const messages = Array.from({ length: 100 }, (_, i) => message(i + 1));
+  const f = fixture(messages); f.client.supportsPresence = true;
+  const ack = vi.spyOn(f.client, 'ack').mockResolvedValue();
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith(messages, true);
+  expect(f.listener.undispatchedBatch).toEqual([]); f.listener.acknowledge(100);
+  expect(f.listener.cursor).toBe(0); expect(f.host.checkpoint).not.toHaveBeenCalled();
+  await f.listener.poll(); await f.listener.poll();
+  expect(f.host.deliver).toHaveBeenCalledTimes(1); expect(f.listener.undispatchedBatch).toEqual(messages.slice(0, 20));
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 100, delivered: 0, paused: false }, expect.any(AbortSignal));
+  f.listener.consume(20, true); expect(f.listener.cursor).toBe(20);
+  expect(f.host.checkpoint).toHaveBeenCalledExactlyOnceWith(20, true, Array.from({ length: 20 }, (_, i) => i + 1));
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+});
+it('restores a backlog summary separately from the message cursor', async () => {
+  const f = fixture(Array.from({ length: 50 }, (_, i) => message(i + 1)));
+  const restored = new RoomListener(f.client, f.host, 0, 0, 50); await restored.poll();
+  expect(restored.cursor).toBe(0); expect(f.host.deliver).not.toHaveBeenCalled(); expect(restored.undispatched?.seq).toBe(1);
 });
 it('keeps a dispatched batch stable until its final sequence is acknowledged', async () => {
   const f = fixture([message(1), message(2)]); await f.listener.poll();
@@ -111,7 +131,8 @@ it('stops before injecting queued data from a removed sender', async () => {
 it('continues delivering without a turn-count or listening-duration quota', async () => {
   vi.useFakeTimers();
   try {
-    const { listener, host } = fixture(Array.from({ length: 100 }, (_, i) => message(i + 1)));
+    const { listener, host, read } = fixture(Array.from({ length: 100 }, (_, i) => message(i + 1)));
+    read.mockImplementation(async after => snapshot(Array.from({ length: Math.min(20, 100 - after) }, (_, i) => message(after + i + 1)), after));
     vi.mocked(host.deliver).mockImplementation(batch => listener.acknowledge(batch.at(-1)!.seq));
     for (let i = 0; i < 100; i++) { vi.advanceTimersByTime(60000); await listener.poll(); }
     expect(host.deliver).toHaveBeenCalledTimes(5); expect(listener.cursor).toBe(100); expect(listener.state).toBe('listening');
