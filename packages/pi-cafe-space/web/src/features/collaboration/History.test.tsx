@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { Collaboration, deliveryOf, historyPage, repliesOf } from './Collaboration';
-import { saveMembership, type Member, type Message } from './api';
+import { Collaboration, deliveryOf, farJump, historyPage, repliesOf } from './Collaboration';
+import { GoalPanel } from './GoalPanel';
+import { saveMembership, type Goal, type Member, type Message, type Snapshot } from './api';
 
 const roomId = 'a'.repeat(32), memberId = 'b'.repeat(32), token = 'c'.repeat(64), ai = 'e'.repeat(32);
 const members: Member[] = [{ id: memberId, name: '创建者', kind: 'human', owner: true }, { id: ai, name: '同事的 AI', kind: 'ai', owner: false }];
@@ -13,7 +14,7 @@ const response = (value: unknown) => new Response(JSON.stringify(value), { statu
 let fetcher: Mock<(url: string, init: RequestInit) => Promise<Response>>;
 let reads: Record<string, unknown>[];
 /** A small stand-in for the server's read modes: after, latest and before. */
-function serve(messages: Message[]) {
+function serve(messages: Message[], broken = false) {
   reads = [];
   fetcher = vi.fn(async (_: string, init: RequestInit) => {
     const q = JSON.parse(init.body as string) as Record<string, number | string>;
@@ -22,6 +23,8 @@ function serve(messages: Message[]) {
     let start = Number(q.after ?? 0), end = start + limit;
     if (q.latest) [start, end] = [total - Number(q.latest), total];
     if (q.before) [start, end] = [Number(q.before) - 1 - limit, Number(q.before) - 1];
+    // A misbehaving server: older pages never reach further back, yet claim there is more.
+    if (q.before && broken) return response({ roomId, memberId, title: '长讨论', expires: at, members, messages: [], older: true, latestSeq: total });
     start = Math.max(start, 0); end = Math.min(end, total);
     const base = { roomId, memberId, title: '长讨论', expires: at, members, messages: messages.slice(start, end), older: start > 0, latestSeq: total };
     return response(q.before ? base : { ...base, cursor: end, more: end < total });
@@ -74,4 +77,50 @@ it('looks replies up once per render with the same answer as a scan', () => {
   expect(deliveryOf(ask, members, repliesOf([ask, answer]))?.state).toBe('replied');
   // A reply from someone else is not the AI's reply.
   expect(deliveryOf(ask, members, repliesOf([ask, { ...answer, memberId }]))).toBeNull();
+});
+
+it('previews a quoted message far back instead of loading every page up to it', async () => {
+  serve(room(600, seq => seq === 600 ? { replyTo: 3, memberId: ai, text: '回应最早的问题' } : {})); mount();
+  fireEvent.click(await screen.findByRole('button', { name: '↩ 回复 #3' }));
+  expect(await screen.findByText(/#3 创建者：第 3 条消息/)).toBeInTheDocument();
+  expect(reads.filter(q => q.before)).toEqual([{ op: 'read', roomId, before: 4, limit: 1 }]);
+  expect(600 - historyPage - 3).toBeGreaterThan(farJump); expect(shown()).toBe(historyPage);
+  // Loading all the way is the reader's explicit choice.
+  fireEvent.click(screen.getByRole('button', { name: '加载到这条' }));
+  await waitFor(() => expect(document.getElementById('msg-3')).not.toBeNull());
+});
+
+it('stops paging when an older page does not reach further back', async () => {
+  // A jump keeps walking back until it reaches its target: without a progress check this never ends.
+  serve(room(300, seq => seq === 300 ? { replyTo: 3, memberId: ai, text: '回应很早的问题' } : {}), true); mount();
+  fireEvent.click(await screen.findByRole('button', { name: '↩ 回复 #3' }));
+  await waitFor(() => expect(reads.filter(q => q.before)).toHaveLength(1));
+  await waitFor(() => expect(screen.queryByRole('button', { name: /正在加载|加载更早的消息/ })).toBeNull());
+  await new Promise(resolve => setTimeout(resolve, 200));
+  expect(reads.filter(q => q.before)).toHaveLength(1); expect(shown()).toBe(historyPage);
+});
+
+it('keeps older pages out of the live region while they are inserted', async () => {
+  serve(room(120)); mount();
+  await screen.findByText('第 120 条消息'); const log = screen.getByRole('log');
+  expect(log).toHaveAttribute('aria-live', 'polite');
+  fireEvent.click(screen.getByRole('button', { name: '加载更早的消息' }));
+  await screen.findByText('第 70 条消息');
+  expect(log).toHaveAttribute('aria-live', 'off');
+  await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'), { timeout: 2500 });
+});
+
+it('lets a long room submit an earlier result message by number', async () => {
+  const reviewer = 'f'.repeat(32);
+  const goal: Goal = { id: 1, title: '发布验收', criteria: '测试通过', reviewer, status: 'active', createdBy: memberId, updatedAt: at };
+  const snapshot: Snapshot = { roomId, memberId, title: '长讨论', expires: at, cursor: 600, more: false, messages: [], goal, goalRevision: 3, tasks: [], members: [...members, { id: reviewer, name: '验收人', kind: 'human', owner: false }] };
+  const requests: Record<string, unknown>[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_: string, init: RequestInit) => { const q = JSON.parse(init.body as string); requests.push(q); return response({ goal: { ...goal, status: 'review', result: q.resultSeq }, goalRevision: 4, tasks: [] }); }));
+  const panel = (older: boolean) => <GoalPanel snapshot={snapshot} auth={{ roomId, memberId, token }} messages={room(3)} older={older} disabled={false} onChange={() => {}} onJump={() => {}} />;
+  const { rerender } = render(panel(false));
+  expect(screen.queryByRole('spinbutton', { name: '结果消息序号' })).toBeNull();
+  rerender(panel(true));
+  fireEvent.change(screen.getByRole('spinbutton', { name: '结果消息序号' }), { target: { value: '128' } });
+  fireEvent.click(screen.getByRole('button', { name: '提交 Goal 验收' }));
+  await waitFor(() => expect(requests[0]).toMatchObject({ op: 'goal', action: 'submit', resultSeq: 128, goalRevision: 3 }));
 });

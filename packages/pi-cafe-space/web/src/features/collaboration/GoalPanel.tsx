@@ -5,8 +5,8 @@ import styles from './Collaboration.module.scss';
 
 const statuses = { active: '进行中', paused: '已暂停', review: '待验收', done: '已完成' };
 
-export function GoalPanel({ snapshot, auth, messages, disabled, onChange, onJump }: {
-  snapshot: Snapshot; auth: Membership; messages: Message[]; disabled: boolean;
+export function GoalPanel({ snapshot, auth, messages, older = false, disabled, onChange, onJump }: {
+  snapshot: Snapshot; auth: Membership; messages: Message[]; older?: boolean; disabled: boolean;
   onChange(value: GoalState): void; onJump(seq: number): void;
 }) {
   const fieldId = useId();
@@ -51,7 +51,9 @@ export function GoalPanel({ snapshot, auth, messages, disabled, onChange, onJump
       </div>
       {goal.status !== 'done' && <details><summary>更换验收人</summary><label className={styles.inviteChoice}>新验收人<select aria-label="新验收人" value={chosenReviewer} disabled={locked} onChange={e => setReviewer(e.target.value)}><option value="">选择人类成员</option>{humans.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label><Button disabled={locked || !chosenReviewer || chosenReviewer === goal.reviewer} onClick={() => void change('reviewer', { reviewer: chosenReviewer })}>保存验收人</Button></details>}
       {goal.status === 'active' && <form className={styles.goalForm} onSubmit={event => { event.preventDefault(); void change('submit', { resultSeq: Number(result) }); }}>
-        <label className={styles.inviteChoice}>完成证据<select aria-label="完成证据消息" value={result} disabled={locked} onChange={e => setResult(e.target.value)}><option value="">选择自己已发的结果消息</option>{evidence.map(m => <option key={m.seq} value={m.seq}>#{m.seq} {m.text.replace(/\s+/g, ' ').slice(0, 45)}</option>)}</select></label>
+        <label className={styles.inviteChoice}>完成证据<select aria-label="完成证据消息" value={evidence.some(m => String(m.seq) === result) ? result : ''} disabled={locked} onChange={e => setResult(e.target.value)}><option value="">选择自己已发的结果消息</option>{evidence.map(m => <option key={m.seq} value={m.seq}>#{m.seq} {m.text.replace(/\s+/g, ' ').slice(0, 45)}</option>)}</select></label>
+        {/* The list holds only loaded messages; in a long room an earlier result is entered by number (the server checks it is yours). */}
+        {older && <label className={styles.inviteChoice}>更早的结果消息：填写序号<Input type="number" inputMode="numeric" min={1} aria-label="结果消息序号" value={result} disabled={locked} onChange={e => setResult(e.target.value.replace(/\D/g, ''))} placeholder="例如 128" /></label>}
         <Button type="submit" disabled={locked || !result || done !== tasks.length || !currentReviewer}>提交 Goal 验收</Button>
       </form>}
       {deleting && <div className={styles.goalForm} role="group" aria-label="确认删除 Goal"><p>只删除当前 Goal，保留已有任务和聊天记录。</p><div className={styles.row}><Button disabled={locked} onClick={() => void change('delete')}>确认删除 Goal</Button><Button variant="quiet" disabled={locked} onClick={() => setDeleting(false)}>取消删除</Button></div></div>}

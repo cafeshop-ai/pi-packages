@@ -12,7 +12,7 @@ import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
 import styles from './Collaboration.module.scss';
 
-/** Adds new messages by seq; returns the same array when nothing is new so a quiet poll does not re-render the timeline. */
+/** Adds new messages by seq. Returns the same array when nothing is new, so a quiet poll does not rerun the timeline's per-message work (the room still re-renders for presence; memoized text and avatars are skipped). */
 const merge = (old: Message[], added: Message[]) => {
   const seen = new Set(old.map(m => m.seq)); const fresh = added.filter(m => !seen.has(m.seq));
   return fresh.length ? [...old, ...fresh].sort((a, b) => a.seq - b.seq) : old;
@@ -39,6 +39,8 @@ const replyKey = (memberId: string, seq: number) => memberId + ':' + seq;
 export const repliesOf = (messages: Message[]): ReadonlySet<string> => new Set(messages.flatMap(m => m.replyTo ? [replyKey(m.memberId, m.replyTo)] : []));
 /** The timeline loads the newest page first and older pages on demand, never the whole history. */
 export const historyPage = 50;
+/** A quoted message further back than this is previewed on its own instead of loading every page up to it. */
+export const farJump = 300;
 /** Delivery of a message addressed to an AI; null when nothing honest can be said. */
 export function deliveryOf(message: Message, members: Member[], messages: Message[] | ReadonlySet<string>, presence: Record<string, Presence> = {}): { state: 'replied' | 'delivered' | 'fetched' | 'waiting'; label: string } | null {
   const target = members.find(m => m.id === message.to);
@@ -235,6 +237,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   // Older history is fetched only when the reader scrolls up or jumps to a quoted message.
   const [older, setOlder] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false);
   const timeline = useRef<HTMLDivElement>(null); const primed = useRef(false); const oldest = useRef(0); const anchor = useRef<number | null>(null); const target = useRef(0); const loading = useRef(false);
+  const liveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); const [peek, setPeek] = useState<Message | null>(null);
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
   const bottom = useRef<HTMLDivElement>(null); const follow = useRef(true); const inviteButton = useRef<HTMLButtonElement>(null); const sideButton = useRef<HTMLButtonElement>(null); const menuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -271,12 +274,19 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       let first = oldest.current || cursor.current + 1; const page: Message[] = []; let more = true;
       do {
         const value = await collaboration<Snapshot>({ op: 'read', roomId: auth.roomId, before: first, limit: until ? Math.min(100, Math.max(historyPage, first - until)) : historyPage }, auth.token);
-        page.unshift(...value.messages); more = value.older === true; first = value.messages[0]?.seq ?? 1;
+        page.unshift(...value.messages); more = value.older === true;
+        // A page that does not reach further back ends the walk instead of asking again forever.
+        const next = value.messages[0]?.seq ?? first; if (next >= first) { more = false; break; } first = next;
       } while (more && until && first > until);
-      const el = timeline.current; if (el) anchor.current = el.scrollHeight - el.scrollTop;
-      setOlder(more); setMessages(old => merge(old, page));
-    } catch (e) { setError(messageError(e)); } finally { loading.current = false; setLoadingOlder(false); }
+      const added = page.some(m => m.seq < (oldest.current || Infinity)); const el = timeline.current;
+      if (added && el) { anchor.current = el.scrollHeight - el.scrollTop; quietLive(el); }
+      if (!added) target.current = 0;
+      setOlder(more); if (added) setMessages(old => merge(old, page));
+    } catch (e) { target.current = 0; setError(messageError(e)); } finally { loading.current = false; setLoadingOlder(false); }
   };
+  // Older pages are history, not news: the log stops announcing while they are inserted at the top.
+  const quietLive = (el: HTMLElement) => { el.setAttribute('aria-live', 'off'); clearTimeout(liveTimer.current); liveTimer.current = setTimeout(() => el.setAttribute('aria-live', 'polite'), 1000); };
+  useEffect(() => () => clearTimeout(liveTimer.current), []);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 3000); return () => clearTimeout(timer); }, [notice]);
   const call = async <T,>(fields: Record<string, unknown>) => collaboration<T>({ roomId: auth.roomId, ...fields }, auth.token);
   const act = async (op: string, fields: Record<string, unknown> = {}) => {
@@ -337,7 +347,16 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const compact = (message: Message) => !!probeOf(message, members) || probes.answers.has(message.seq) && message.text.trim().length <= 16;
   const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); if (!target && older && seq < oldest.current) { void reach(seq); return; } target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
   // A quoted or linked message older than the loaded window is fetched, then scrolled to.
-  const reach = async (seq: number) => { follow.current = false; target.current = seq; await loadOlder(seq); };
+  const reach = async (seq: number) => {
+    if (loading.current) { setNotice('正在加载更早的消息，请稍后再点'); return; }
+    if (oldest.current - seq > farJump) { void peekAt(seq); return; }
+    follow.current = false; target.current = seq; await loadOlder(seq);
+  };
+  /** One far-back message, shown above the composer without loading everything in between. */
+  const peekAt = async (seq: number) => {
+    try { const value = await collaboration<Snapshot>({ op: 'read', roomId: auth.roomId, before: seq + 1, limit: 1 }, auth.token); setPeek(value.messages[0] ?? null); }
+    catch (e) { setError(messageError(e)); }
+  };
   const openSide = (next: 'tasks' | 'people') => { setTab(next); if (narrow()) setSideOpen(true); };
   const openInvite = () => { setInviteOpen(true); if (!link) void act('invite'); };
   const addTask = (event: FormEvent) => { event.preventDefault(); const title = draft.trim(); if (!title) return; void taskAct({ action: 'create', id: crypto.randomUUID(), title }).then(ok => { if (ok) setDraft(''); }); };
@@ -351,7 +370,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const board = (): ReactNode => {
     const done = tasks.filter(t => t.status === 'done').length;
     return <div className={styles.board}>
-      {snapshot && <GoalPanel key={snapshot.goal?.id ?? 'none'} snapshot={snapshot} auth={auth} messages={messages} disabled={terminal} onJump={jump} onChange={value => setSnapshot(old => old && value.goalRevision >= (old.goalRevision ?? 0) ? { ...old, ...value } : old)} />}
+      {snapshot && <GoalPanel key={snapshot.goal?.id ?? 'none'} snapshot={snapshot} auth={auth} messages={messages} older={older} disabled={terminal} onJump={jump} onChange={value => setSnapshot(old => old && value.goalRevision >= (old.goalRevision ?? 0) ? { ...old, ...value } : old)} />}
       <div className={styles.boardHead}><p><strong>{done}</strong> / {tasks.length} 已完成</p><progress aria-label="任务完成度" value={done} max={Math.max(tasks.length, 1)} /></div>
       <form className={styles.addTask} onSubmit={addTask}><Icon name="plus" /><Input aria-label="新任务" placeholder="添加任务，回车保存" value={draft} maxLength={200} disabled={terminal || !snapshot || goalFrozen} onChange={e => setDraft(e.target.value)} /></form>
       {tasks.length === 0 && <div className={styles.boardEmpty}><p>还没有任务。把讨论里的事项“转为任务”，或从一套清单开始：</p>
@@ -471,6 +490,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         </div>
         {notice && <p className={styles.notice} role="status">{notice}</p>}
         <form className={styles.composer} onSubmit={event => { event.preventDefault(); send(); }}>
+          {peek && <div className={styles.replying} role="status"><Icon name="back" /><span>#{peek.seq} {nameOf(peek.memberId)}：{excerpt(peek.text, 60)}</span><Button variant="quiet" onClick={() => { const seq = peek.seq; setPeek(null); follow.current = false; target.current = seq; void loadOlder(seq); }}>加载到这条</Button><IconButton label="关闭预览" variant="quiet" onClick={() => setPeek(null)}><Icon name="close" /></IconButton></div>}
           {reply > 0 && <div className={styles.replying}><Icon name="back" /><span>回复 {(() => { const quoted = bySeq.get(reply); return quoted ? `${nameOf(quoted.memberId)}：${excerpt(quoted.text, 36)}` : `#${reply}`; })()}</span><IconButton label="取消回复" variant="quiet" onClick={() => setReply(0)}><Icon name="close" /></IconButton></div>}
           <div className={styles.inputBox}>
             <Label htmlFor="collab-message" className="sr-only">消息</Label>
