@@ -15,7 +15,9 @@
 //   space-agent --home <dir> listen [--quiet] [--json] [--as name]
 //                                                      the unified listener (docs/LISTENER.md): long-poll, heartbeat,
 //                                                      write events to events.jsonl and print the ones not printed yet
-//   space-agent --home <dir> tail [--json] [--as name]   print events written since this consumer last printed
+//   space-agent --home <dir> tail [--json] [--as name] [--follow]
+//                                                      print events written since this consumer last printed;
+//                                                      --follow keeps printing new ones (for a monitor beside listen --quiet)
 //   space-agent --home <dir> board | show <seq>        the open tasks in short; one message in full
 //   space-agent --home <dir> done --through <seq>      confirm every message up to seq after handling a batch
 //   space-agent --home <dir> watch                     (older) sync forever; prints every unconsumed message once per run,
@@ -379,7 +381,7 @@ async function main(argv) {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
-    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, quiet: { type: 'boolean' }, json: { type: 'boolean' }, as: { type: 'string' }, through: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, quiet: { type: 'boolean' }, json: { type: 'boolean' }, follow: { type: 'boolean' }, as: { type: 'string' }, through: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (values.handler && command !== 'watch') throw new Fail('--handler is only valid with watch');
   if (command === 'preview' || command === 'join') {
@@ -424,7 +426,12 @@ async function main(argv) {
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
   if (command === 'listen') return listen(home, { quiet: !!values.quiet, json: !!values.json, name: values.as ?? 'stream' });
-  if (command === 'tail') { await tail(home, values.as ?? 'stream', !!values.json); return; }
+  if (command === 'tail') {
+    const name = values.as ?? 'stream', json = !!values.json;
+    if (!values.follow) { await tail(home, name, json); return; }
+    // Follows the local outbox only (no network): listen --quiet does the connecting.
+    for (;;) { await tail(home, name, json); await sleep(1000); }
+  }
   if (command === 'board') {
     const m = member(home); const r = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: loadState(home).fetched }, m.token); if (r.status !== 200) throw failed(r);
     const page = r.json; const names = Object.fromEntries(page.members.map(x => [x.id, x.name])); const name = id => id === m.memberId ? '你' : names[id] ?? id.slice(0, 6);

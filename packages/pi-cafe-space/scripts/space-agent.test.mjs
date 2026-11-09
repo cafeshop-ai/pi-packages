@@ -221,6 +221,11 @@ test('listen --quiet keeps the connection; tail prints each event once per consu
   assert.equal(agent(h, ['tail']).out, '', 'nothing twice for the same consumer');
   const json = agent(h, ['tail', '--json', '--as', 'program']).out.split('\n').map(line => JSON.parse(line));
   assert.ok(json.every(e => Number.isSafeInteger(e.id) && Number.isSafeInteger(e.batch)) && json.some(e => e.type === 'msg' && e.text === '给 tail 的消息'));
+  // A monitor beside a background listener: tail --follow prints new events as listen --quiet writes them.
+  const background = spawn(process.execPath, [client, '--home', h, 'listen', '--quiet'], { stdio: 'ignore' });
+  const followed = await running(h, ['tail', '--follow'], 2500, () => api({ op: 'send', roomId: owner.roomId, id: 'tail-message-0002', text: '跟随输出的新消息' }, owner.token));
+  background.kill(); await new Promise(ok => background.once('exit', ok));
+  assert.match(followed, /^\[msg #\d+ Owner\] 跟随输出的新消息$/m); assert.ok(!followed.includes('给 tail 的消息'), 'already printed events stay printed');
 });
 
 test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
