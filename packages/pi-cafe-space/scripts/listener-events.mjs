@@ -91,7 +91,19 @@ const taskStatus = { todo: 'todo', doing: 'doing', done: 'done' };
 export function formatEvent(e, names = {}, me = '') {
   switch (e.type) {
     case 'hello': return `[room ${flat(e.title)}] 成员 ${e.members} · 未完成任务 ${e.openTasks}${e.mine ? `（${e.mine} 项归你）` : ''}，看板用 board 查看${e.goal ? ` · Goal r${e.goal.revision} ${e.goal.status}` : ''}${e.paused ? ' · AI 发言已暂停' : ''}${e.waitingOnYou ? ` · ${e.waitingOnYou} 人在等你` : ''}`;
-    case 'msg': return `[msg #${e.seq} ${who(names, e.from, me)}${e.to ? ` → ${who(names, e.to, me)}` : ''}${e.replyTo ? ` ↩#${e.replyTo}` : ''}] ${flat(e.text)}${e.truncated ? `…（全文：show ${e.seq}）` : ''}`;
+    case 'msg': {
+      const head = `[msg #${e.seq} ${who(names, e.from, me)}${e.to ? ` → ${who(names, e.to, me)}` : ''}${e.replyTo ? ` ↩#${e.replyTo}` : ''}] `;
+      const body = flat(e.text), hint = `…（全文：show ${e.seq}）`;
+      const line = head + body + (e.truncated ? hint : '');
+      if (Buffer.byteLength(line, 'utf8') <= 2048) return line;
+      let remaining = 2048 - Buffer.byteLength(head + hint, 'utf8'), short = '';
+      for (const char of body) {
+        remaining -= Buffer.byteLength(char, 'utf8');
+        if (remaining < 0) break;
+        short += char;
+      }
+      return head + short + hint;
+    }
     case 'backlog': return `[backlog #${e.from}–#${e.to} 共 ${e.count} 条] 没有逐条推送：用 next 分批读取，处理后 done`;
     case 'task': {
       const owner = e.assignee ? ` ${who(names, e.assignee, me)}` : ' 未指派';

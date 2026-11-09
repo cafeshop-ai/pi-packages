@@ -16,8 +16,39 @@ for (const c of fixture.cases) test(c.name, () => {
   if (c.hello) { assert.deepEqual(helloEvent(c.input.page, c.me), c.hello); assert.equal(formatEvent(c.hello, seen.names, c.me), c.helloLine); }
 });
 
+test('message lines fit 2 KiB including headers and full-text hints', () => {
+  for (const c of fixture.cases) c.events.forEach((e, i) => {
+    if (e.type === 'msg') assert.ok(Buffer.byteLength(c.lines[i], 'utf8') <= 2048, c.name);
+  });
+});
+
+test('UTF-8 truncation preserves code points, routing and the original event', () => {
+  const names = { peer: '😀'.repeat(48), recipient: '中'.repeat(48) };
+  for (const text of ['中'.repeat(1500), '😀'.repeat(1500), 'é'.repeat(1500), '中😀e\u0301\n'.repeat(300), 'x\n'.repeat(750)]) {
+    const [event] = pageEvents({}, {}, [{ seq: 9007199254740991, memberId: 'peer', to: 'recipient', replyTo: 42, text }], 'me');
+    const before = structuredClone(event), line = formatEvent(event, names, 'me');
+    assert.ok(Buffer.byteLength(line, 'utf8') <= 2048, 'UTF-8 byte limit');
+    assert.ok(line.isWellFormed(), 'no split surrogate pair');
+    assert.ok(line.startsWith(`[msg #9007199254740991 ${names.peer} → ${names.recipient} ↩#42] `));
+    assert.ok(line.endsWith('…（全文：show 9007199254740991）'));
+    assert.ok(!line.includes('\n'), 'flatten before measuring bytes');
+    assert.deepEqual(event, before, 'formatting never changes the persisted event');
+  }
+});
+
+test('only lines exceeding the UTF-8 boundary gain a full-text hint', () => {
+  const head = '[msg #1 Pi] ';
+  for (const extra of [-1, 0, 1]) {
+    const text = '中'.repeat(600) + 'x'.repeat(2048 - Buffer.byteLength(head) - 1800 + extra);
+    const [event] = pageEvents({}, {}, [{ seq: 1, memberId: 'peer', text }], 'me');
+    const line = formatEvent(event, { peer: 'Pi' }, 'me');
+    assert.equal(line.includes('全文：show 1'), extra > 0);
+    assert.ok(Buffer.byteLength(line) <= 2048);
+    if (extra <= 0) assert.equal(line, head + text);
+  }
+});
+
 test('a page never dumps the board or the member list', () => {
-  for (const c of fixture.cases) for (const line of c.lines) assert.ok(line.length < 2048 || /全文：show \d+/.test(line), line.slice(0, 60));
   const first = fixture.cases[0];
   assert.ok(!first.events.some(e => e.type === 'task' || e.type === 'member'), 'the first page only remembers tasks and members');
 });
