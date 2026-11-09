@@ -280,7 +280,11 @@ async function tail(home, name, json) {
   const names = state.seen?.names ?? {};
   for (const e of list) print(json ? e : formatEvent(e, names, m.memberId));
   const top = Math.max(0, ...list.filter(e => e.type === 'msg').map(e => e.seq));
-  await transact(home, s => { s.tailed = { ...(s.tailed ?? {}), [name]: Math.max(s.tailed?.[name] ?? 0, list.at(-1).id) }; if (top > (s.delivered ?? 0)) s.delivered = top; });
+  // Checked again under the lock: a deliver may have reserved this consumer since the first look.
+  await transact(home, s => {
+    if (s.handoffs?.[name]) throw new Fail(`${name} is a deliver consumer with batch ${s.handoffs[name].batch} pending; use deliver for it, not tail`, 2);
+    s.tailed = { ...(s.tailed ?? {}), [name]: Math.max(s.tailed?.[name] ?? 0, list.at(-1).id) }; if (top > (s.delivered ?? 0)) s.delivered = top;
+  });
   return list.length;
 }
 // --- program consumers: a batch is confirmed only by the consumer's receipt ----------------
