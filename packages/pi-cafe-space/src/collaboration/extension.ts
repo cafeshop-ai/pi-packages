@@ -86,8 +86,8 @@ export default function collaborationExtension(pi: ExtensionAPI) {
   };
 
   registerCafeRoute(pi, 'collab', {
-    getArgumentCompletions: prefix => ['connect', 'resume', 'pause', 'status', 'resolve retry', 'resolve skip'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
-    description: 'Room bridge: connect <private config> | resume | pause | status | resolve retry/skip (uncertain delivery only)',
+    getArgumentCompletions: prefix => ['connect', 'migrate --consumed-through', 'resume', 'pause', 'status', 'resolve retry', 'resolve skip'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
+    description: 'Room bridge: connect <private config> | migrate --consumed-through <seq> <private config> | resume | pause | status | resolve retry/skip',
     handler: async (args, ctx) => {
       if (args.trim() === 'pause') { stop(); notify(ctx, 'Room listening paused. Any already-running model turn is not aborted.'); return; }
       if (args.trim() === 'status') { notify(ctx, JSON.stringify(status())); return; }
@@ -102,11 +102,18 @@ export default function collaborationExtension(pi: ExtensionAPI) {
       }
       const resuming = args.trim() === 'resume';
       const match = /^connect\s+(.+)$/.exec(args.trim());
-      if (!match && !resuming) { notify(ctx, 'Usage: /cafe collab connect <absolute private config path> | resume | pause | status'); return; }
+      const migration = /^migrate\s+--consumed-through\s+(\S+)\s+(.+)$/.exec(args.trim());
+      if (!match && !migration && !resuming) { notify(ctx, 'Usage: /cafe collab connect <absolute private config path> | migrate --consumed-through <seq> <absolute private config path> | resume | pause | status'); return; }
+      if (migration && (!/^\d+$/.test(migration[1]!) || !sequence(Number(migration[1])))) { notify(ctx, 'INVALID_MIGRATION_SEQUENCE'); return; }
       const sessionId = ctx.sessionManager.getSessionId();
+      // Pi defers custom-entry persistence until a saved session has a conversation.
+      if (migration && (!ctx.sessionManager.getSessionFile() || !ctx.sessionManager.getEntries().some(e =>
+        e.type === 'message' && (e.message.role === 'user' || e.message.role === 'assistant')))) {
+        notify(ctx, 'MIGRATION_REQUIRES_SAVED_CONVERSATION'); return;
+      }
       const entry = resuming ? [...ctx.sessionManager.getBranch()].reverse().find(e => e.type === 'custom' && e.customType === stateType && record(e.data) && e.data.kind === 'binding' && e.data.session === sessionId) : undefined;
       const binding = entry?.type === 'custom' && record(entry.data) ? entry.data : undefined;
-      const configPath = resuming ? binding?.configPath : match?.[1];
+      const configPath = resuming ? binding?.configPath : migration?.[2] ?? match?.[1];
       if (typeof configPath !== 'string' || (resuming && (typeof binding?.scope !== 'string' || typeof binding.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(binding.fingerprint)))) {
         notify(ctx, 'No saved room binding in this session branch. Run /cafe collab connect <absolute private config path> once.'); return;
       }
@@ -115,6 +122,11 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         const auth = readMembership(configPath);
         const fingerprint = createHash('sha256').update(JSON.stringify([auth.origin, auth.roomId, auth.memberId, auth.token])).digest('hex');
         const newScope = `${auth.origin}/${auth.roomId}/${auth.memberId}`;
+        if (migration && ctx.sessionManager.getBranch().some(e =>
+          (e.type === 'custom' && e.customType === stateType && record(e.data) && e.data.scope === newScope) ||
+          (e.type === 'custom_message' && e.customType === eventType && record(e.details) && e.details.scope === newScope))) {
+          notify(ctx, 'ROOM_ALREADY_INITIALIZED_USE_RESUME'); return;
+        }
         if (resuming && (binding?.scope !== newScope || binding.fingerprint !== fingerprint)) throw new RoomError('ROOM_CONFIG_CHANGED_RUN_CONNECT');
         if (resuming && boundSession === sessionId && scope === newScope && listener && listener.state !== 'paused') {
           notify(ctx, 'Room listener is already connected in this Pi instance.'); return;
@@ -136,6 +148,11 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         const resolved = new Set<string>();
         for (const entry of ctx.sessionManager.getBranch()) {
           if (entry.type === 'custom' && entry.customType === stateType && record(entry.data) && entry.data.scope === newScope) {
+            if (entry.data.kind === 'binding' && entry.data.consumedThrough !== undefined) {
+              if (!sequence(entry.data.consumedThrough)) throw new RoomError('INVALID_MIGRATION_CHECKPOINT');
+              cursor = Math.max(cursor ?? 0, entry.data.consumedThrough);
+              consumedCursor = Math.max(consumedCursor, entry.data.consumedThrough);
+            }
             if (entry.data.kind === 'controls' && record(entry.data.controls)) controls = structuredClone(entry.data.controls) as unknown as ControlState;
             if (entry.data.kind === 'discovery') discovery = parseDiscoveryState(entry.data.discovery);
             if (['cursor', 'consumed'].includes(String(entry.data.kind)) && sequence(entry.data.seq)) {
@@ -220,6 +237,15 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         else if (sparseReceipts.size) throw new RoomError('DISCOVERY_CHECKPOINT_REQUIRED');
         const uncertain = [...attempts].find(([attempt]) => !receipts.has(attempt) && !resolved.has(attempt));
         if (uncertain) { recovery = { scope: newScope, seq: uncertain[1], attempt: uncertain[0], session: sessionId, backlog: backlogAttempts.has(uncertain[0]), control: controlAttempts.has(uncertain[0]), discovered: discoveredAttempts.has(uncertain[0]) }; throw new RoomError('HOST_DELIVERY_UNKNOWN_INSPECT_SESSION_THEN_RESOLVE'); }
+        if (migration) {
+          const through = Number(migration[1]);
+          const boundary = await client.read(Math.max(0, through - 1), undefined, 1);
+          if (generation !== current || ctx.sessionManager.getSessionId() !== sessionId) return;
+          if (through > 0 && boundary.messages[0]?.seq !== through) throw new RoomError('MIGRATION_SEQUENCE_NOT_FOUND');
+          // One entry makes the explicit handled prefix and its recovery binding inseparable.
+          pi.appendEntry(stateType, { kind: 'binding', session: sessionId, configPath, scope: newScope, fingerprint, consumedThrough: through });
+          cursor = through; consumedCursor = through;
+        }
         let snapshot = await client.read(cursor ?? 0);
         if (cursor === undefined) {
           // First attach starts at the current tail, never automatically executes old room history.
@@ -231,7 +257,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         const checkpoint = (seq: number, manuallyConsumed = false, messages?: readonly number[]) => pi.appendEntry(stateType, { kind: manuallyConsumed ? 'consumed' : 'cursor', scope: newScope, seq, ...(messages ? { messages } : {}) });
         checkpoint(cursor);
         // Local session metadata only; never persist the token or infer a binding from room messages.
-        if (!resuming) pi.appendEntry(stateType, { kind: 'binding', session: sessionId, configPath, scope: newScope, fingerprint });
+        if (!resuming && !migration) pi.appendEntry(stateType, { kind: 'binding', session: sessionId, configPath, scope: newScope, fingerprint });
         const deliver = (messages: readonly Message[], backlog = false, discovered = false) => {
           if (generation !== current) throw new RoomError('SESSION_CHANGED');
           activeAttempt = randomUUID();

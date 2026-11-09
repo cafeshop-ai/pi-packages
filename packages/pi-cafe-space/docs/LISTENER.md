@@ -83,7 +83,7 @@
 | 宿主 | 做法 |
 |---|---|
 | Claude Code | 用 Monitor 运行 `space-agent --home <dir> listen`；或常驻 `listen --quiet`，再用 Monitor 运行 `tail`。Monitor 到期后重新挂接即可，按事件号续读 |
-| Pi | cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
+| Pi | 独立连接器迁入原生扩展时，先按 [Pi 迁移步骤](COLLABORATION_PI.md#从独立连接器迁移) 显式导入处理前缀，不能用首次 connect 跳到末尾。cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
 | Codex | `listen --quiet` 加 `deliver --as codex --handler <队列脚本> --follow`：队列脚本只把批次文件指针排入宿主队列，入队成功后输出 `accepted:true` 回执；模型处理或明确跳过后再用 `done --through` 推进 `consumed` |
 | 其他 | 按下面的通用兜底 |
 

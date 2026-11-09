@@ -17,7 +17,7 @@ function fixture(names: Record<string, string> = {}) {
   const events = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const commands = new Map<string, any>(), tools = new Map<string, any>();
   let idle = true, receipt = true, session = 'session-one';
-  const ctx = { hasUI: false, isIdle: () => idle, hasPendingMessages: () => false, sessionManager: { getSessionId: () => session, getBranch: () => entries } } as unknown as ExtensionContext;
+  const ctx = { hasUI: false, isIdle: () => idle, hasPendingMessages: () => false, sessionManager: { getSessionId: () => session, getBranch: () => entries, getSessionFile: () => 'synthetic-session.jsonl', getEntries: () => [{ type: 'message', message: { role: 'user' } }, ...entries] } } as unknown as ExtensionContext;
   const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     if (body.op === 'ack') return new Response(JSON.stringify({ ok: true }));
@@ -145,6 +145,107 @@ it('does nothing on load; explicit connect skips old history and injects only ne
   f.messages.push(message(2)); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
   const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0]; expect(payload.content).toContain('untrusted peer data'); expect(JSON.stringify(payload)).not.toContain(token);
   expect((await f.tool('cafe_room_status')).details.cursor).toBe(2);
+});
+it('migrates an explicit handled prefix without skipping backlog or inventing host delivery, and restores it', async () => {
+  const f = fixture(); f.messages.push(...Array.from({ length: 550 }, (_, i) => message(i + 1)));
+  await f.command('migrate --consumed-through 500 C:/private/room with spaces.json');
+  expect(client.readMembership).toHaveBeenCalledWith('C:/private/room with spaces.json');
+  expect(f.entries[0].data).toMatchObject({ kind: 'binding', consumedThrough: 500, configPath: 'C:/private/room with spaces.json' });
+  expect(JSON.stringify(f.entries)).not.toContain(token);
+  expect(f.fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+    { op: 'read', roomId, after: 499, limit: 1 }, { op: 'read', roomId, after: 500 },
+  ]);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 500, consumed: 500, delivered: 0 });
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(f.pi.sendMessage).mock.calls[0]![0].content).toContain('[backlog #501–#550 共 50 条]');
+  for (const sequence of [500, 501, 550]) {
+    await expect(f.tool('cafe_room_show', { sequence })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+    await expect(f.tool('cafe_room_reply', { replyTo: sequence, text: 'Not authorized by migration' })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  }
+  expect(f.fetcher.mock.calls.some(([, init]) => JSON.parse(String(init?.body)).op === 'send')).toBe(false);
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(15000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 500, consumed: 500, delivered: 0 });
+  const reports = f.fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(q => q.op === 'ack');
+  expect(reports.at(-1)).toMatchObject({ fetched: 550, delivered: 0 });
+  expect((await f.tool('cafe_room_read', { limit: 20 })).details.messages.map(m => m.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 501));
+  await f.tool('cafe_room_done', { sequence: 520, through: true });
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 520, consumed: 520, delivered: 0 });
+});
+it('explicit zero migration preserves preexisting page-out mentions and their independent receipts', async () => {
+  const f = fixture(), targets = [101, 250, 501];
+  f.messages.push(...Array.from({ length: 550 }, (_, i) => ({ ...message(i + 1), to: targets.includes(i + 1) ? me : '' })));
+  await f.command('migrate --consumed-through 0 C:/private/room.json'); await vi.advanceTimersByTimeAsync(40000);
+  const receipts = f.entries.filter(e => e.type === 'custom_message' && e.details?.discovered);
+  expect(receipts.map(e => e.details.seq)).toEqual(targets);
+  for (const sequence of targets) expect((await f.tool('cafe_room_show', { sequence })).details.message.seq).toBe(sequence);
+  await expect(f.tool('cafe_room_done', { sequence: 501 })).rejects.toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 0, consumed: 0, delivered: 0 });
+  f.reload(); await f.command('resume'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.entries.filter(e => e.type === 'custom_message' && e.details?.discovered)).toHaveLength(3);
+});
+it.each(['migrate', 'migrate C:/private/room.json', 'migrate --consumed-through C:/private/room.json',
+  ...['-1', '1.5', 'NaN', 'Infinity', '0x10', '1e2', '9007199254740992'].map(seq => `migrate --consumed-through ${seq} C:/private/room.json`)])('rejects invalid migration arguments without reading credentials: %s', async command => {
+  const f = fixture(); await f.command(command);
+  expect(client.readMembership).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.entries).toEqual([]);
+});
+it.each(['memory-only', 'no-conversation'])('rejects migration before credentials or network when the session is %s', async kind => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } });
+  Object.assign(f.ctx.sessionManager, kind === 'memory-only' ? { getSessionFile: () => undefined } : { getEntries: () => [] });
+  await f.command('migrate --consumed-through 0 C:/private/room.json');
+  expect(JSON.stringify(notify.mock.calls)).toContain('MIGRATION_REQUIRES_SAVED_CONVERSATION');
+  expect(client.readMembership).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.entries).toEqual([]);
+});
+it('rejects a migration beyond the room tail without recording any checkpoint', async () => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } }); f.messages.push(message(1));
+  await f.command('migrate --consumed-through 2 C:/private/room.json');
+  expect(JSON.stringify(notify.mock.calls)).toContain('MIGRATION_SEQUENCE_NOT_FOUND');
+  expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.entries).toEqual([]); expect(f.pi.sendMessage).not.toHaveBeenCalled();
+});
+it.each(['connect C:/private/room.json', 'migrate --consumed-through 0 C:/private/room.json'])('rejects migration over existing native state without stopping its listener: %s', async initial => {
+  const f = fixture(), notify = vi.fn(); Object.assign(f.ctx, { hasUI: true, ui: { notify } }); await f.command(initial);
+  const before = [...f.entries], requests = f.fetcher.mock.calls.length;
+  await f.command('migrate --consumed-through 0 C:/private/room.json');
+  expect(JSON.stringify(notify.mock.calls)).toContain('ROOM_ALREADY_INITIALIZED_USE_RESUME');
+  expect(f.entries).toEqual(before); expect(f.fetcher).toHaveBeenCalledTimes(requests);
+  f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('migration saves its binding and prefix together before the first pending-page read, including read failure', async () => {
+  const f = fixture(); f.messages.push(message(1), message(2), message(3));
+  const read = client.RoomClient.prototype.read;
+  const spy = vi.spyOn(client.RoomClient.prototype, 'read').mockImplementation(async function (after, signal, limit) {
+    if (after === 1 && limit === undefined) {
+      expect(f.entries).toHaveLength(1); expect(f.entries[0].data).toMatchObject({ kind: 'binding', consumedThrough: 1 });
+      throw new client.RoomError('NETWORK_RESULT_UNKNOWN');
+    }
+    return read.call(this, after, signal, limit);
+  });
+  await f.command('migrate --consumed-through 1 C:/private/room.json');
+  spy.mockRestore(); f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 1, consumed: 1, delivered: 0 });
+  expect((await f.tool('cafe_room_read', { limit: 20 })).details.messages.map(m => m.seq)).toEqual([2, 3]);
+});
+it('failed migration persistence does not read the pending page or start a listener', async () => {
+  const f = fixture(); f.messages.push(message(1));
+  vi.mocked(f.pi.appendEntry).mockImplementationOnce(() => { throw Error('disk failed'); });
+  await f.command('migrate --consumed-through 1 C:/private/room.json'); await vi.advanceTimersByTimeAsync(10000);
+  expect(f.entries).toEqual([]); expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.pi.sendMessage).not.toHaveBeenCalled();
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'disconnected', consumed: 0 });
+});
+it.each(['pause', 'session'])('late migration preflight cannot write after %s', async change => {
+  const f = fixture(); let finish!: () => void;
+  const response = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementationOnce(async (...args) => { await new Promise<void>(resolve => { finish = resolve; }); return response(...args); });
+  const migration = f.command('migrate --consumed-through 0 C:/private/room.json');
+  if (change === 'pause') await f.command('pause'); else f.session('replacement-session');
+  finish(); await migration;
+  expect(f.entries).toEqual([]); expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.pi.sendMessage).not.toHaveBeenCalled();
+});
+it('rejects a malformed imported checkpoint before resuming network access', async () => {
+  const f = fixture(); await f.command('migrate --consumed-through 0 C:/private/room.json'); f.reload();
+  f.entries[0].data.consumedThrough = -1; f.fetcher.mockClear();
+  await f.command('resume'); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.pi.sendMessage).not.toHaveBeenCalled();
 });
 it('heartbeats while idle, excludes skipped history, restores real receipts, and stops on pause', async () => {
   const f = fixture(); f.messages.push(message(1)); await f.command('connect C:/private/room.json');

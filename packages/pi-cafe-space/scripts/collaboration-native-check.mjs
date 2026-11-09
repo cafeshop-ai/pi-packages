@@ -2,6 +2,7 @@
 // Actual Pi SDK + source extension + loopback HTTP; synthetic providers only, no user resources.
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,7 +13,7 @@ const extensionPath = values.extension ? resolve(values.extension) : fileURLToPa
 const piRoot = await realpath(values['pi-root'] ?? fileURLToPath(new URL('../../../node_modules/@earendil-works/pi-coding-agent/', import.meta.url)));
 const root = await mkdtemp(join(tmpdir(), 'cafe collaboration native-'));
 const nativeFetch = globalThis.fetch, sessions = [], messages = [], modelCalls = [], errors = [];
-let origin, blockedNetwork = 0, httpRequests = 0;
+let origin, migrationCheckpoint, blockedNetwork = 0, httpRequests = 0;
 const presence = {}, acknowledgements = [], requests = [0, 0];
 const pageOutTargets = [], shownPageOut = [];
 const controls = { tasks: [], waitingOnYou: [], aiPaused: false };
@@ -30,6 +31,10 @@ const server = createServer((req, res) => {
     try {
       const q = JSON.parse(body); assert.equal(q.roomId, roomId); let value;
       if (q.op === 'read') {
+        if (migrationCheckpoint && q.after === migrationCheckpoint.seq && q.limit === undefined) {
+          const saved = readFileSync(migrationCheckpoint.path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+          assert(saved.some(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'binding' && e.data.consumedThrough === q.after), 'Migration must be on disk before reading the pending page');
+        }
         const page = messages.filter(m => m.seq > q.after).slice(0, q.limit ?? 100), cursor = page.at(-1)?.seq ?? q.after;
         value = { roomId, memberId: ids[index], cursor, more: cursor < messages.length, ...controls, presence, members: ids.map(id => ({ id, name: 'Synthetic peer', kind: 'ai' })), messages: page };
       }
@@ -58,7 +63,7 @@ try {
   const sdk = await import(pathToFileURL(join(piRoot, 'dist/index.js')).href);
   const { createAssistantMessageEventStream } = await import(pathToFileURL(resolve(piRoot, '../pi-ai/dist/compat.js')).href);
   const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = sdk;
-  async function open(index, manager) {
+  async function open(index, manager, consumedThrough) {
     const dir = join(root, String(index)); await mkdir(dir, { recursive: true });
     const config = join(dir, 'member.json');
     if (!manager) await writeFile(config, JSON.stringify({ origin, roomId, memberId: ids[index], token: tokens[index] }), { mode: 0o600 });
@@ -128,13 +133,16 @@ try {
     const settings = SettingsManager.inMemory({ cacheWarming: 'off', compaction: { enabled: false }, retry: { enabled: false } });
     const loader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: 'Synthetic test. No external provider or user tools.', additionalExtensionPaths: [extensionPath] });
     await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
-    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, modelRuntime: runtime, model: runtime.getModel('cafe-synthetic-' + index, 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager: manager ?? SessionManager.create(dir, join(dir, 'sessions')), noTools: 'all', tools: ['cafe_room_done', 'cafe_room_done_goal', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_show', 'cafe_room_status'], thinkingLevel: 'off' });
+    const sessionManager = manager ?? SessionManager.create(dir, join(dir, 'sessions'));
+    if (consumedThrough !== undefined) sessionManager.appendMessage({ role: 'user', content: [{ type: 'text', text: 'Initialize the isolated migration session.' }], timestamp: Date.now() });
+    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, modelRuntime: runtime, model: runtime.getModel('cafe-synthetic-' + index, 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager, noTools: 'all', tools: ['cafe_room_done', 'cafe_room_done_goal', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_show', 'cafe_room_status'], thinkingLevel: 'off' });
     sessions.push(session); await session.bindExtensions({});
     assert.deepEqual(session.getActiveToolNames().sort(), ['cafe_room_done', 'cafe_room_done_goal', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_show', 'cafe_room_status']);
     await session.prompt('/cafe collab status');
     if (manager) await delay(5500);
     assert.equal(requests[index], requestCount, 'Loading/status must not connect, including a previously bound session');
-    await session.prompt(manager ? '/cafe collab resume' : '/cafe collab connect ' + config);
+    if (consumedThrough !== undefined) migrationCheckpoint = { seq: consumedThrough, path: session.sessionFile };
+    await session.prompt(manager ? '/cafe collab resume' : consumedThrough === undefined ? '/cafe collab connect ' + config : `/cafe collab migrate --consumed-through ${consumedThrough} ${config}`);
     return { session, config };
   }
   const a = await open(0), b = await open(1); assert.equal(modelCalls.length, 0);
@@ -281,7 +289,34 @@ try {
   const pageOutWakeups = pageOutRestored.session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'dispatch' && e.data.discovered).length;
   assert.equal(pageOutWakeups, 3);
   console.log('PASS: native page-out #101/#250/#501 receipts grant exact full text, retain the unread prefix, and survive actual session restore without replay');
-  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: automaticWakeups + 1 + pageOutWakeups, pageOutWakeups, pageOutReceiptsSurviveRestore: true, pageOutCannotSkipUnreadPrefix: true, nativeControlsAtFixedCursor: true, pausedControlsSurviveRestore: true, goalConfirmationSurvivesRestore: true, syntheticModelCalls: modelCalls.length, sharedReplies, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
+  await Promise.all(sessions.map(session => session.prompt('/cafe collab pause')));
+  messages.splice(0, messages.length, ...Array.from({ length: 550 }, (_, i) => ({ seq: i + 1, id: 'migration-' + (i + 1), memberId: ids[1], text: 'Preexisting migration backlog' })));
+  pageOutTargets.length = 0; controls.tasks = []; controls.waitingOnYou = []; delete controls.goal; delete controls.goalRevision;
+  const beforeMigration = modelCalls.length, migrationBeats = acknowledgements.length;
+  const migrated = await open(0, undefined, 500);
+  const migrationBranch = () => migrated.session.sessionManager.getBranch();
+  assert.equal(migrationBranch().find(e => e.data?.kind === 'binding')?.data.consumedThrough, 500);
+  await until(() => migrationBranch().some(e => e.type === 'custom_message' && e.details?.backlog), 'migration backlog receipt');
+  await migrated.session.waitForIdle();
+  const migrationSummaries = migrationBranch().filter(e => e.type === 'custom_message' && e.details?.backlog);
+  assert.equal(migrationSummaries.length, 1); assert(migrationSummaries[0].content.includes('[backlog #501–#550 共 50 条]'));
+  assert.equal(modelCalls.length, beforeMigration + 1); assert.equal(progress(migrated.session).cursor, 500);
+  const beforeRepeatedMigration = requests[0];
+  await migrated.session.prompt(`/cafe collab migrate --consumed-through 550 ${migrated.config}`);
+  assert.equal(requests[0], beforeRepeatedMigration, 'Repeated migration must not reconnect or advance the checkpoint');
+  await migrated.session.prompt('/cafe collab pause'); const migrationPath = migrated.session.sessionFile; assert(migrationPath);
+  migrated.session.dispose(); sessions.splice(sessions.indexOf(migrated.session), 1);
+  const migrationRestored = await open(0, SessionManager.open(migrationPath)); await delay(10500);
+  assert.equal(modelCalls.length, beforeMigration + 1); assert.equal(progress(migrationRestored.session).cursor, 500);
+  assert.equal(migrationRestored.session.sessionManager.getBranch().find(e => e.data?.kind === 'binding')?.data.consumedThrough, 500);
+  assert(acknowledgements.slice(migrationBeats).every(q => q.fetched === 550 && q.delivered === 0));
+  await migrationRestored.session.prompt('Read and confirm the next pending room message manually.');
+  const migratedConfirmation = progress(migrationRestored.session).consumed.at(-1);
+  assert.equal(migratedConfirmation.seq, 520); assert.deepEqual(migratedConfirmation.messages, Array.from({ length: 20 }, (_, i) => i + 501));
+  assert.equal(blockedNetwork, 0); assert.deepEqual(errors, []);
+  assert(!tokens.some(token => JSON.stringify(migrationRestored.session.sessionManager.getBranch()).includes(token)));
+  console.log('PASS: explicit native migration retains preexisting #501–#550 backlog, rejects repetition, restores without replay, and confirms only the next read prefix');
+  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, migrationBacklogSurvivesRestore: true, migrationDoesNotInventHostDelivery: true, automaticWakeups: automaticWakeups + 2 + pageOutWakeups, pageOutWakeups, pageOutReceiptsSurviveRestore: true, pageOutCannotSkipUnreadPrefix: true, nativeControlsAtFixedCursor: true, pausedControlsSurviveRestore: true, goalConfirmationSurvivesRestore: true, syntheticModelCalls: modelCalls.length, sharedReplies, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
 } finally {
   for (const session of sessions) { try { await session.prompt('/cafe collab pause'); } catch {} session.dispose(); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
