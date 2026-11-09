@@ -65,7 +65,8 @@ export function MyState({ current, others, disabled, onSave }: { current?: Membe
   const ready = !waiting || !!detail.trim() && (!named || !!target);
   const submit = (event: FormEvent) => { event.preventDefault(); if (!ready || busy) return; setBusy(true);
     const text = detail.trim();
-    void onSave({ state, ...(waiting ? { waitingFor: kind, ...(target ? { on: [target] } : {}) } : {}), ...(text ? { detail: text } : {}) }).finally(() => setBusy(false));
+    // A hidden choice is never sent: an external wait names nobody even if a member was picked before.
+    void onSave({ state, ...(waiting ? { waitingFor: kind, ...(target && kind !== 'external' ? { on: [target] } : {}) } : {}), ...(text ? { detail: text } : {}) }).finally(() => setBusy(false));
   };
   return <form className={styles.myState} onSubmit={submit} aria-label="我的状态">
     <label className={styles.inviteChoice}>我的状态<select value={state} disabled={disabled} onChange={e => setState(e.target.value as WorkState)}>{(Object.keys(stateLabels) as WorkState[]).map(s => <option key={s} value={s}>{stateLabels[s]}</option>)}</select></label>

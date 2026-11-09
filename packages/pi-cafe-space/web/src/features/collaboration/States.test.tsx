@@ -31,7 +31,7 @@ it('shows who waits on whom, and lets the awaited member answer the request', as
   serve({ [ai]: waiting, [pi]: { state: 'working', tasks: [7], since: at, updatedAt: at } }); mount();
   const summary = await screen.findByRole('button', { name: '1 人等待 · 1 项等你，查看详情' });
   // The task card says its assignee is stuck, and on whom.
-  expect(screen.getByText('等待：等快进 main 到候选 SHA（等 房主）')).toBeInTheDocument();
+  expect(screen.getByText('等待（负责人自报）：等快进 main 到候选 SHA（等 房主）')).toBeInTheDocument();
   fireEvent.click(summary);
   const onMe = await screen.findByRole('region', { name: '等你处理' });
   expect(within(onMe).getByText(/等成员：等快进 main 到候选 SHA/)).toBeInTheDocument();
@@ -58,8 +58,17 @@ it('sets my own wait with a target and a reason, and refuses a vague one', async
   fireEvent.change(within(form).getByRole('combobox', { name: '等谁' }), { target: { value: pi } });
   expect(save).toBeDisabled();
   fireEvent.change(within(form).getByRole('textbox', { name: '状态说明' }), { target: { value: '等 Pi 推候选 SHA' } });
+  // A member picked for one kind of wait is not sent once the kind no longer shows the choice.
+  fireEvent.change(within(form).getByRole('combobox', { name: '在等什么' }), { target: { value: 'external' } });
+  expect(within(form).queryByRole('combobox', { name: '等谁' })).toBeNull();
   fireEvent.click(save);
-  await waitFor(() => expect(sent.find(q => q.op === 'state')).toEqual({ op: 'state', roomId, state: 'waiting', waitingFor: 'member', on: [pi], detail: '等 Pi 推候选 SHA' }));
+  await waitFor(() => expect(sent.filter(q => q.op === 'state')).toEqual([{ op: 'state', roomId, state: 'waiting', waitingFor: 'external', detail: '等 Pi 推候选 SHA' }]));
+  // Saving remounts the form from the stored state, so look it up again.
+  const again = await screen.findByRole('form', { name: '我的状态' });
+  fireEvent.change(within(again).getByRole('combobox', { name: '在等什么' }), { target: { value: 'member' } });
+  fireEvent.change(within(again).getByRole('combobox', { name: '等谁' }), { target: { value: pi } });
+  fireEvent.click(within(again).getByRole('button', { name: '更新状态' }));
+  await waitFor(() => expect(sent.filter(q => q.op === 'state')[1]).toEqual({ op: 'state', roomId, state: 'waiting', waitingFor: 'member', on: [pi], detail: '等 Pi 推候选 SHA' }));
   expect(await screen.findByRole('button', { name: /^等待 · 等 Pi · 不到 1 分钟$/ })).toBeInTheDocument();
 });
 
@@ -67,7 +76,7 @@ it('reconnects by itself after a deploy drops the server, without a stale error'
   let down = true; sent = [];
   fetcher = vi.fn(async (_: string, init: RequestInit) => { sent.push(JSON.parse(init.body as string)); return down ? new Response('Bad Gateway', { status: 502 }) : response(snapshot({})); });
   vi.stubGlobal('fetch', fetcher); mount();
-  expect(await screen.findByText(/连接中断，正在自动重连（第 1 次）/)).toBeInTheDocument();
+  expect(await screen.findByText('连接中断，正在自动重连')).toBeInTheDocument();
   expect(screen.queryByRole('alert')).toBeNull();
   down = false;
   // Coming back online retries at once instead of waiting out the backoff.
@@ -98,4 +107,45 @@ it('marks long, stale and overdue states and counts only current members', () =>
   const gone = [...members, { id: 'd'.repeat(32), name: '已离开', kind: 'ai' as const, owner: false, removed: true }];
   const counted = waitsOf({ [ai]: waiting, ['d'.repeat(32)]: waiting }, gone, me);
   expect(counted.waiting.map(m => m.id)).toEqual([ai]); expect(counted.onMe.map(m => m.id)).toEqual([ai]);
+});
+
+const reads = () => (fetcher.mock.calls as unknown as [string, RequestInit][]).filter(([, init]) => JSON.parse(init.body as string).op === 'read').length;
+it('waits out a rate limit without offering to retry early', async () => {
+  fetcher = vi.fn(async () => response({ error: 'RATE_LIMIT' }, 429)); vi.stubGlobal('fetch', fetcher); mount();
+  expect(await screen.findByText('请求太频繁，稍后自动重试')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '立即重试' })).toBeNull();
+  const before = reads();
+  await act(async () => { window.dispatchEvent(new Event('online')); document.dispatchEvent(new Event('visibilitychange')); });
+  expect(reads()).toBe(before);
+});
+
+it('retries when the tab becomes visible again', async () => {
+  let down = true;
+  fetcher = vi.fn(async () => down ? new Response('Bad Gateway', { status: 502 }) : response(snapshot({}))); vi.stubGlobal('fetch', fetcher); mount();
+  expect(await screen.findByText('连接中断，正在自动重连')).toBeInTheDocument(); down = false;
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+  expect(await screen.findByText('3 位成员')).toBeInTheDocument();
+});
+
+it('gives up on a read that hangs and tries again', async () => {
+  vi.useFakeTimers();
+  fetcher = vi.fn((_: string, init: RequestInit) => new Promise<Response>((_, reject) => init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))));
+  vi.stubGlobal('fetch', fetcher); mount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(19_000); });
+  expect(screen.queryByText('连接中断，正在自动重连')).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  expect(screen.getByText('连接中断，正在自动重连')).toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  expect(reads()).toBe(2);
+});
+
+it('stops for good once the membership is gone, even after earlier failures', async () => {
+  let calls = 0;
+  fetcher = vi.fn(async () => ++calls === 1 ? new Response('Bad Gateway', { status: 502 }) : response({ error: 'MEMBER_REQUIRED' }, 401)); vi.stubGlobal('fetch', fetcher); mount();
+  fireEvent.click(await screen.findByRole('button', { name: '立即重试' }));
+  expect(await screen.findByText('房间或成员已不可用')).toBeInTheDocument();
+  const before = reads();
+  await act(async () => { window.dispatchEvent(new Event('online')); document.dispatchEvent(new Event('visibilitychange')); });
+  expect(reads()).toBe(before);
 });

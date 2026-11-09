@@ -243,39 +243,43 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const timeline = useRef<HTMLDivElement>(null); const primed = useRef(false); const oldest = useRef(0); const anchor = useRef<number | null>(null); const target = useRef(0); const loading = useRef(false);
   const liveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); const [peek, setPeek] = useState<Message | null>(null);
   // Failed polls in a row, shown while reconnecting; retryNow skips the remaining backoff.
-  const [retrying, setRetrying] = useState(0); const retryNow = useRef<(() => void) | undefined>(undefined); const [openState, setOpenState] = useState('');
+  const [retrying, setRetrying] = useState(0); const [limited, setLimited] = useState(false); const retryNow = useRef<(() => void) | undefined>(undefined); const [openState, setOpenState] = useState('');
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
   const bottom = useRef<HTMLDivElement>(null); const follow = useRef(true); const inviteButton = useRef<HTMLButtonElement>(null); const sideButton = useRef<HTMLButtonElement>(null); const menuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; let stopped = false; let failures = 0; let running = false;
+    // ended: the room or membership is gone, so nothing may poll again; limitedUntil: the server asked us to wait.
+    const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; let stopped = false, ended = false, running = false; let failures = 0, limitedUntil = 0;
     const schedule = (delay: number) => { clearTimeout(timer); if (!stopped) timer = setTimeout(() => void poll(), delay); };
     const poll = async () => {
-      if (running || stopped) return; running = true; let delay = 5000;
+      if (running || stopped || ended) return; running = true; let delay = 5000;
+      // A request that hangs (a restarting server behind the proxy) must not stall polling forever.
+      // Our own timer, not AbortSignal.any/timeout, so older Safari and iOS get the same guarantee.
+      const request = new AbortController(); const cancel = () => request.abort(); abort.signal.addEventListener('abort', cancel);
+      const deadline = setTimeout(cancel, 20_000);
       try {
         const first = !primed.current;
-        // A request that hangs (a restarting server behind the proxy) must not stall polling forever.
-        const signal = typeof AbortSignal.any === 'function' ? AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]) : abort.signal;
-        const value = await collaboration<Snapshot>(first ? { op: 'read', roomId: auth.roomId, latest: historyPage } : { op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, signal);
+        const value = await collaboration<Snapshot>(first ? { op: 'read', roomId: auth.roomId, latest: historyPage } : { op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, request.signal);
         if (stopped) return; if (first) { primed.current = true; setOlder(value.older === true); }
         setSnapshot(old => (old?.goalRevision ?? 0) > (value.goalRevision ?? 0) ? { ...value, goal: old?.goal, goalRevision: old?.goalRevision, tasks: old?.tasks } : value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
         setMessages(old => merge(old, value.messages));
-        if (failures) { failures = 0; setRetrying(0); }
+        if (failures) { failures = 0; setRetrying(0); setLimited(false); }
         if (value.more) delay = 0;
       } catch (e) {
         if (stopped) return; setConnected(false);
-        if (e instanceof CollaborationError && ['MEMBER_REQUIRED', 'ROOM_CLOSED', 'ROOM_UNAVAILABLE'].includes(e.code)) { setError(messageError(e)); setTerminal(true); return; }
+        if (e instanceof CollaborationError && ['MEMBER_REQUIRED', 'ROOM_CLOSED', 'ROOM_UNAVAILABLE'].includes(e.code)) { ended = true; setError(messageError(e)); setTerminal(true); return; }
         // A deploy or network blip is not an error to dismiss: the status line shows the retry,
         // and the room carries on by itself once the server answers again.
         failures++; setRetrying(failures);
-        delay = e instanceof CollaborationError && e.code === 'RATE_LIMIT' ? 60_000 : reconnectDelay(failures);
-      } finally { running = false; }
+        const rateLimited = e instanceof CollaborationError && e.code === 'RATE_LIMIT'; setLimited(rateLimited);
+        delay = rateLimited ? 60_000 : reconnectDelay(failures); limitedUntil = rateLimited ? Date.now() + delay : 0;
+      } finally { running = false; clearTimeout(deadline); abort.signal.removeEventListener('abort', cancel); }
       schedule(delay);
     };
     // Back online or back on the tab: try at once instead of waiting out the backoff.
-    const now = () => { if (failures > 0) { clearTimeout(timer); void poll(); } };
+    const now = () => { if (failures > 0 && !ended && Date.now() >= limitedUntil) { clearTimeout(timer); void poll(); } };
     const visible = () => { if (document.visibilityState === 'visible') now(); };
     window.addEventListener('online', now); document.addEventListener('visibilitychange', visible);
-    retryNow.current = () => { clearTimeout(timer); void poll(); };
+    retryNow.current = () => { if (!ended && Date.now() >= limitedUntil) { clearTimeout(timer); void poll(); } };
     void poll();
     return () => { stopped = true; abort.abort(); clearTimeout(timer); window.removeEventListener('online', now); document.removeEventListener('visibilitychange', visible); retryNow.current = undefined; };
   }, [auth]);
@@ -416,7 +420,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
             onClick={() => void taskAct(canClaim ? { action: 'update', taskId: task.id, assignee: auth.memberId, status: 'doing', onlyIfUnassigned: true } : { action: 'update', taskId: task.id, status: nextStatus[task.status] })}>{task.status === 'done' && <Icon name="check" />}</button>
           <div className={styles.taskMain}><p>{task.title}</p>{task.goalId && <span className={styles.meta}>Goal #{task.goalId}{frozen ? ' · 已停止推进' : ''}</span>}
             {(() => { const st = task.assignee ? states[task.assignee] : undefined; const stuck = st?.state === 'waiting' && (st.tasks?.length ? st.tasks.includes(task.id) : task.status === 'doing');
-              return stuck && <p className={styles.taskWait} title="负责人自报，未经验证">等待：{st!.detail}{st!.on?.length ? `（等 ${st!.on.map(nameOf).join('、')}）` : ''}</p>; })()}
+              return stuck && <p className={styles.taskWait}>等待（负责人自报）：{st!.detail}{st!.on?.length ? `（等 ${st!.on.map(nameOf).join('、')}）` : ''}</p>; })()}
             {(task.from || task.result) ? <p className={styles.taskLinks}>{task.from ? <button type="button" className={styles.taskSource} onClick={() => jump(task.from!)}>来自 #{task.from}</button> : null}{task.result ? <button type="button" className={styles.taskSource} data-result onClick={() => jump(task.result!)}>{task.status === 'done' ? '结果' : '上次结果'} #{task.result} · {nameOf(task.resultBy ?? '')}</button> : null}</p> : null}</div>
           <span className={styles.assignee} title={assignee ? `负责人：${assignee.name}` : '未指派'}>
             {assignee ? <Avatar member={assignee} fallback={assignee.id} small /> : <span className={styles.unassigned}><Icon name="plus" /></span>}
@@ -459,7 +463,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
       <Link to="/collab" className={styles.homeMark} aria-label="协作首页"><Cup /></Link>
       <div className={styles.titleBlock}>
         <h1>{snapshot?.title ?? '正在读取房间…'}</h1>
-        {(!connected || terminal) ? <p role="status" className={styles.connection}>{terminal ? '房间或成员已不可用' : retrying > 0 ? <>连接中断，正在自动重连（第 {retrying} 次）<button type="button" className={styles.reconnect} onClick={() => retryNow.current?.()}>立即重试</button></> : '正在连接…'}</p>
+        {(!connected || terminal) ? <p className={styles.connection}><span role="status">{terminal ? '房间或成员已不可用' : limited ? '请求太频繁，稍后自动重试' : retrying > 0 ? '连接中断，正在自动重连' : '正在连接…'}</span>
+          {!terminal && !limited && retrying > 1 && <span>（第 {retrying} 次）</span>}{!terminal && !limited && retrying > 0 && <button type="button" className={styles.reconnect} onClick={() => retryNow.current?.()}>立即重试</button>}</p>
           : <p className={styles.subtitle}>{active.length} 位成员{aiOnline > 0 && <> · <span className={styles.live}>{aiOnline} 个 AI 在线</span></>}</p>}
       </div>
       <div className={styles.toolbarActions}>
