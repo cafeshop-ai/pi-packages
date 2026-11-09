@@ -69,13 +69,17 @@ const print = value => process.stdout.write(clean(typeof value === 'string' ? va
 
 // --- private storage -------------------------------------------------------
 // Paths go through stdin, never PowerShell source; SID checks do not depend on the OS language.
-// Each check starts PowerShell (about a second), so a path verified once stays verified for the
-// life of this process: the home directory's protected ACL lets only the owner and SYSTEM create
-// or replace files in it, and a replaced file inherits that ACL.
-const verifiedWindows = new Set();
+// Each check starts PowerShell (about a second), so a verified path is remembered together with
+// the identity (volume and file index) of the object it named. The same object is not checked
+// again; a different one (replaced or moved in, which on one volume keeps its own ACL) is.
+// Files this process creates itself in a verified directory inherit its protected ACL, so
+// writePrivate records them as verified when it creates them.
+const verifiedWindows = new Map();
+const identity = path => { try { const info = lstatSync(path, { bigint: true }); return `${info.dev}:${info.ino}`; } catch { return null; } };
 function windowsPrivate(path, directory = false, create = false) {
   const key = `${directory ? 'directory' : 'file'}:${path}`;
-  if (verifiedWindows.has(key)) return;
+  const before = identity(path);
+  if (before && verifiedWindows.get(key) === before) return;
   const script = `
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.Encoding]::UTF8
@@ -123,7 +127,7 @@ if (!$owned) { throw 'Missing owner access or child inheritance' }
       { input: JSON.stringify({ path, directory, create }), encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     if (result !== 'ok') throw Error('ACL check did not finish');
   } catch { throw new Fail(`${path} requires a private Windows ACL (owner and SYSTEM only), inheritable for directories, with no reparse points`); }
-  verifiedWindows.add(key);
+  const after = identity(path); if (after) verifiedWindows.set(key, after);
 }
 function privateHome(home) {
   if (process.platform === 'win32') {
@@ -162,6 +166,8 @@ function writePrivate(path, text) {
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   try { writeAll(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path); syncDirectory(dirname(path));
+  // Created here, not moved in: it inherited the verified directory's protected ACL.
+  if (process.platform === 'win32') { const created = identity(path); if (created) verifiedWindows.set(`file:${path}`, created); }
 }
 // A rename survives power loss only once the directory entry is on disk too.
 function syncDirectory(path) {
