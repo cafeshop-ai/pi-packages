@@ -1,0 +1,42 @@
+// The shared listener fixture (protocol/fixtures/listener/events.json) drives this reference
+// implementation; any other implementation of docs/LISTENER.md (the Pi extension) runs the same file.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import { formatEvent, helloEvent, maxBatchMessages, pageEvents } from './listener-events.mjs';
+
+const fixture = JSON.parse(readFileSync(new URL('../protocol/fixtures/listener/events.json', import.meta.url), 'utf8'));
+
+for (const c of fixture.cases) test(c.name, () => {
+  const seen = structuredClone(c.input.seen);
+  const events = pageEvents(seen, c.input.page, c.input.fresh, c.me, c.input.goalConsumed);
+  assert.deepEqual(events, c.events);
+  assert.deepEqual(events.map(e => formatEvent(e, seen.names, c.me)), c.lines);
+  assert.deepEqual(seen, c.seenAfter, 'the listener memory after the page');
+  if (c.hello) { assert.deepEqual(helloEvent(c.input.page, c.me), c.hello); assert.equal(formatEvent(c.hello, seen.names, c.me), c.helloLine); }
+});
+
+test('a page never dumps the board or the member list', () => {
+  for (const c of fixture.cases) for (const line of c.lines) assert.ok(line.length < 2048 || /全文：show \d+/.test(line), line.slice(0, 60));
+  const first = fixture.cases[0];
+  assert.ok(!first.events.some(e => e.type === 'task' || e.type === 'member'), 'the first page only remembers tasks and members');
+});
+
+test('events never use the field names the outbox adds', () => {
+  // An event field named id once replaced the outbox's event id, so tail skipped later events.
+  for (const c of fixture.cases) for (const e of [...c.events, ...(c.hello ? [c.hello] : [])]) for (const key of ['id', 'batch', 'at']) assert.ok(!(key in e), `${e.type} uses ${key}`);
+});
+
+test('a backlog is a count, never the messages themselves', () => {
+  const c = fixture.cases.find(x => x.events[0]?.type === 'backlog');
+  assert.ok(c.input.fresh.length > maxBatchMessages);
+  assert.deepEqual(c.events, [{ type: 'backlog', from: c.input.fresh[0].seq, to: c.input.fresh.at(-1).seq, count: c.input.fresh.length }]);
+});
+
+test('an unconfirmed goal is announced once, a confirmed one not again', () => {
+  const page = { goalRevision: 3, goal: { id: 1, status: 'active', title: 'g' } };
+  const seen = {};
+  assert.equal(pageEvents(seen, page, [], 'me', 1).filter(e => e.type === 'goal').length, 1);
+  assert.equal(pageEvents(seen, page, [], 'me', 1).filter(e => e.type === 'goal').length, 0);
+  assert.equal(pageEvents({}, page, [], 'me', 3).filter(e => e.type === 'goal').length, 0);
+});

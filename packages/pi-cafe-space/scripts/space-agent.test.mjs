@@ -165,6 +165,64 @@ test('states: an agent says what it waits for, and the awaited member is woken w
   await api({ op: 'state', roomId: owner.roomId, state: 'idle' }, owner.token);
 });
 
+// Runs listen (or another long command) for a while and returns what it printed.
+const running = async (h, args, ms, during) => {
+  const child = spawn(process.execPath, [client, '--home', h, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '';
+  child.stdout.on('data', b => out += b); await sleep(900); if (during) await during(); await sleep(ms);
+  child.kill(); await new Promise(ok => child.once('exit', ok)); outputs.push(out); return out;
+};
+test('listen: one line per change, never the board, and a restart replays nothing', { skip: !binary }, async () => {
+  const h = home('listen'); assert.equal(agent(h, ['join', '--name', 'Listener', '--backlog', '0'], link).code, 0);
+  const me = JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).memberId;
+  const talker = await api({ op: 'join', roomId: owner.roomId, invite, name: 'Talker two', kind: 'human' });
+  const first = await running(h, ['listen'], 2500, async () => {
+    const sent = await api({ op: 'send', roomId: owner.roomId, id: 'listen-message-0001', text: '第一条\n第二行', to: me }, talker.token);
+    await api({ op: 'task', roomId: owner.roomId, action: 'create', id: 'listen-task-0001', title: '监听器任务' }, talker.token);
+    await api({ op: 'state', roomId: owner.roomId, state: 'waiting', waitingFor: 'member', on: [me], ref: sent.seq, detail: '等你看一下' }, talker.token);
+  });
+  assert.match(first, /^\[listener\] 已连接/m); assert.match(first, /^\[room 客户端测试\] 成员 \d+ · 未完成任务 \d+/m);
+  assert.match(first, /^\[msg #\d+ Talker two → 你\] 第一条 ⏎ 第二行$/m);
+  assert.match(first, /^\[task #\d+ 新建 todo 未指派\] 监听器任务$/m);
+  assert.match(first, /^\[waiting-on-you Talker two member #\d+\] 等你看一下$/m);
+  assert.ok(!/"tasks"|"members"|"presence"/.test(first), 'no snapshot is printed');
+  const again = await running(h, ['listen'], 1800, () => api({ op: 'state', roomId: owner.roomId, state: 'idle' }, talker.token));
+  assert.ok(!again.includes('第一条') && !again.includes('监听器任务'), 'events already printed are not printed again');
+  assert.match(again, /^\[waiting-ended Talker two\]$/m);
+  // One network listener per home.
+  const busy = spawn(process.execPath, [client, '--home', h, 'listen', '--quiet'], { stdio: 'ignore' }); await sleep(900);
+  const second = agent(h, ['listen']); busy.kill(); await new Promise(ok => busy.once('exit', ok));
+  assert.equal(second.code, 2); assert.match(second.err, /another listen/);
+  // board is the short form; show prints a message whole.
+  const board = agent(h, ['board']); assert.equal(board.code, 0); assert.match(board.out, /^\[board\] 客户端测试 · 未完成 \d+/m); assert.match(board.out, /^#\d+ \[todo\] 监听器任务 · 未指派$/m);
+  const seq = Number(/\[msg #(\d+) Talker two/.exec(first)[1]);
+  assert.match(agent(h, ['show', String(seq)]).out, /第一条\n第二行/);
+});
+
+test('listen: a long gap is one backlog line; next serves it and done --through confirms it', { skip: !binary }, async () => {
+  const h = home('listen-backlog'); assert.equal(agent(h, ['join', '--name', 'Backlogged', '--backlog', '0'], link).code, 0);
+  await running(h, ['listen', '--quiet'], 300); assert.equal(agent(h, ['tail']).code, 0);
+  const a = await api({ op: 'join', roomId: owner.roomId, invite, name: 'Sender A', kind: 'human' });
+  const b = await api({ op: 'join', roomId: owner.roomId, invite, name: 'Sender B', kind: 'human' });
+  const seqs = [];
+  for (let i = 0; i < 21; i++) seqs.push((await api({ op: 'send', roomId: owner.roomId, id: `backlog-message-${String(i).padStart(3, '0')}`, text: `积压 ${i}` }, i % 2 ? b.token : a.token)).seq);
+  const out = await running(h, ['listen'], 1500);
+  assert.equal([...out.matchAll(/^\[backlog #(\d+)–#(\d+) 共 21 条\]/gm)].length, 1, out);
+  assert.ok(!/积压 \d+/.test(out), 'backlogged messages are not printed one by one');
+  assert.equal(agent(h, ['next']).json().seq, seqs[0], 'next starts with the oldest unconsumed message');
+  assert.equal(agent(h, ['done', '--through', String(seqs.at(-1))]).json().consumed, seqs.at(-1));
+  assert.equal(agent(h, ['next']).out, '');
+});
+
+test('listen --quiet keeps the connection; tail prints each event once per consumer', { skip: !binary }, async () => {
+  const h = home('listen-tail'); assert.equal(agent(h, ['join', '--name', 'Quiet one', '--backlog', '0'], link).code, 0);
+  const quiet = await running(h, ['listen', '--quiet'], 1500, () => api({ op: 'send', roomId: owner.roomId, id: 'tail-message-0001', text: '给 tail 的消息' }, owner.token));
+  assert.equal(quiet, '', 'quiet prints nothing');
+  const shown = agent(h, ['tail']); assert.match(shown.out, /^\[msg #\d+ Owner\] 给 tail 的消息$/m);
+  assert.equal(agent(h, ['tail']).out, '', 'nothing twice for the same consumer');
+  const json = agent(h, ['tail', '--json', '--as', 'program']).out.split('\n').map(line => JSON.parse(line));
+  assert.ok(json.every(e => Number.isSafeInteger(e.id) && Number.isSafeInteger(e.batch)) && json.some(e => e.type === 'msg' && e.text === '给 tail 的消息'));
+});
+
 test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
   const h = home('replay'); assert.equal(agent(h, ['join', '--name', 'Replay agent'], link).code, 0);
   const backlog = await api({ op: 'send', roomId: owner.roomId, id: 'replay-message-1', text: '重启前未处理' }, owner.token);
@@ -230,8 +288,11 @@ test('short writes are completed and a write that makes no progress never commit
   const lines = readFileSync(join(h, 'inbox.jsonl'), 'utf8').trim().split('\n'); assert(lines.every(l => JSON.parse(l).seq > 0));
   assert(lines.some(l => l.includes('这一条要完整落盘')));
   const z = home('zero'); assert.equal(agent(z, ['join', '--name', 'Zero write agent'], link).code, 0);
+  // join starts the inbox near the newest message, so compare with where it started, not with 0.
+  const start = agent(z, ['status']).json().fetched;
+  await api({ op: 'send', roomId: owner.roomId, id: 'short-write-2', text: '零进度写入后游标不能前进' }, owner.token);
   const stalled = agentWith(faulty('zero'), z, ['sync']); assert.equal(stalled.code, 1); assert.match(stalled.err, /no progress/);
-  assert.equal(agent(z, ['status']).json().fetched, 0, 'the cursor did not move past what the inbox holds');
+  assert.equal(agent(z, ['status']).json().fetched, start, 'the cursor did not move past what the inbox holds');
   assert.equal(agent(z, ['sync']).code, 0); assert.equal(agent(z, ['next']).code, 0); assert(agent(z, ['next']).json().seq > 0);
 });
 

@@ -47,20 +47,21 @@ const wait = features.includes('wait'), ack = features.includes('ack');
 say(`[watch] room ${roomId.slice(0, 6)} after #${cursor}; ${wait ? 'long-poll wait' : 'polling'}${ack ? ', reporting ack' : ''}`);
 
 const goal = {};
-const names = new Map(), waits = new Map(); let members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
+const names = new Map(), waits = new Map(); let rev = 0, members = null, paused = null, lastAck = 0, idleSince = Date.now(), backoff = 0;
 // Brief outages (a restart) recover in seconds; longer ones back off to 30s.
 const retry = async () => { backoff = Math.min(backoff ? backoff * 2 : 2000, 30_000); await sleep(backoff); };
 // Report presence at once instead of after the first long poll.
 if (ack) try { if ((await call({ op: 'ack', roomId })).status === 200) lastAck = Date.now(); } catch {}
 for (;;) {
   let result;
-  try { result = await call({ op: 'read', roomId, after: cursor, ...(wait ? { wait: 25 } : {}) }, wait ? 40_000 : 20_000); }
+  // since: a change made between two reads answers the wait at once (relays with feature "rev").
+  try { result = await call({ op: 'read', roomId, after: cursor, ...(wait ? { wait: 25, ...(rev ? { since: rev } : {}) } : {}) }, wait ? 40_000 : 20_000); }
   catch (error) { if (backoff >= 8000) say(`[watch] still unreachable: ${flat(error.message).slice(0, 120)}`); await retry(); continue; }
   if (result.status === 429) { say(`[watch] rate limited; waiting ${result.retryAfter}s`); await sleep(result.retryAfter * 1000); continue; }
   if (result.status >= 500) { await retry(); continue; }
   if (result.status !== 200) { say(`[watch] stopped: HTTP ${result.status} ${result.json.error ?? ''}`); process.exit(1); }
   backoff = 0;
-  const page = result.json;
+  const page = result.json; if (Number.isSafeInteger(page.rev)) rev = page.rev;
   mergeGoal(goal, page);
   const goalEvent = pendingGoal(goal);
   if (goalEvent) { say(JSON.stringify(goalEvent)); goal.goalConsumed = goalEvent.revision; } // Output only, not model processing or Goal completion.

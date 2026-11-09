@@ -143,3 +143,34 @@ func TestStateWriteFailureAndRateLimit(t *testing.T) {
 	}
 	call(t, s, map[string]any{"op": "state", "roomId": id, "state": "working"}, ai, 429)
 }
+
+func TestSinceAnswersAtOnceForAChangeBetweenReads(t *testing.T) {
+	s, id, owner, _, ai := stateRoom(t)
+	if features := call(t, s, map[string]any{"op": "status"}, "", 200)["features"].([]any); !slices.Contains(features, any("rev")) {
+		t.Fatal("status must advertise rev")
+	}
+	page := call(t, s, map[string]any{"op": "read", "roomId": id, "latest": 1}, ai, 200)
+	rev := int(page["rev"].(float64))
+	// The task changes after this read and before the next wait starts: the gap a message cursor cannot see.
+	call(t, s, map[string]any{"op": "task", "roomId": id, "action": "update", "taskId": 1, "status": "doing"}, owner, 200)
+	started := time.Now()
+	next := call(t, s, map[string]any{"op": "read", "roomId": id, "after": page["cursor"], "wait": 5, "since": rev}, ai, 200)
+	if time.Since(started) > time.Second || int(next["rev"].(float64)) <= rev || len(next["messages"].([]any)) != 0 {
+		t.Fatalf("a change since rev %d must answer at once: %v", rev, next["rev"])
+	}
+	// Presence is memory-only and never moves the revision.
+	call(t, s, map[string]any{"op": "ack", "roomId": id, "fetched": 1, "delivered": 1}, ai, 200)
+	current := int(next["rev"].(float64))
+	started = time.Now()
+	quiet := call(t, s, map[string]any{"op": "read", "roomId": id, "after": next["cursor"], "wait": 1, "since": current}, ai, 200)
+	if time.Since(started) < 900*time.Millisecond || int(quiet["rev"].(float64)) != current {
+		t.Fatal("with nothing changed since rev, the read waits as before")
+	}
+	restored, err := New(s.directory, testOrigin, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again := call(t, restored, map[string]any{"op": "read", "roomId": id, "latest": 1}, ai, 200); int(again["rev"].(float64)) != current {
+		t.Fatal("the revision survives a restart")
+	}
+}
