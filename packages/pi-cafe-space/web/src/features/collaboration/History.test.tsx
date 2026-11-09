@@ -14,7 +14,7 @@ const response = (value: unknown) => new Response(JSON.stringify(value), { statu
 let fetcher: Mock<(url: string, init: RequestInit) => Promise<Response>>;
 let reads: Record<string, unknown>[];
 /** A small stand-in for the server's read modes: after, latest and before. */
-function serve(messages: Message[], broken = false) {
+function serve(messages: Message[], broken = false, tasks: unknown[] = []) {
   reads = [];
   fetcher = vi.fn(async (_: string, init: RequestInit) => {
     const q = JSON.parse(init.body as string) as Record<string, number | string>;
@@ -26,7 +26,7 @@ function serve(messages: Message[], broken = false) {
     // A misbehaving server: older pages never reach further back, yet claim there is more.
     if (q.before && broken) return response({ roomId, memberId, title: '长讨论', expires: at, members, messages: [], older: true, latestSeq: total });
     start = Math.max(start, 0); end = Math.min(end, total);
-    const base = { roomId, memberId, title: '长讨论', expires: at, members, messages: messages.slice(start, end), older: start > 0, latestSeq: total };
+    const base = { roomId, memberId, title: '长讨论', expires: at, members, messages: messages.slice(start, end), older: start > 0, latestSeq: total, tasks };
     return response(q.before ? base : { ...base, cursor: end, more: end < total });
   });
   vi.stubGlobal('fetch', fetcher);
@@ -123,4 +123,14 @@ it('lets a long room submit an earlier result message by number', async () => {
   fireEvent.change(screen.getByRole('spinbutton', { name: '结果消息序号' }), { target: { value: '128' } });
   fireEvent.click(screen.getByRole('button', { name: '提交 Goal 验收' }));
   await waitFor(() => expect(requests[0]).toMatchObject({ op: 'goal', action: 'submit', resultSeq: 128, goalRevision: 3 }));
+});
+
+it('closes the narrow-screen drawer before previewing a far-back task source', async () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('max-width'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+  serve(room(600), false, [{ id: 1, title: '早期的问题', status: 'todo', createdBy: memberId, from: 3, updatedAt: at }]); mount();
+  await screen.findByText('第 600 条消息');
+  fireEvent.click(screen.getByRole('button', { name: '任务 · 1' }));
+  fireEvent.click(await screen.findByRole('button', { name: '来自 #3' }));
+  expect(await screen.findByText(/#3 创建者：第 3 条消息/)).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '任务' })).toBeNull());
 });

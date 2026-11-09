@@ -348,6 +348,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); if (!target && older && seq < oldest.current) { void reach(seq); return; } target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
   // A quoted or linked message older than the loaded window is fetched, then scrolled to.
   const reach = async (seq: number) => {
+    // The preview and the notice sit by the composer: a narrow-screen drawer would cover them.
+    setSideOpen(false);
     if (loading.current) { setNotice('正在加载更早的消息，请稍后再点'); return; }
     if (oldest.current - seq > farJump) { void peekAt(seq); return; }
     follow.current = false; target.current = seq; await loadOlder(seq);
