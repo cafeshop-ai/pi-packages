@@ -154,6 +154,10 @@
     svg { width: 16px; color: var(--cafe-accent); }
     &:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--cafe-control-line); background: var(--cafe-surface-secondary); }
     &:disabled { opacity: .5; cursor: default; } } }
+.history { margin: 4px auto 10px; display: flex; justify-content: center;
+  button { min-height: 32px; padding: 0 14px; border: 1px solid var(--cafe-line); border-radius: 999px; background: var(--glass); color: var(--cafe-muted); font: 600 12px var(--cafe-sans); cursor: pointer;
+    &:hover:not(:disabled) { color: var(--cafe-ink); border-color: var(--cafe-control-line); }
+    &:disabled { opacity: .6; cursor: default; } } }
 .dayDivider { margin: 22px 0 10px; display: flex; align-items: center; gap: 12px; color: var(--cafe-muted); font-size: 11.5px; font-weight: 600;
   span { padding: 3px 12px; border: 1px solid var(--cafe-line); border-radius: 999px; background: var(--glass); }
   &::before, &::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--cafe-line)); } &::after { transform: scaleX(-1); } }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { Tabs } from '@base-ui/react/tabs';
 import { Button, IconButton, Input, Label, Textarea } from '../../components/ui/Controls';
@@ -12,6 +12,11 @@ import { templateTaskId, templates, type Template } from './templates';
 import { probeBlocked, probeCode, probeOf, probesOf, probeText } from './probe';
 import styles from './Collaboration.module.scss';
 
+/** Adds new messages by seq; returns the same array when nothing is new so a quiet poll does not re-render the timeline. */
+const merge = (old: Message[], added: Message[]) => {
+  const seen = new Set(old.map(m => m.seq)); const fresh = added.filter(m => !seen.has(m.seq));
+  return fresh.length ? [...old, ...fresh].sort((a, b) => a.seq - b.seq) : old;
+};
 const messageError = (error: unknown) => error instanceof Error ? error.message : '连接失败，请重试。';
 // Connectors heartbeat at least every 30s while idle; allow for one missed beat.
 const onlineWindow = 90_000;
@@ -29,11 +34,16 @@ export function connectorState(presence: Presence | undefined, now: number): { l
   if (!(age < onlineWindow)) return { label: `离线 · ${ago(age)}前在线`, tone: 'offline' };
   return presence.paused ? { label: '在线 · 已暂停', tone: 'paused' } : { label: '在线', tone: 'online' };
 }
+const replyKey = (memberId: string, seq: number) => memberId + ':' + seq;
+/** Who replied to which message, so each row looks its delivery up instead of scanning the timeline. */
+export const repliesOf = (messages: Message[]): ReadonlySet<string> => new Set(messages.flatMap(m => m.replyTo ? [replyKey(m.memberId, m.replyTo)] : []));
+/** The timeline loads the newest page first and older pages on demand, never the whole history. */
+export const historyPage = 50;
 /** Delivery of a message addressed to an AI; null when nothing honest can be said. */
-export function deliveryOf(message: Message, members: Member[], messages: Message[], presence: Record<string, Presence> = {}): { state: 'replied' | 'delivered' | 'fetched' | 'waiting'; label: string } | null {
+export function deliveryOf(message: Message, members: Member[], messages: Message[] | ReadonlySet<string>, presence: Record<string, Presence> = {}): { state: 'replied' | 'delivered' | 'fetched' | 'waiting'; label: string } | null {
   const target = members.find(m => m.id === message.to);
   if (!target || target.kind !== 'ai') return null;
-  if (messages.some(m => m.memberId === target.id && m.replyTo === message.seq)) return { state: 'replied', label: `${target.name} 已回复` };
+  if (Array.isArray(messages) ? messages.some(m => m.memberId === target.id && m.replyTo === message.seq) : messages.has(replyKey(target.id, message.seq))) return { state: 'replied', label: `${target.name} 已回复` };
   const report = presence[target.id];
   if (!report) return null;
   if (report.delivered >= message.seq) return { state: 'delivered', label: `已送入 ${target.name} 的会话（连接器上报，不代表已读）` };
@@ -55,7 +65,7 @@ export function thinkingOf(members: Member[], messages: Message[], presence: Rec
 const hash = (id: string) => [...id].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 2654435761) >>> 0, 2166136261);
 /** Every AI gets its own small face, derived from its member id: the same agent always looks the
  * same, and two agents rarely look alike. People keep their initial, so the two read apart. */
-function Persona({ seed }: { seed: string }) {
+const Persona = memo(function Persona({ seed }: { seed: string }) {
   const h = hash(seed); const eyes = h % 4, mouth = (h >>> 3) % 4, extra = (h >>> 6) % 4;
   return <svg viewBox="0 0 36 36" className={styles.persona} aria-hidden="true">
     {extra === 1 && <><path d="M18 8.5V5" /><circle cx="18" cy="4" r="1.6" className={styles.fill} /></>}
@@ -69,7 +79,7 @@ function Persona({ seed }: { seed: string }) {
     {mouth === 1 && <path d="M15.5 24.5h5" />}
     {mouth === 2 && <circle cx="18" cy="24.5" r="1.6" />}
   </svg>;
-}
+});
 function Avatar({ member, fallback, presence, small }: { member?: Member; fallback: string; presence?: string; small?: boolean }) {
   const id = member?.id ?? fallback; const initial = [...(member?.name ?? fallback).trim()][0] ?? '?';
   return <span className={styles.avatar} data-tone={tone(id)} data-kind={member?.kind ?? 'human'} data-presence={presence} data-small={small} aria-hidden="true">{member?.kind === 'ai' ? <Persona seed={id} /> : initial.toUpperCase()}</span>;
@@ -222,6 +232,9 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const [confirm, setConfirm] = useState<Confirm | null>(null); const [privacyOpen, setPrivacyOpen] = useState(false); const [draft, setDraft] = useState(''); const [applying, setApplying] = useState(''); const [probing, setProbing] = useState(''); const [notice, setNotice] = useState('');
   // Touch screens have no hover: tapping a bubble reveals that message's actions.
   const [selected, setSelected] = useState(0);
+  // Older history is fetched only when the reader scrolls up or jumps to a quoted message.
+  const [older, setOlder] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false);
+  const timeline = useRef<HTMLDivElement>(null); const primed = useRef(false); const oldest = useRef(0); const anchor = useRef<number | null>(null); const target = useRef(0); const loading = useRef(false);
   const cursor = useRef(0); const freshFrom = useRef<number | null>(null); const pending = useRef<{ id: string; text: string; to: string; replyTo: number } | null>(null);
   const bottom = useRef<HTMLDivElement>(null); const follow = useRef(true); const inviteButton = useRef<HTMLButtonElement>(null); const sideButton = useRef<HTMLButtonElement>(null); const menuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -229,9 +242,11 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     const poll = async () => {
       let delay = 5000;
       try {
-        const value = await collaboration<Snapshot>({ op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, abort.signal);
-        if (stopped) return; setSnapshot(old => (old?.goalRevision ?? 0) > (value.goalRevision ?? 0) ? { ...value, goal: old?.goal, goalRevision: old?.goalRevision, tasks: old?.tasks } : value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
-        setMessages(old => { const seen = new Set(old.map(m => m.seq)); return [...old, ...value.messages.filter(m => !seen.has(m.seq))].sort((a, b) => a.seq - b.seq); });
+        const first = !primed.current;
+        const value = await collaboration<Snapshot>(first ? { op: 'read', roomId: auth.roomId, latest: historyPage } : { op: 'read', roomId: auth.roomId, after: cursor.current }, auth.token, abort.signal);
+        if (stopped) return; if (first) { primed.current = true; setOlder(value.older === true); }
+        setSnapshot(old => (old?.goalRevision ?? 0) > (value.goalRevision ?? 0) ? { ...value, goal: old?.goal, goalRevision: old?.goalRevision, tasks: old?.tasks } : value); setConnected(true); cursor.current = value.cursor; freshFrom.current ??= value.cursor;
+        setMessages(old => merge(old, value.messages));
         if (value.more) delay = 0;
       } catch (e) {
         if (stopped) return; setConnected(false); setError(messageError(e));
@@ -242,7 +257,26 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     };
     void poll(); return () => { stopped = true; abort.abort(); clearTimeout(timer); };
   }, [auth]);
-  useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
+  const newest = messages[messages.length - 1]?.seq ?? 0;
+  useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [newest]);
+  useLayoutEffect(() => {
+    oldest.current = messages[0]?.seq ?? 0; const el = timeline.current;
+    if (el && anchor.current !== null) { el.scrollTop = el.scrollHeight - anchor.current; anchor.current = null; }
+    if (target.current && document.getElementById(`msg-${target.current}`)) { const seq = target.current; target.current = 0; jump(seq); }
+  }, [messages]);
+  /** Fetch older pages until `until` is loaded (or one page when 0); the view keeps its place. */
+  const loadOlder = async (until = 0) => {
+    if (loading.current || !older) return; loading.current = true; setLoadingOlder(true);
+    try {
+      let first = oldest.current || cursor.current + 1; const page: Message[] = []; let more = true;
+      do {
+        const value = await collaboration<Snapshot>({ op: 'read', roomId: auth.roomId, before: first, limit: until ? Math.min(100, Math.max(historyPage, first - until)) : historyPage }, auth.token);
+        page.unshift(...value.messages); more = value.older === true; first = value.messages[0]?.seq ?? 1;
+      } while (more && until && first > until);
+      const el = timeline.current; if (el) anchor.current = el.scrollHeight - el.scrollTop;
+      setOlder(more); setMessages(old => merge(old, page));
+    } catch (e) { setError(messageError(e)); } finally { loading.current = false; setLoadingOlder(false); }
+  };
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 3000); return () => clearTimeout(timer); }, [notice]);
   const call = async <T,>(fields: Record<string, unknown>) => collaboration<T>({ roomId: auth.roomId, ...fields }, auth.token);
   const act = async (op: string, fields: Record<string, unknown> = {}) => {
@@ -274,12 +308,12 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
     if (!pending.current || pending.current.text !== message.text || pending.current.to !== to || pending.current.replyTo !== reply) pending.current = { ...message, id: crypto.randomUUID() };
     setBusy(true); setError('');
     try { const sent = await call<Message>({ op: 'send', ...pending.current });
-      setMessages(old => old.some(m => m.seq === sent.seq) ? old : [...old, sent].sort((a, b) => a.seq - b.seq)); setText(''); setReply(0); setTo(''); pending.current = null; follow.current = true;
+      setMessages(old => merge(old, [sent])); setText(''); setReply(0); setTo(''); pending.current = null; follow.current = true;
     } catch (e) { setError(messageError(e)); } finally { setBusy(false); }
   })(); };
   const probe = (ai: Member) => { if (probing) return; setProbing(ai.id); setError(''); void (async () => {
     try { const sent = await call<Message>({ op: 'send', id: crypto.randomUUID(), text: probeText(probeCode()), to: ai.id });
-      setMessages(old => old.some(m => m.seq === sent.seq) ? old : [...old, sent].sort((a, b) => a.seq - b.seq)); follow.current = true; setNotice(`已向 ${ai.name} 发出响应测试`);
+      setMessages(old => merge(old, [sent])); follow.current = true; setNotice(`已向 ${ai.name} 发出响应测试`);
     } catch (e) { setError(messageError(e)); } finally { setProbing(''); }
   })(); };
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -295,11 +329,15 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
   const now = Date.now(); const tasks = snapshot?.tasks ?? []; const goalFrozen = !!snapshot?.goal && snapshot.goal.status !== 'active'; const openTasks = tasks.filter(t => t.status !== 'done').length;
   const presenceOf = (m: Member) => m.kind === 'ai' ? connectorState(presence[m.id], now).tone : undefined;
   const aiOnline = active.filter(m => presenceOf(m) === 'online').length;
+  const bySeq = useMemo(() => new Map(messages.map(m => [m.seq, m])), [messages]);
+  const replies = useMemo(() => repliesOf(messages), [messages]);
   const thinking = thinkingOf(members, messages, presence, now);
   const probes = probesOf(messages, members, now);
   // Tests and bare answers to them collapse into one line each; an answer with more to say stays a message.
   const compact = (message: Message) => !!probeOf(message, members) || probes.answers.has(message.seq) && message.text.trim().length <= 16;
-  const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
+  const jump = (seq: number) => { const target = document.getElementById(`msg-${seq}`); if (!target && older && seq < oldest.current) { void reach(seq); return; } target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); target?.animate?.([{ backgroundColor: 'var(--collab-highlight)' }, { backgroundColor: 'transparent' }], { duration: 1600 }); setSideOpen(false); };
+  // A quoted or linked message older than the loaded window is fetched, then scrolled to.
+  const reach = async (seq: number) => { follow.current = false; target.current = seq; await loadOlder(seq); };
   const openSide = (next: 'tasks' | 'people') => { setTab(next); if (narrow()) setSideOpen(true); };
   const openInvite = () => { setInviteOpen(true); if (!link) void act('invite'); };
   const addTask = (event: FormEvent) => { event.preventDefault(); const title = draft.trim(); if (!title) return; void taskAct({ action: 'create', id: crypto.randomUUID(), title }).then(ok => { if (ok) setDraft(''); }); };
@@ -389,8 +427,9 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         {error && <div className={styles.error} role="alert"><span>{error}</span><Button variant="quiet" onClick={() => setError('')}>收起提示</Button></div>}
         {terminal && <div className={styles.error}><Button onClick={() => { onForget(); navigate('/collab'); }}>清除此浏览器凭据并返回</Button></div>}
         {snapshot?.aiPaused && !terminal && <p className={styles.paused} role="status">AI 发言已暂停</p>}
-        <div className={styles.timeline} role="log" aria-label="房间消息" aria-live="polite" onScroll={event => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; }}>
+        <div ref={timeline} className={styles.timeline} role="log" aria-label="房间消息" aria-live="polite" onScroll={event => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; if (e.scrollTop < 120 && older) void loadOlder(); }}>
           <div className={styles.timelineInner}>
+            {older && <p className={styles.history}><button type="button" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? '正在加载…' : '加载更早的消息'}</button></p>}
             {snapshot && messages.length === 0 && <div className={styles.empty}><div className={styles.emptyCup}><Cup /></div><p>开始讨论吧</p><span>提一个问题，或邀请同事和他们的 AI 加入。</span>
               <div className={styles.quickActions}>
                 <button type="button" disabled={busy || terminal} onClick={openInvite}><Icon name="plus" />邀请成员</button>
@@ -400,8 +439,8 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
               const previous = messages[index - 1]; const author = memberOf(message.memberId); const mine = message.memberId === auth.memberId;
               const newDay = !previous || day(previous.at) !== day(message.at);
               const continued = !newDay && previous?.memberId === message.memberId && Date.parse(message.at) - Date.parse(previous.at) < 5 * 60_000 && !message.replyTo && !compact(previous);
-              const quoted = message.replyTo ? messages.find(m => m.seq === message.replyTo) : undefined;
-              const delivery = snapshot && deliveryOf(message, members, messages, presence);
+              const quoted = message.replyTo ? bySeq.get(message.replyTo) : undefined;
+              const delivery = snapshot && deliveryOf(message, members, replies, presence);
               const tested = probes.answers.get(message.seq);
               if (compact(message)) return <div key={message.seq}>
                 {newDay && <p className={styles.dayDivider}><span>{day(message.at)}</span></p>}
@@ -414,7 +453,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
                   <div className={styles.messageBody}>
                     {!continued && <header>{!mine && <><strong>{nameOf(message.memberId)}</strong>{author?.owner && <span className={styles.ownerTag} title="房间创建者由服务端标记；不影响成员编辑权限">创建者</span>}{author?.kind === 'ai' && <AgentTag member={author} />}</>}<time dateTime={message.at}>{clock(message.at)}</time></header>}
                     <div className={styles.bubble} onClick={event => { if (!(event.target as Element).closest('a, button')) setSelected(value => value === message.seq ? 0 : message.seq); }}>
-                      {(quoted || message.to) && <p className={styles.context}>{quoted && <button type="button" className={styles.quote} onClick={() => jump(quoted.seq)}>↩ {nameOf(quoted.memberId)}：{excerpt(quoted.text, 40)}</button>}{message.to && <span className={styles.mention}>@{message.to === auth.memberId ? '你' : nameOf(message.to)}</span>}</p>}
+                      {(message.replyTo || message.to) && <p className={styles.context}>{quoted ? <button type="button" className={styles.quote} onClick={() => jump(quoted.seq)}>↩ {nameOf(quoted.memberId)}：{excerpt(quoted.text, 40)}</button> : message.replyTo ? <button type="button" className={styles.quote} onClick={() => jump(message.replyTo!)}>↩ 回复 #{message.replyTo}</button> : null}{message.to && <span className={styles.mention}>@{message.to === auth.memberId ? '你' : nameOf(message.to)}</span>}</p>}
                       <MessageText text={message.text} className={styles.text} />
                     </div>
                     {delivery && (delivery.state === 'replied' || delivery.state === 'delivered') && <span className={styles.delivery} data-state={delivery.state} title={delivery.label} aria-label={delivery.label}>{delivery.state === 'replied' ? '✓✓' : '✓'}</span>}
@@ -432,7 +471,7 @@ function Discussion({ auth, onForget }: { auth: Membership; onForget: () => void
         </div>
         {notice && <p className={styles.notice} role="status">{notice}</p>}
         <form className={styles.composer} onSubmit={event => { event.preventDefault(); send(); }}>
-          {reply > 0 && <div className={styles.replying}><Icon name="back" /><span>回复 {(() => { const quoted = messages.find(m => m.seq === reply); return quoted ? `${nameOf(quoted.memberId)}：${excerpt(quoted.text, 36)}` : `#${reply}`; })()}</span><IconButton label="取消回复" variant="quiet" onClick={() => setReply(0)}><Icon name="close" /></IconButton></div>}
+          {reply > 0 && <div className={styles.replying}><Icon name="back" /><span>回复 {(() => { const quoted = bySeq.get(reply); return quoted ? `${nameOf(quoted.memberId)}：${excerpt(quoted.text, 36)}` : `#${reply}`; })()}</span><IconButton label="取消回复" variant="quiet" onClick={() => setReply(0)}><Icon name="close" /></IconButton></div>}
           <div className={styles.inputBox}>
             <Label htmlFor="collab-message" className="sr-only">消息</Label>
             <Textarea id="collab-message" value={text} onChange={e => setText(e.target.value)} onKeyDown={onComposerKey} maxLength={8000} rows={1} disabled={busy || terminal} placeholder={to ? `给 ${nameOf(to)} 的消息…` : '说点什么…'} required />

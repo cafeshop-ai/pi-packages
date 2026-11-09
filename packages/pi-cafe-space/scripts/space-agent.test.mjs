@@ -84,12 +84,30 @@ test('joins privately and never prints the token', { skip: !binary }, () => {
   for (const text of outputs) assert(!text.includes(token), 'member token leaked');
 });
 
+test('join starts the inbox near the newest message instead of replaying a long history', { skip: !binary }, async () => {
+  // A separate sender keeps the owner's send budget for the other tests.
+  const talker = await api({ op: 'join', roomId: owner.roomId, invite, name: 'Talker', kind: 'human' });
+  for (const n of [1, 2, 3, 4, 5]) await api({ op: 'send', roomId: owner.roomId, id: `history-message-${n}`, text: `历史 ${n} ` + '很长'.repeat(60) }, talker.token);
+  const latest = (await api({ op: 'read', roomId: owner.roomId, latest: 1 }, owner.token)).latestSeq;
+  const h = home('catch-up'); const joined = agent(h, ['join', '--name', 'Late agent', '--backlog', '2'], link);
+  assert.equal(joined.code, 0); assert.equal(joined.json().latestSeq, latest); assert.equal(joined.json().inboxFrom, latest - 1); assert.match(joined.json().note, /read --before/);
+  assert.equal(agent(h, ['sync']).json().fetched, 2, 'only the backlog enters the inbox');
+  assert.match(agent(h, ['next']).json().text, /^历史 4 /);
+  assert.equal(agent(h, ['status']).json().consumed, 0, 'skipped history is never reported as delivered');
+  assert.equal(agent(h, ['join', '--name', 'Bad', '--backlog', '101'], link).code, 1);
+  // Manual reads default to the newest page; older pages carry no cursor; excerpts are marked.
+  const page = agent(h, ['read']).json(); assert.equal(page.cursor, latest); assert(page.messages.length <= 20); assert.equal(page.messages.at(-1).seq, latest);
+  const older = agent(h, ['read', '--before', String(latest - 1), '--limit', '1', '--excerpt', '40']).json();
+  assert.equal(older.messages.length, 1); assert.equal(older.messages[0].seq, latest - 2); assert.equal(older.messages[0].truncated, true); assert.equal(older.cursor, undefined);
+  assert.equal(agent(h, ['read', '--after', String(latest - 1)]).json().messages.length, 1);
+});
+
 test('unified inbox: ordered confirmation, explicit skips, replay and no redelivery after manual handling', { skip: !binary }, async () => {
-  const h = home('inbox'); assert.equal(agent(h, ['join', '--name', 'Inbox agent'], link).code, 0);
+  // --backlog 0: only messages sent after joining reach this inbox.
+  const h = home('inbox'); assert.equal(agent(h, ['join', '--name', 'Inbox agent', '--backlog', '0'], link).code, 0);
   const me = JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).memberId;
   for (const n of [1, 2, 3]) await api({ op: 'send', roomId: owner.roomId, id: `inbox-message-${n}`, text: `第 ${n} 条`, to: me }, owner.token);
-  const base = (await api({ op: 'read', roomId: owner.roomId }, owner.token)).cursor - 3;
-  assert.equal(agent(h, ['sync']).json().fetched, base + 3);
+  assert.equal(agent(h, ['sync']).json().fetched, 3);
   const first = agent(h, ['next']).json(); assert.equal(first.text, '第 1 条');
   assert.match(agent(h, ['done', String(first.seq + 1)]).err, /out of order/);
   assert.equal(agent(h, ['done', String(first.seq)]).code, 0);

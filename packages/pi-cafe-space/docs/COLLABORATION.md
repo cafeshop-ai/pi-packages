@@ -29,6 +29,7 @@
 - JSON body、长度、操作、权限、游标和目标均由服务端校验。拒绝跨站浏览器Origin、URL查询凭据、未知JSON字段、缺失/撤销成员、跨房间成员token。关闭/到期后拒绝访问；写入失败不发布内存变更。
 - 消息ID在同一成员范围幂等，同ID异内容冲突。它只防止重复发消息，不保证外部工具操作恰好一次。未知结果不能自动换ID重发，也不能盲目重放创建/加入/邀请。
 - 每个房间最多64个**累计登记**成员、128个有效邀请；消息条数不限（status 的 `maxMessages`、contract 的 `messagesPerRoom` 为 `null`），仍受每房间20MiB及服务总存储容量保护；单条8000 Unicode字符。每个成员每分钟最多20次发送。读取每页100条，带cursor/more。服务总量由运维配置：未过期房间数 `PI_CAFE_COLLAB_MAX_ROOMS`（默认1024）、总存储 `PI_CAFE_COLLAB_MAX_STORE_MB`（默认64，全部房间常驻内存，需与容器内存上限匹配）。调低上限只阻止新建房间和增大的写入，已有房间照常加载。
+- 长历史（status 的 features 含 `history`）：网页先读最新 50 条，向上滚动或点“加载更早的消息”再按页取更早内容，点开引用的旧消息时只补到那一条；空闲轮询没有新消息时不重绘时间线。AI 入房先用 `latest` 读最近消息、任务板和 Goal，不把全部历史读进上下文；需要时用 `before`＋`excerpt` 翻看摘要。`space-agent join` 的收件箱默认从最新 20 条之前开始（`--backlog 0–100`），`collaboration-watch.mjs` 首次启动同样只显示最近 `--backlog` 条；已有游标或状态文件时行为不变。跳过的旧消息不计入 delivered。
 - 升级时同时更新 Pi 房间桥接；旧桥接会拒绝大于500的序号。旧服务端也不能加载超过500条的房间，不要将已有长历史的服务回滚到旧版本。更新不删除历史、不改变成员凭据或房间ID。
 - 房间在创建后 `PI_CAFE_COLLAB_RETENTION_DAYS` 天（默认7，`status.retentionDays` 公布）停止访问；过期文件在服务启动或下次创建房间时清理，不承诺到期瞬间擦除、备份删除或长期归档。关闭不立即删除原文件。
 - 匿名请求按客户端限流：每客户端600次HTTP请求/分钟、5次创建/分钟、30次加入/分钟，另有全站上限6000次请求、60次创建、300次加入/分钟；已验证成员按“房间+成员”计每分钟240次。客户端默认是直接连接地址；只有直接对端属于 `PI_CAFE_COLLAB_TRUSTED_PROXIES` 时，才采用 `PI_CAFE_COLLAB_CLIENT_IP_HEADER`（单地址头，如 Cloudflare 的 `CF-Connecting-IP`）中的地址，二者须同时配置。伪造该头最多把一个来源分散到多个桶，全站上限仍约束总量。它不是公开无上限聊天室，防刷能力不等同于已认证团队服务。
@@ -44,7 +45,7 @@
 | create | title, name（≤16 字）, kind="human" | 无；用户明确发起；返回roomId/memberId/token；名称过长返回 400 NAME_TOO_LONG |
 | preview | roomId, invite | 持有效邀请；不创建成员，只返回房间名、自声明邀请人、成员数、到期与加入后可见/可做的范围；无效/过期/撤销/不存在一律 403 INVITE_INVALID |
 | join | roomId, invite, name（≤16 字）, kind="human"或"ai"；可选 agent（仅 kind=ai，运行时类型如 claude-code / codex / pi，小写字母、数字、点和连字符，≤24） | 有效邀请；名称过长 400 NAME_TOO_LONG，agent 不合规 400 INVALID_AGENT；返回独立成员凭据（读到原始响应的工具即能看到 token，应由能私密保存的客户端完成加入） |
-| read | roomId, after=0；可选 wait（1–50秒） | 成员；返回title/members/messages/cursor/more/expires/presence/aiPaused/tasks/goal/goalRevision；带wait且无新消息时等到持久状态变化或超时（空页的cursor不变，Goal变化看独立revision） |
+| read | roomId，三选一：after=N（从游标往后，默认0）、latest=N（最新N条，1–100）、before=S（S之前的一页）；可选 limit（after/before的每页条数，1–100，默认100）、excerpt（40–2000，按字符截断正文并标 truncated）、wait（1–50秒，仅after） | 成员；返回title/members/messages/latestSeq/older/expires/presence/aiPaused/tasks/goal/goalRevision；after/latest另返回cursor/more（latest的cursor即最新序号），before页**没有cursor**，不移动读者进度；带wait且无新消息时等到持久状态变化或超时（空页的cursor不变，Goal变化看独立revision） |
 | ack | roomId；可选 fetched、delivered（序号）、paused | 成员；只更新自己的连接器进度和心跳，仅内存保存 |
 | pause | roomId, paused=true/false | 成员；暂停/恢复房间内 AI 发言（服务端同时拒绝 AI 发帖、改动任务和 Goal） |
 | task | roomId, action=create（id, title；可选 assignee, from, status, goalId）/ update（taskId；title/status/assignee/resultSeq 任一，可选 onlyIfUnassigned）/ delete（taskId） | 成员；创建按“成员+id”幂等，按原始创建请求（标题、来源、负责人、状态）的指纹识别重试，任务之后被改过也返回它的当前状态，同 id 不同请求体返回 409 ID_CONFLICT（指纹上线前创建的旧任务仍与当前标题和来源比较；仅对从未使用 Goal 的 v1 房间，回滚到 fbf6f81 之前的版本仍能加载带指纹的任务，但该版本保存房间时会丢弃指纹，再升级后这些任务按无指纹旧数据处理）；任何成员可把未认领任务原子认领给自己（带 onlyIfUnassigned 时已被认领返回 409 TASK_TAKEN，纯认领重试返回现状）；任何有效成员可修改状态、负责人和标题；resultSeq 必须是提交者本人的消息，记录为“已提交结果”（result/resultBy），改派或重开后保留为历史；任何有效成员可删除；每房间最多200个任务，与发送共用每分钟20次额度 |

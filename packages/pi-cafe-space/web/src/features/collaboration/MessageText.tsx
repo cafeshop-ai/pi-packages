@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, memo, type ReactNode } from 'react';
 
 // A deliberately small Markdown subset for room messages: paragraphs, lists,
 // quotes, fenced code, inline code, bold and http(s) links. Everything becomes
@@ -28,7 +28,8 @@ function inline(text: string, key: string): ReactNode[] {
 }
 const bullet = /^\s*[-*+]\s+/, numbered = /^\s*\d+[.)]\s+/, quote = /^\s*>\s?/, heading = /^#{1,6}\s+/, fence = /^\s*```/;
 const special = (line: string) => bullet.test(line) || numbered.test(line) || quote.test(line) || heading.test(line) || fence.test(line);
-export function MessageText({ text, className }: { text: string; className?: string }) {
+// Parsing is the costly part of a row; the same text never needs it twice.
+export const MessageText = memo(function MessageText({ text, className }: { text: string; className?: string }) {
   const lines = text.split('\n'); const blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i]!; const key = 'b' + i;
@@ -55,4 +56,4 @@ export function MessageText({ text, className }: { text: string; className?: str
     blocks.push(<p key={key}>{paragraph.map((p, j) => <Fragment key={j}>{j > 0 && <br />}{inline(p, key + j)}</Fragment>)}</p>);
   }
   return <div className={className}>{blocks}</div>;
-}
+});

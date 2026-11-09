@@ -4,8 +4,10 @@
 // idle room costs no model turns. Credentials stay in a private file and are never printed.
 //
 //   node scripts/collaboration-watch.mjs --credentials <member.json> [--state <cursor file>]
-//     [--cursor N] [--authorized <memberId,...>] [--origin https://space.example]
+//     [--cursor N] [--backlog 20] [--authorized <memberId,...>] [--origin https://space.example]
 //
+// Without --cursor or a saved state, the watch starts --backlog messages before the newest one
+// (relays with history reads), so joining a long room never replays its whole history.
 // member.json is {"roomId","memberId","token"} as returned by join (keep it 0600).
 // --authorized marks messages from anyone else as outside the user's reply scope.
 import { readFile, writeFile } from 'node:fs/promises';
@@ -13,7 +15,9 @@ import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { mergeGoal, pendingGoal } from './collaboration-goal.mjs';
 
-const { values } = parseArgs({ options: { credentials: { type: 'string' }, state: { type: 'string' }, cursor: { type: 'string' }, authorized: { type: 'string' }, origin: { type: 'string' } } });
+const { values } = parseArgs({ options: { credentials: { type: 'string' }, state: { type: 'string' }, cursor: { type: 'string' }, backlog: { type: 'string' }, authorized: { type: 'string' }, origin: { type: 'string' } } });
+const backlog = Number(values.backlog ?? 20);
+if (!Number.isSafeInteger(backlog) || backlog < 0 || backlog > 100) throw Error('--backlog must be 0-100');
 if (!values.credentials) throw Error('--credentials <member.json> is required');
 const { roomId, memberId: me, token } = JSON.parse(await readFile(values.credentials, 'utf8'));
 const endpoint = (values.origin ?? 'https://space.cafecode.work').replace(/\/$/, '') + '/api/collaboration';
@@ -27,10 +31,18 @@ const call = async (body, timeout = 20_000) => {
   return { status: response.status, json, retryAfter: Number(response.headers.get('Retry-After')) || 60 };
 };
 
-let cursor = Number(values.cursor ?? NaN);
-if (!Number.isFinite(cursor)) cursor = values.state ? Number(await readFile(values.state, 'utf8').catch(() => '0')) || 0 : 0;
+let cursor = Number(values.cursor ?? NaN), fresh = false;
+if (!Number.isFinite(cursor)) { const saved = values.state ? await readFile(values.state, 'utf8').catch(() => '') : ''; cursor = Number(saved) || 0; fresh = !saved.trim(); }
 let features = [];
 try { features = (await call({ op: 'status' })).json.features ?? []; } catch {}
+// delivered is the highest seq this watch printed (or passed as our own); skipped history is not.
+let delivered = cursor;
+if (fresh && features.includes('history')) {
+  try {
+    const latest = (await call({ op: 'read', roomId, latest: 1 })).json.latestSeq;
+    if (Number.isSafeInteger(latest) && latest > backlog) { cursor = latest - backlog; delivered = 0; say(`[watch] ${latest} messages in the room; showing the last ${backlog}. Read earlier ones only when needed: op=read with before (and excerpt).`); }
+  } catch {}
+}
 const wait = features.includes('wait'), ack = features.includes('ack');
 say(`[watch] room ${roomId.slice(0, 6)} after #${cursor}; ${wait ? 'long-poll wait' : 'polling'}${ack ? ', reporting ack' : ''}`);
 
@@ -70,10 +82,10 @@ for (;;) {
   }
   if (page.messages.length) idleSince = Date.now();
   // Lines are on stdout, which the host hands to the session: that is what "delivered" claims.
-  cursor = page.cursor;
+  cursor = page.cursor; if (page.messages.length) delivered = cursor;
   if (values.state) await writeFile(values.state, String(cursor));
   if (ack && (page.messages.length || Date.now() - lastAck > 20_000)) {
-    try { if ((await call({ op: 'ack', roomId, fetched: cursor, delivered: cursor })).status === 200) lastAck = Date.now(); } catch {}
+    try { if ((await call({ op: 'ack', roomId, fetched: cursor, delivered })).status === 200) lastAck = Date.now(); } catch {}
   }
   if (page.more) continue;
   if (!wait) await sleep(Date.now() - idleSince > 180_000 ? 30_000 : 10_000);

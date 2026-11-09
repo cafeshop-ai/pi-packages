@@ -7,12 +7,13 @@
 // local handler can hand events to a host session under the user's authorization.
 //
 //   space-agent --home <private dir> preview            < invite link on stdin
-//   space-agent --home <dir> join --name <name, at most 16 chars> [--kind ai|human] [--agent claude-code|codex|pi|…]   < invite link
-//   space-agent --home <dir> status | read [--after N]
+//   space-agent --home <dir> join --name <name, at most 16 chars> [--kind ai|human] [--agent claude-code|codex|pi|…] [--backlog 20]   < invite link
+//                                                      the inbox starts --backlog messages before the newest one, never at #1
+//   space-agent --home <dir> status | read [--latest 20 | --after N | --before N] [--limit N] [--excerpt N]
 //   space-agent --home <dir> sync [--wait 25]          fetch into the inbox, report ack
 //   space-agent --home <dir> next | done <seq> | skip <seq> --reason <text>
 //   space-agent --home <dir> watch                     sync forever; prints every unconsumed message once per run,
-//                                                      replaying the backlog on start
+//                                                      replaying the inbox backlog on start
 //   space-agent --home <dir> watch --handler /trusted/executable
 //                                                      deliver JSON on stdin; consume only after a matching receipt
 //   space-agent --home <dir> retry <seq>                explicitly retry an unknown handler delivery after checking the host
@@ -298,7 +299,7 @@ async function main(argv) {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
-    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
   if (values.handler && command !== 'watch') throw new Fail('--handler is only valid with watch');
   if (command === 'preview' || command === 'join') {
@@ -309,14 +310,22 @@ async function main(argv) {
     }
     if (existsSync(join(home, 'member.json'))) throw new Fail('this home already holds a membership; use a new --home for another room');
     if (!values.name) throw new Fail('--name is required');
+    const backlog = Number(values.backlog ?? 20);
+    if (!Number.isSafeInteger(backlog) || backlog < 0 || backlog > 100) throw new Fail('--backlog must be 0-100');
     let result;
     try { result = await call(invite.origin, { op: 'join', roomId: invite.roomId, invite: invite.invite, name: values.name, kind: values.kind ?? 'ai', ...(values.agent ? { agent: values.agent } : {}) }); }
     catch (error) { if (error instanceof Unknown) throw new Fail('join result unknown: a member may have been created; ask the room owner before joining again', 2); throw error; }
     if (result.status !== 200) throw failed(result);
     secrets.add(result.json.token);
     writePrivate(join(home, 'member.json'), JSON.stringify({ origin: invite.origin, roomId: result.json.roomId, memberId: result.json.memberId, token: result.json.token }));
-    writePrivate(statePath(home), JSON.stringify({ fetched: 0, consumed: 0, skipped: [] }));
-    return print({ joined: true, roomId: result.json.roomId, memberId: result.json.memberId });
+    // A long room is not replayed into the agent: the inbox starts --backlog messages before the
+    // newest one. Nothing is marked consumed, so ack never reports skipped history as delivered.
+    // A relay without history reads (400) keeps the old start at #1.
+    let latestSeq = null;
+    try { const r = await call(invite.origin, { op: 'read', roomId: result.json.roomId, latest: 1 }, result.json.token); if (r.status === 200 && Number.isSafeInteger(r.json.latestSeq)) latestSeq = r.json.latestSeq; } catch {}
+    const start = latestSeq === null ? 0 : Math.max(0, latestSeq - backlog);
+    writePrivate(statePath(home), JSON.stringify({ fetched: start, consumed: 0, skipped: [], ...(start ? { inboxFrom: start + 1 } : {}) }));
+    return print({ joined: true, roomId: result.json.roomId, memberId: result.json.memberId, latestSeq, inboxFrom: start + 1, ...(start ? { note: `earlier messages are not in the inbox; read --before ${start + 1} --excerpt 200 when you need them` } : {}) });
   }
   if (command === 'unlock') {
     // Recovery only: the user confirms no other space-agent uses this home.
@@ -327,7 +336,11 @@ async function main(argv) {
   if (command === 'status') { const m = member(home); const s = loadState(home); return print({ roomId: m.roomId, memberId: m.memberId, origin: m.origin, fetched: s.fetched, consumed: s.consumed, skipped: s.skipped.length, goal: s.goal ?? null, goalRevision: s.goalRevision ?? 0, goalConsumed: s.goalConsumed ?? 0, ...(s.delivery ? { delivery: s.delivery } : {}), ...(s.deliveryWatcher ? { watcherPid: s.deliveryWatcher.pid } : {}) }); }
   if (command === 'read') {
     // A manual view: it never changes what counts as consumed.
-    const m = member(home); const result = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: Number(values.after ?? 0) }, m.token);
+    // Default is the newest page, not the start of a long history.
+    const m = member(home); const number = name => { const v = Number(values[name]); if (!Number.isSafeInteger(v) || v < 0) throw new Fail(`--${name} must be a whole number`); return v; };
+    const mode = values.after !== undefined ? { after: number('after') } : values.before !== undefined ? { before: number('before') } : { latest: values.latest !== undefined ? number('latest') : 20 };
+    const body = { op: 'read', roomId: m.roomId, ...mode, ...(values.limit !== undefined && !mode.latest ? { limit: number('limit') } : {}), ...(values.excerpt !== undefined ? { excerpt: number('excerpt') } : {}) };
+    const result = await retrying(m.origin, body, m.token);
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
   if (command === 'sync') { const { fetched, state } = await sync(home, Number(values.wait ?? 0)); return print({ fetched: fetched.length, cursor: state.fetched, consumed: state.consumed, goal: state.goal ?? null, goalRevision: state.goalRevision ?? 0 }); }
@@ -402,14 +415,14 @@ async function main(argv) {
       catch (error) {
         if (!(error instanceof Unknown)) throw error;
         // Never replay: read the task back and report what is actually there.
-        let current = null; try { const r = await call(m.origin, { op: 'read', roomId: m.roomId, after: 0 }, m.token); current = (r.json.tasks ?? []).find(t => t.id === taskId) ?? 'deleted or missing'; } catch {}
+        let current = null; try { const r = await call(m.origin, { op: 'read', roomId: m.roomId, after: loadState(home).fetched }, m.token); current = (r.json.tasks ?? []).find(t => t.id === taskId) ?? 'deleted or missing'; } catch {}
         print({ unknown: true, intent: { ...body, roomId: undefined }, current, note: 'not retried; compare and decide' }); throw new Fail('task change result unknown', 2);
       }
     }
   }
   if (command === 'goal') {
     const m = member(home);
-    const read = async () => { const r = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: 0 }, m.token); if (r.status !== 200) throw failed(r); const state = goalState(r.json); if (!state) throw new Fail('relay does not support Goals'); return { ...state, tasks: r.json.tasks ?? [] }; };
+    const read = async () => { const r = await retrying(m.origin, { op: 'read', roomId: m.roomId, after: loadState(home).fetched }, m.token); if (r.status !== 200) throw failed(r); const state = goalState(r.json); if (!state) throw new Fail('relay does not support Goals'); return { ...state, tasks: r.json.tasks ?? [] }; };
     if (sub === 'read') return print(await read());
     if (!['create', 'pause', 'resume', 'delete', 'reviewer', 'submit', 'accept', 'reject'].includes(sub)) throw new Fail('unknown goal action');
     const revision = Number(values.revision), goalId = Number(arg);
