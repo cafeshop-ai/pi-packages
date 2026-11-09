@@ -166,6 +166,15 @@ func TestSinceAnswersAtOnceForAChangeBetweenReads(t *testing.T) {
 	if time.Since(started) < 900*time.Millisecond || int(quiet["rev"].(float64)) != current {
 		t.Fatal("with nothing changed since rev, the read waits as before")
 	}
+	if v := call(t, s, map[string]any{"op": "read", "roomId": id, "after": next["cursor"], "since": -1}, ai, 400); v["error"] != "INVALID_CURSOR" {
+		t.Fatal("a negative since is rejected")
+	}
+	// A since newer than the room (after a server rollback) answers at once, so the reader adopts the room's rev.
+	started = time.Now()
+	ahead := call(t, s, map[string]any{"op": "read", "roomId": id, "after": next["cursor"], "wait": 3, "since": current + 10}, ai, 200)
+	if time.Since(started) > time.Second || int(ahead["rev"].(float64)) != current {
+		t.Fatal("a since ahead of the room must answer at once with the current rev")
+	}
 	restored, err := New(s.directory, testOrigin, Options{})
 	if err != nil {
 		t.Fatal(err)

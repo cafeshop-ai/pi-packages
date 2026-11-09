@@ -957,6 +957,11 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		if q.Wait < 0 || q.Wait > maxWait || q.Wait > 0 && (hasBefore || hasLatest) {
 			return nil, fail(400, "INVALID_WAIT")
 		}
+		// since is a revision the reader saw: never negative. One newer than the room (the server
+		// was rolled back) answers at once on purpose, so the reader adopts the current rev.
+		if q.Since < 0 {
+			return nil, fail(400, "INVALID_CURSOR")
+		}
 		members := append([]Member{}, room.Members...)
 		for i := range members {
 			members[i].TokenHash = ""
