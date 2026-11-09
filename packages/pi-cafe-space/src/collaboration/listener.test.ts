@@ -12,6 +12,49 @@ function fixture(messages = [message(1)]) {
   const listener = new RoomListener(client, host, 0);
   return { listener, host, read, client };
 }
+it('retains host-delivered messages until explicit consumption without rewinding delivery', async () => {
+  const f = fixture([message(1), message(2)]); await f.listener.poll(); f.listener.acknowledge(2);
+  expect(f.listener.cursor).toBe(2); expect(f.listener.delivered).toBe(2);
+  expect(f.listener.pendingConsumptionBatch).toEqual([1, 2]); expect(f.host.checkpoint).toHaveBeenCalledExactlyOnceWith(2);
+  f.listener.consume(1); expect(f.host.checkpoint).toHaveBeenLastCalledWith(1, true);
+  expect(f.listener.cursor).toBe(2); expect(f.listener.delivered).toBe(2); expect(f.listener.pendingConsumptionBatch).toEqual([2]);
+  await f.listener.poll(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+  f.listener.consume(2, true); expect(f.host.checkpoint).toHaveBeenLastCalledWith(2, true, [2]);
+  expect(f.listener.pendingConsumptionBatch).toEqual([]);
+});
+it('atomically consumes a prefix crossing delivered and manually read messages', async () => {
+  const f = fixture([message(1), message(2)]); await f.listener.poll(); f.listener.acknowledge(2);
+  f.read.mockResolvedValue(snapshot([message(3), message(4)], 2)); await f.listener.poll(false);
+  expect(f.listener.pendingConsumptionBatch).toEqual([1, 2, 3, 4]);
+  f.listener.consume(3, true);
+  expect(f.host.checkpoint).toHaveBeenLastCalledWith(3, true, [1, 2, 3]);
+  expect(f.listener.cursor).toBe(3); expect(f.listener.delivered).toBe(2);
+  expect(f.listener.pendingConsumptionBatch).toEqual([4]);
+});
+it('can consume an older delivered message while a later automatic batch awaits receipt', async () => {
+  const f = fixture([message(1)]); await f.listener.poll(); f.listener.acknowledge(1);
+  f.read.mockResolvedValue(snapshot([message(2)], 1)); await f.listener.poll();
+  expect(f.listener.pendingConsumptionBatch).toEqual([1]); f.listener.consume(1);
+  expect(f.listener.state).toBe('awaiting-host-receipt'); expect(f.listener.pending?.seq).toBe(2);
+  expect(() => f.listener.consume(2)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  f.listener.acknowledge(2); expect(f.listener.pendingConsumptionBatch).toEqual([2]);
+});
+it('preserves delivered progress and pending consumption when its checkpoint fails', async () => {
+  const f = fixture([message(1), message(2)]); await f.listener.poll(); f.listener.acknowledge(2);
+  vi.mocked(f.host.checkpoint).mockImplementation(() => { throw Error('disk'); });
+  expect(() => f.listener.consume(2, true)).toThrow('CHECKPOINT_FAILED');
+  expect(f.listener.cursor).toBe(2); expect(f.listener.delivered).toBe(2); expect(f.listener.pendingConsumptionBatch).toEqual([1, 2]);
+});
+it('restores only the unconsumed delivered prefix and bounds confirmation to twenty messages', async () => {
+  const f = fixture([]), pending = Array.from({ length: 25 }, (_, i) => i + 1);
+  const listener = new RoomListener(f.client, f.host, 25, 25, 0, undefined, pending);
+  expect(listener.pendingConsumptionBatch).toEqual(pending.slice(0, 20));
+  expect(() => listener.consume(25, true)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  listener.consume(20, true); expect(listener.pendingConsumptionBatch).toEqual([21, 22, 23, 24, 25]);
+  expect(listener.cursor).toBe(25); expect(listener.delivered).toBe(25);
+  expect(() => new RoomListener(f.client, f.host, 25, 25, 0, undefined, [2, 1])).toThrow('INVALID_CURSOR');
+  expect(() => new RoomListener(f.client, f.host, 25, 25, 0, undefined, [26])).toThrow('INVALID_CURSOR');
+});
 it('resumes delivery and checkpoints beyond message 500', async () => {
   const { client, host } = fixture([message(502)]);
   const listener = new RoomListener(client, host, 501, 501);

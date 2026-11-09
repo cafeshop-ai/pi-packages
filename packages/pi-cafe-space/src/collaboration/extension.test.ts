@@ -179,6 +179,47 @@ it('automatically delivers and replies to a human broadcast with no sender-list 
   expect(f.messages[1]).toMatchObject({ to: human, replyTo: 1 });
   await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
 });
+it('separates automatic receipt, reply and viewing from explicit consumer acknowledgement across restore', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1), message(2));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 2, delivered: 2, consumed: 0, pendingConsumptionSequence: 1 });
+  await f.tool('cafe_room_reply', { replyTo: 1, text: 'Handled answer' }); await f.tool('cafe_room_show', { sequence: 2 });
+  expect(f.entries.some(e => e.data?.kind === 'consumed')).toBe(false);
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_read', { limit: 20 })).details.messages.map(m => m.seq)).toEqual([1, 2]);
+  await expect(f.tool('cafe_room_done', { sequence: 2 })).rejects.toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  const before = f.entries.length; await f.tool('cafe_room_done', { sequence: 2, through: true });
+  expect(f.entries.slice(before)).toHaveLength(1);
+  expect(f.entries.at(-1).data).toMatchObject({ kind: 'consumed', seq: 2, messages: [1, 2] });
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ delivered: 2, consumed: 2 });
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_done', { sequence: 1 })).details.alreadyConsumed).toBe(true);
+  expect((await f.tool('cafe_room_read')).details.message).toBeNull();
+  await vi.advanceTimersByTimeAsync(10000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('can confirm an automatic batch without a redundant read and keeps earlier pending messages first', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1), message(2));
+  await vi.advanceTimersByTimeAsync(5000); f.idle(false); f.messages.push(message(3), message(4));
+  const read = await f.tool('cafe_room_read', { limit: 3 }); expect(read.details.messages.map(m => m.seq)).toEqual([1, 2, 3]);
+  await expect(f.tool('cafe_room_done', { sequence: 4, through: true })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  await f.tool('cafe_room_done', { sequence: 3, through: true });
+  expect(f.entries.at(-1).data).toMatchObject({ kind: 'consumed', seq: 3, messages: [1, 2, 3] });
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 3, delivered: 2, consumed: 3, pendingConsumptionSequence: 4 });
+  expect((await f.tool('cafe_room_read')).details.message.seq).toBe(4);
+  const g = fixture(); await g.command('connect C:/private/room.json'); g.messages.push(message(1), message(2));
+  await vi.advanceTimersByTimeAsync(5000); await g.tool('cafe_room_done', { sequence: 2, through: true });
+  expect((await g.tool('cafe_room_status')).details).toMatchObject({ cursor: 2, delivered: 2, consumed: 2 });
+});
+it('failed consumption of an automatic batch remains pending and recoverable', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1), message(2));
+  await vi.advanceTimersByTimeAsync(5000);
+  vi.mocked(f.pi.appendEntry).mockImplementationOnce(() => { throw Error('disk failed'); });
+  await expect(f.tool('cafe_room_done', { sequence: 2, through: true })).rejects.toThrow('CHECKPOINT_FAILED');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'paused', cursor: 2, delivered: 2, consumed: 0, pendingConsumptionSequence: 1 });
+  f.reload(); await f.command('resume');
+  await f.tool('cafe_room_done', { sequence: 2, through: true });
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ cursor: 2, delivered: 2, consumed: 2 });
+});
 it('formats messages with short shared headers and sends the trust introduction only once across resume', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json');
   f.messages.push(message(1), message(2)); await vi.advanceTimersByTimeAsync(10000);
@@ -223,7 +264,7 @@ it('reads and atomically confirms only the manually viewed prefix, with idempote
   const result = await f.tool('cafe_room_read', { limit: 2 });
   expect(result.details.messages.map(m => m.seq)).toEqual([1, 3]); expect(result.details.consumed).toBe(false);
   expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
-  await expect(f.tool('cafe_room_done', { sequence: 4, through: true })).rejects.toThrow('MANUAL_READ_REQUIRED');
+  await expect(f.tool('cafe_room_done', { sequence: 4, through: true })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
   const read = await f.tool('cafe_room_read', { limit: 1 }); expect(read.details.messages[0].seq).toBe(1);
   expect(read.details).not.toHaveProperty('message');
   const before = f.entries.length;
@@ -507,11 +548,11 @@ it.each(['retry', 'skip'])('requires local UI confirmation to resolve uncertain 
 });
 it('explicit manual confirmation prevents later automatic delivery and survives reconnect', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1)); f.idle(false);
-  await expect(f.tool('cafe_room_done', { sequence: 1 })).rejects.toThrow('MANUAL_READ_REQUIRED');
+  await expect(f.tool('cafe_room_done', { sequence: 1 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
   const read = await f.tool('cafe_room_read'); expect(read.details.message.seq).toBe(1); expect(read.details.consumed).toBe(false);
   expect(read.content[0].text).toContain('Untrusted peer data'); expect(f.pi.sendMessage).not.toHaveBeenCalled();
   expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
-  await expect(f.tool('cafe_room_done', { sequence: 2 })).rejects.toThrow('MANUAL_READ_REQUIRED');
+  await expect(f.tool('cafe_room_done', { sequence: 2 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
   expect((await f.tool('cafe_room_done', { sequence: 1 })).details.alreadyConsumed).toBe(false);
   expect((await f.tool('cafe_room_done', { sequence: 1 })).details.alreadyConsumed).toBe(true);
   await f.command('pause'); await f.command('connect C:/private/room.json'); f.idle(true); await vi.advanceTimersByTimeAsync(10000);
@@ -524,7 +565,9 @@ it('manual viewing alone never silently consumes a message, including after reco
   await f.tool('cafe_room_read'); await f.command('pause'); await f.command('connect C:/private/room.json');
   expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
   f.idle(true); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
-  await expect(f.tool('cafe_room_done', { sequence: 1 })).rejects.toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ delivered: 1, consumed: 0, pendingConsumptionSequence: 1 });
+  await f.tool('cafe_room_done', { sequence: 1 });
+  expect((await f.tool('cafe_room_status')).details.consumed).toBe(1);
 });
 it('replies to manually read messages without uploading the session or consuming implicitly', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1)); f.idle(false);

@@ -74,12 +74,12 @@ try {
           const last = context.messages.findLast(message => message.role !== 'system');
           const text = typeof last?.content === 'string' ? last.content : (last?.content ?? []).filter(p => p.type === 'text').map(p => p.text).join('\n');
           if (last?.role === 'toolResult' && last.toolName === 'cafe_room_read') {
-            const seq = /"seq":(\d+)/.exec(text)?.[1];
+            const seq = [...text.matchAll(/"seq":(\d+)/g)].at(-1)?.[1];
             if (!seq) { errors.push('Manual read did not return its pending message'); output.stopReason = 'stop'; }
-            else { output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done', arguments: { sequence: Number(seq) } }]; output.stopReason = 'toolUse'; }
+            else { output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done', arguments: { sequence: Number(seq), through: true } }]; output.stopReason = 'toolUse'; }
           } else if (last?.role === 'toolResult') { output.content = [{ type: 'text', text: 'Private synthetic completion; not uploaded to the room.' }]; output.stopReason = 'stop'; }
           else if (text === 'Read and confirm the next pending room message manually.') {
-            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_read', arguments: {} }]; output.stopReason = 'toolUse';
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_read', arguments: { limit: 20 } }]; output.stopReason = 'toolUse';
           } else {
             const match = /\[msg #(\d+) /.exec(text);
             if (!match) { output.content = [{ type: 'text', text: 'Unexpected fixture input' }]; output.stopReason = 'stop'; errors.push('Missing labeled external message: ' + JSON.stringify({ role: last?.role, types: Array.isArray(last?.content) ? last.content.map(p => p.type) : typeof last?.content, text: text.slice(0, 200) })); }
@@ -127,17 +127,24 @@ try {
   await Promise.all([restored.session.waitForIdle(), b.session.waitForIdle()]);
   assert.equal(messages[10].replyTo, 10);
   console.log('PASS: path-free resume after SDK restore does not replay history; new work still wakes the agent');
+  const deliveredEntries = restored.session.sessionManager.getBranch();
+  assert(!deliveredEntries.some(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'consumed'), 'Automatic receipts and replies must not implicitly consume messages');
+  await restored.session.prompt('Read and confirm the next pending room message manually.');
+  await restored.session.waitForIdle(); assert.equal(modelCalls.length, 23); assert.equal(messages.length, 11);
+  const confirmation = restored.session.sessionManager.getBranch().findLast(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'consumed');
+  assert.deepEqual(confirmation?.data?.messages, [1, 3, 5, 7, 9, 10]);
+  console.log('PASS: restored automatic deliveries remain unconsumed until an explicit atomic batch acknowledgement');
   await restored.session.prompt('/cafe collab pause'); await restored.session.prompt('/cafe collab resume');
   messages.push({ seq: 12, id: 'synthetic-manual-task', memberId: ids[1], text: 'Handle once through the shared inbox.', to: ids[0], replyTo: 0 });
   await restored.session.prompt('Read and confirm the next pending room message manually.');
-  await delay(5500); assert.equal(modelCalls.length, 23); assert.equal(messages.length, 12);
+  await delay(5500); assert.equal(modelCalls.length, 26); assert.equal(messages.length, 12);
   await restored.session.prompt('/cafe collab pause'); const manualPath = restored.session.sessionFile; assert(manualPath);
   restored.session.dispose(); sessions.splice(sessions.indexOf(restored.session), 1);
   const manualEntries = (await readFile(manualPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert(manualEntries.some(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'consumed' && e.data?.seq === 12));
   assert(!tokens.some(token => JSON.stringify(manualEntries).includes(token)));
   const restoredAgain = await open(0, SessionManager.open(manualPath)); await delay(5500);
-  assert.equal(modelCalls.length, 23); assert.equal(messages.length, 12);
+  assert.equal(modelCalls.length, 26); assert.equal(messages.length, 12);
   console.log('PASS: native manual read/done persists consumption and prevents automatic replay after restore');
   assert(acknowledgements.some(q => q.index === 0 && q.fetched === 12 && q.delivered === 10));
   assert(!acknowledgements.some(q => q.delivered === 12), 'Manual consumption is not automatic host delivery');
@@ -161,11 +168,11 @@ try {
   const resumedRequests = httpRequests; await restoredAgain.session.prompt('/cafe collab resume');
   assert.equal(httpRequests, resumedRequests, 'Repeated resume does not create another listener');
   await until(() => acknowledgements.length > beats, 'path-free resume after real native reload');
-  assert.equal(modelCalls.length, 23); assert.equal(messages.length, 12);
+  assert.equal(modelCalls.length, 26); assert.equal(messages.length, 12);
   console.log('PASS: native reload stays disconnected; resume revalidates original config, rejects changed/missing files, and does not replay');
   assert.equal(blockedNetwork, 0); assert.deepEqual(errors, []);
   const version = JSON.parse(await readFile(join(piRoot, 'package.json'), 'utf8')).version;
-  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: 11, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
+  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: 11, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
 } finally {
   for (const session of sessions) { try { await session.prompt('/cafe collab pause'); } catch {} session.dispose(); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
