@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,6 +47,13 @@ function member(path) {
   writeFileSync(join(path, 'member.json'), JSON.stringify({ origin: 'http://127.0.0.1', roomId: 'room', memberId: 'me', token }));
 }
 const publicRead = `$sid=New-Object Security.Principal.SecurityIdentifier('S-1-1-0');$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'Read','Allow')));(Get-Item -LiteralPath $p).SetAccessControl($a)`;
+async function waitFor(check) {
+  for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+    if (check()) return;
+    await sleep(50);
+  }
+  assert.fail('child did not reach the expected state');
+}
 
 test('Windows creates an owner-only inheritable home; Unicode and PowerShell characters are literal', { skip: !windows }, async t => {
   const path = await home(t, "nested/private ' $() [room] 中文");
@@ -213,6 +220,55 @@ test('Windows listen backlog does not become delivered or consumed until explici
   assert.equal((await run(f.path, ['done', '--through', '21'])).code, 0);
   assert.equal(f.state().consumed, 21);
   await f.until(() => !existsSync(join(f.path, 'state.lock'))); await f.stop(listener);
+});
+
+test('Windows cached ACL rejects a replacement state file moved in with public access', { skip: !windows }, async t => {
+  const path = await home(t); member(path);
+  const statePath = join(path, 'state.json'), eventsPath = join(path, 'events.jsonl');
+  writeFileSync(statePath, JSON.stringify({ fetched: 2, consumed: 0, skipped: [] }));
+  const event = id => JSON.stringify({ id, type: 'msg', seq: id, from: 'peer', text: `message ${id}` }) + '\n';
+  writeFileSync(eventsPath, event(1));
+  let child;
+  const done = new Promise(resolve => {
+    child = execFile(process.execPath, [client, '--home', path, 'tail', '--json', '--follow'], { encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }));
+  });
+  t.after(async () => { child.kill(); await done; });
+  await waitFor(() => JSON.parse(readFileSync(statePath, 'utf8')).delivered === 1);
+  const replacement = join(fixture(t), 'replacement.json');
+  const prior = readFileSync(statePath, 'utf8'); writeFileSync(replacement, prior); acl(replacement, publicRead);
+  renameSync(replacement, statePath); appendFileSync(eventsPath, event(2));
+  const result = await done;
+  assert.equal(result.code, 1); assert.match(result.stderr, /private Windows ACL/);
+  assert(!result.stdout.includes(token) && !result.stderr.includes(token));
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).seq), [1]);
+  assert.equal(readFileSync(statePath, 'utf8'), prior, 'no progress write through the replacement');
+});
+
+test('Windows forced termination under state.lock requires explicit unlock without losing the old cursor', { skip: !windows }, async t => {
+  const path = await home(t); member(path);
+  const statePath = join(path, 'state.json'), lock = join(path, 'state.lock'), ready = join(path, 'holding-lock');
+  const prior = JSON.stringify({ fetched: 1, consumed: 0, skipped: [] });
+  writeFileSync(statePath, prior);
+  writeFileSync(join(path, 'inbox.jsonl'), JSON.stringify({ seq: 1, memberId: 'peer', text: 'pending' }) + '\n');
+  const preload = join(path, 'hold-lock.mjs');
+  writeFileSync(preload, `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const flush=fs.fsyncSync;fs.fsyncSync=fd=>{if(fs.existsSync(${JSON.stringify(lock)})){fs.writeFileSync(${JSON.stringify(ready)},'ready');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);}return flush(fd);};syncBuiltinESMExports();`);
+  let child;
+  const done = new Promise(resolve => {
+    child = execFile(process.execPath, ['--import', pathToFileURL(preload).href, client, '--home', path, 'done', '1'], { encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+  });
+  t.after(async () => { child.kill('SIGKILL'); await done; });
+  await waitFor(() => existsSync(ready));
+  assert.match((await run(path, ['unlock'])).err, /still running/);
+  child.kill('SIGKILL'); const killed = await done;
+  assert(killed.error); assert(!killed.stdout.includes(token) && !killed.stderr.includes(token));
+  assert(existsSync(lock)); assert.equal(readFileSync(statePath, 'utf8'), prior);
+  const blocked = await run(path, ['done', '1']);
+  assert.equal(blocked.code, 1); assert.match(blocked.err, /ended while holding/);
+  assert.equal(readFileSync(statePath, 'utf8'), prior);
+  const unlocked = await run(path, ['unlock']); assert.equal(unlocked.code, 0, unlocked.err);
+  assert.equal(JSON.parse(unlocked.out).unlocked, true); assert(!existsSync(lock));
+  const resumed = await run(path, ['done', '1']); assert.equal(resumed.code, 0, resumed.err);
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).consumed, 1);
 });
 
 test('Windows ACL helper failure is fail-closed before credential reads', { skip: !windows }, async t => {

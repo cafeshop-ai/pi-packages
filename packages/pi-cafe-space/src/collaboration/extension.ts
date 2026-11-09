@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { RoomClient, RoomError, readMembership, type Message } from './client.js';
-import { RoomListener, type BacklogSummary } from './listener.js';
+import { RoomListener, parseDiscoveryState, type BacklogSummary, type DiscoveryState } from './listener.js';
 import { controlReceipt, newControlState, sameControls, type ControlBatch, type ControlState } from './controls.js';
 import { formatEvent, maxBatchMessages } from '../../scripts/listener-events.mjs';
 import { registerCafeRoute } from './commands.js';
@@ -44,15 +44,16 @@ export default function collaborationExtension(pi: ExtensionAPI) {
   let activeAttempt: string | undefined;
   let activeBatch: ReceiptMessage[] | undefined;
   let activeBacklog = false;
+  let activeDiscovered = false;
   let activeControls: ControlBatch | undefined;
   let prompts = 0;
   let automaticTurns = 0;
   let introductionSent = false;
   let consumedCursor = 0;
-  let recovery: { scope: string; seq: number; attempt: string; session: string; backlog: boolean; control: boolean } | undefined;
+  let recovery: { scope: string; seq: number; attempt: string; session: string; backlog: boolean; control: boolean; discovered: boolean } | undefined;
   const delivered = new Map<number, string>();
   const manualReads = new Set<number>(), consumed = new Set<number>();
-  const stop = () => { generation++; clearTimeout(timer); listener?.pause(); activeAttempt = undefined; activeBatch = undefined; activeControls = undefined; };
+  const stop = () => { generation++; clearTimeout(timer); listener?.pause(); activeAttempt = undefined; activeBatch = undefined; activeControls = undefined; activeDiscovered = false; };
   const status = () => ({ state: listener?.state ?? 'disconnected', cursor: listener?.cursor ?? 0, delivered: listener?.delivered ?? 0, consumed: consumedCursor, pendingConsumptionSequence: listener?.pendingConsumptionBatch[0], error: listener?.error, pendingSequence: listener?.pending?.seq, uncertainSequence: recovery?.seq, automaticTurns });
   const notify = (ctx: ExtensionContext, message: string) => {
     if (message === 'ROOM_HTTP_404' || message === 'Room listener paused: ROOM_HTTP_404') message += '\nThe room or API endpoint was not found. Check the private config: resume uses the saved room binding, not the most recently discussed room. To switch rooms, run /cafe collab connect <absolute private config path>. No automatic rejoin or room switch was attempted.';
@@ -68,11 +69,16 @@ export default function collaborationExtension(pi: ExtensionAPI) {
       try { listener.acknowledgeControls(activeControls); activeAttempt = undefined; activeControls = undefined; } catch { stop(); }
       return;
     }
+    if (entry.details.control !== undefined) return;
     const messages = receiptMessages(entry.details);
-    if (!messages || !sameBatch(messages, activeBatch) || (entry.details.backlog === true) !== activeBacklog) return;
+    if (!messages || !sameBatch(messages, activeBatch) || (entry.details.backlog === true) !== activeBacklog || (entry.details.discovered === true) !== activeDiscovered) return;
     if (!activeBacklog) for (const message of messages) delivered.set(message.seq, message.senderId);
     if (entry.details.introduction === true) introductionSent = true;
-    try { listener.acknowledge(messages.at(-1)!.seq); activeAttempt = undefined; } catch { stop(); }
+    try {
+      if (activeDiscovered) listener.acknowledgeDiscovered(messages.at(-1)!.seq);
+      else listener.acknowledge(messages.at(-1)!.seq);
+      activeAttempt = undefined;
+    } catch { stop(); }
   };
   const requireBinding = (ctx: ExtensionContext) => {
     if (!listener || listener.state === 'paused' || ctx.sessionManager.getSessionId() !== boundSession) throw new RoomError('ROOM_NOT_CONNECTED');
@@ -89,7 +95,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         if (!recovery || recovery.session !== ctx.sessionManager.getSessionId()) { notify(ctx, 'No uncertain delivery in this conversation.'); return; }
         const pending = recovery, current = generation;
         const decision = args.trim().split(' ')[1]!;
-        if (!ctx.hasUI || !await ctx.ui.confirm('Resolve uncertain room delivery', `${recovery.control ? 'Control batch' : recovery.backlog ? 'Backlog summary' : 'Message batch'} #${recovery.seq}: ${decision === 'retry' ? 'allow another automatic turn; first verify no work already ran' : recovery.control ? 'skip delivery of this control batch; this does not confirm Goal consumption' : recovery.backlog ? 'skip only the summary; unread messages remain pending' : 'skip automatic delivery of the entire batch; first inspect all original messages'}? This does not undo tool effects.`)) return;
+        if (!ctx.hasUI || !await ctx.ui.confirm('Resolve uncertain room delivery', `${recovery.control ? 'Control batch' : recovery.discovered ? 'Page-out message batch' : recovery.backlog ? 'Backlog summary' : 'Message batch'} #${recovery.seq}: ${decision === 'retry' ? 'allow another automatic turn; first verify no work already ran' : recovery.control ? 'skip delivery of this control batch; this does not confirm Goal consumption' : recovery.discovered ? 'skip only this page-out wake; the original message remains unread in the ordinary inbox' : recovery.backlog ? 'skip only the summary; unread messages remain pending' : 'skip automatic delivery of the entire batch; first inspect all original messages'}? This does not undo tool effects.`)) return;
         if (generation !== current || recovery !== pending || ctx.sessionManager.getSessionId() !== pending.session) return;
         pi.appendEntry(stateType, { kind: 'resolution', scope: pending.scope, seq: pending.seq, attempt: pending.attempt, decision });
         recovery = undefined; notify(ctx, 'Decision saved. Run /cafe collab resume, or connect with the same private config if no binding was saved.'); return;
@@ -118,10 +124,12 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         let cursor: number | undefined;
         let hostDelivered = 0, backlogThrough = 0;
         let lastSummary: BacklogSummary | undefined;
+        let discovery: DiscoveryState | undefined;
         const summaries = new Map<string, BacklogSummary>();
         let controls = newControlState();
         const controlAttempts = new Map<string, ControlBatch>();
-        const backlogAttempts = new Set<string>();
+        const backlogAttempts = new Set<string>(), discoveredAttempts = new Set<string>();
+        const sparseReceipts = new Set<number>(), skippedDiscovery = new Set<number>();
         const attempts = new Map<string, number>();
         const batches = new Map<string, ReceiptMessage[] | undefined>();
         const receipts = new Set<string>();
@@ -129,6 +137,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         for (const entry of ctx.sessionManager.getBranch()) {
           if (entry.type === 'custom' && entry.customType === stateType && record(entry.data) && entry.data.scope === newScope) {
             if (entry.data.kind === 'controls' && record(entry.data.controls)) controls = structuredClone(entry.data.controls) as unknown as ControlState;
+            if (entry.data.kind === 'discovery') discovery = parseDiscoveryState(entry.data.discovery);
             if (['cursor', 'consumed'].includes(String(entry.data.kind)) && sequence(entry.data.seq)) {
               cursor = Math.max(cursor ?? 0, entry.data.seq);
               if (entry.data.kind === 'consumed') {
@@ -141,6 +150,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             }
             if (entry.data.kind === 'dispatch' && sequence(entry.data.seq) && typeof entry.data.attempt === 'string') {
               attempts.set(entry.data.attempt, entry.data.seq);
+              if (entry.data.discovered === true) discoveredAttempts.add(entry.data.attempt);
               if (record(entry.data.control)) controlAttempts.set(entry.data.attempt, entry.data.control as unknown as ControlBatch);
               if (entry.data.backlog === true) {
                 backlogAttempts.add(entry.data.attempt);
@@ -153,6 +163,9 @@ export default function collaborationExtension(pi: ExtensionAPI) {
               resolved.add(entry.data.attempt);
               if (entry.data.decision === 'skip') {
                 if (controlAttempts.has(entry.data.attempt)) controls = controlReceipt(controls, controlAttempts.get(entry.data.attempt)!, true);
+                else if (discoveredAttempts.has(entry.data.attempt)) {
+                  for (const message of batches.get(entry.data.attempt) ?? []) skippedDiscovery.add(message.seq);
+                }
                 else if (backlogAttempts.has(entry.data.attempt)) {
                   backlogThrough = Math.max(backlogThrough, entry.data.seq); lastSummary = summaries.get(entry.data.attempt);
                 }
@@ -172,8 +185,18 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             if (typeof entry.details.attempt === 'string' && controlAttempts.has(entry.details.attempt)) continue;
             const messages = receiptMessages(entry.details);
             if (!messages || (typeof entry.details.attempt === 'string' && batches.has(entry.details.attempt) &&
-              (!sameBatch(messages, batches.get(entry.details.attempt)) || backlogAttempts.has(entry.details.attempt) !== (entry.details.backlog === true)))) continue;
+              (!sameBatch(messages, batches.get(entry.details.attempt)) || backlogAttempts.has(entry.details.attempt) !== (entry.details.backlog === true) ||
+                discoveredAttempts.has(entry.details.attempt) !== (entry.details.discovered === true)))) continue;
             const last = messages.at(-1)!;
+            if (entry.details.discovered === true) {
+              const attempt = entry.details.attempt;
+              if (typeof attempt !== 'string' || !discoveredAttempts.has(attempt) || !sameBatch(messages, batches.get(attempt)) ||
+                messages.length !== 1 || entry.details.backlog === true || receipts.has(attempt) || resolved.has(attempt)) continue;
+              for (const message of messages) { sparseReceipts.add(message.seq); delivered.set(message.seq, message.senderId); }
+              receipts.add(attempt);
+              if (entry.details.introduction === true) introductionSent = true;
+              continue;
+            }
             if (entry.details.backlog === true && typeof entry.details.attempt === 'string' && (receipts.has(entry.details.attempt) || resolved.has(entry.details.attempt))) continue;
             if (entry.details.backlog === true) {
               backlogThrough = Math.max(backlogThrough, last.seq);
@@ -188,8 +211,15 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             if (typeof entry.details.attempt === 'string') receipts.add(entry.details.attempt);
           }
         }
+        if (discovery) {
+          if (discovery.received?.some(seq => !sparseReceipts.has(seq))) throw new RoomError('DISCOVERY_RECEIPT_REQUIRED');
+          const received = [...sparseReceipts].filter(seq => seq > (cursor ?? 0)).sort((a, b) => a - b);
+          discovery = parseDiscoveryState({ ...discovery, pending: discovery.pending.filter(seq => !sparseReceipts.has(seq) && !skippedDiscovery.has(seq)),
+            ...(received.length || discovery.received !== undefined ? { received } : {}) });
+        }
+        else if (sparseReceipts.size) throw new RoomError('DISCOVERY_CHECKPOINT_REQUIRED');
         const uncertain = [...attempts].find(([attempt]) => !receipts.has(attempt) && !resolved.has(attempt));
-        if (uncertain) { recovery = { scope: newScope, seq: uncertain[1], attempt: uncertain[0], session: sessionId, backlog: backlogAttempts.has(uncertain[0]), control: controlAttempts.has(uncertain[0]) }; throw new RoomError('HOST_DELIVERY_UNKNOWN_INSPECT_SESSION_THEN_RESOLVE'); }
+        if (uncertain) { recovery = { scope: newScope, seq: uncertain[1], attempt: uncertain[0], session: sessionId, backlog: backlogAttempts.has(uncertain[0]), control: controlAttempts.has(uncertain[0]), discovered: discoveredAttempts.has(uncertain[0]) }; throw new RoomError('HOST_DELIVERY_UNKNOWN_INSPECT_SESSION_THEN_RESOLVE'); }
         let snapshot = await client.read(cursor ?? 0);
         if (cursor === undefined) {
           // First attach starts at the current tail, never automatically executes old room history.
@@ -202,10 +232,27 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         checkpoint(cursor);
         // Local session metadata only; never persist the token or infer a binding from room messages.
         if (!resuming) pi.appendEntry(stateType, { kind: 'binding', session: sessionId, configPath, scope: newScope, fingerprint });
+        const deliver = (messages: readonly Message[], backlog = false, discovered = false) => {
+          if (generation !== current) throw new RoomError('SESSION_CHANGED');
+          activeAttempt = randomUUID();
+          const introduction = !introductionSent, last = messages.at(-1)!;
+          const lines = backlog ? [formatEvent({ type: 'backlog', from: messages[0]!.seq, to: last.seq, count: messages.length })] : messages.map(message => formatEvent({ type: 'msg', seq: message.seq, from: message.memberId,
+            ...(message.to ? { to: message.to } : {}), ...(message.replyTo ? { replyTo: message.replyTo } : {}), text: message.text }, next.names, auth.memberId));
+          const summary = next.dispatchedSummary;
+          activeBacklog = backlog; activeDiscovered = discovered; activeControls = undefined;
+          activeBatch = (backlog ? [last] : messages).map(m => ({ seq: m.seq, senderId: m.memberId }));
+          pi.appendEntry(stateType, { kind: 'dispatch', scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(discovered ? { discovered: true } : {}), ...(summary ? { summary } : {}), attempt: activeAttempt });
+          automaticTurns++;
+          pi.sendMessage({ customType: eventType, display: true,
+            content: `${introduction ? deliveryIntroduction + '\n\n' : ''}${lines.join('\n')}${discovered ? '\nPage-out delivery: earlier messages remain unread. Use show/reply for this message; handle the ordinary inbox prefix with read before done.' : ''}`,
+            details: { scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(discovered ? { discovered: true } : {}), ...(summary ? { summary } : {}), attempt: activeAttempt, introduction },
+          }, { triggerTurn: true, deliverAs: 'followUp' });
+        };
         const next = new RoomListener(client, {
           isIdle: () => generation === current && ctx.sessionManager.getSessionId() === sessionId && ctx.isIdle() && !ctx.hasPendingMessages() && prompts === 0,
           checkpoint,
           checkpointControls: controls => pi.appendEntry(stateType, { kind: 'controls', scope: newScope, controls: structuredClone(controls) }),
+          checkpointDiscovery: discovery => pi.appendEntry(stateType, { kind: 'discovery', scope: newScope, discovery: structuredClone(discovery) }),
           deliverControls: batch => {
             if (generation !== current) throw new RoomError('SESSION_CHANGED');
             activeAttempt = randomUUID(); activeControls = batch; activeBatch = undefined;
@@ -218,23 +265,9 @@ export default function collaborationExtension(pi: ExtensionAPI) {
               details: { scope: newScope, control: batch, attempt: activeAttempt, introduction },
             }, { triggerTurn: true, deliverAs: 'followUp' });
           },
-          deliver: (messages: readonly Message[], backlog = false) => {
-            if (generation !== current) throw new RoomError('SESSION_CHANGED');
-            activeAttempt = randomUUID();
-            const introduction = !introductionSent, last = messages.at(-1)!;
-            const lines = backlog ? [formatEvent({ type: 'backlog', from: messages[0]!.seq, to: last.seq, count: messages.length })] : messages.map(message => formatEvent({ type: 'msg', seq: message.seq, from: message.memberId,
-              ...(message.to ? { to: message.to } : {}), ...(message.replyTo ? { replyTo: message.replyTo } : {}), text: message.text }, next.names, auth.memberId));
-            const summary = next.dispatchedSummary;
-            activeBacklog = backlog; activeControls = undefined;
-            activeBatch = (backlog ? [last] : messages).map(m => ({ seq: m.seq, senderId: m.memberId }));
-            pi.appendEntry(stateType, { kind: 'dispatch', scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(summary ? { summary } : {}), attempt: activeAttempt });
-            automaticTurns++;
-            pi.sendMessage({ customType: eventType, display: true,
-              content: `${introduction ? deliveryIntroduction + '\n\n' : ''}${lines.join('\n')}`,
-              details: { scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(summary ? { summary } : {}), attempt: activeAttempt, introduction },
-            }, { triggerTurn: true, deliverAs: 'followUp' });
-          },
-        }, cursor, hostDelivered, backlogThrough, controls, [...delivered.keys()].filter(seq => seq <= cursor! && !consumed.has(seq)).sort((a, b) => a - b), lastSummary);
+          deliver,
+          deliverDiscovered: messages => deliver(messages, false, true),
+        }, cursor, hostDelivered, backlogThrough, controls, [...delivered.keys()].filter(seq => seq <= cursor! && !consumed.has(seq)).sort((a, b) => a - b), lastSummary, discovery);
         next.captureControls(snapshot);
         listener = next;
         let lastState = next.state;
@@ -315,7 +348,7 @@ export default function collaborationExtension(pi: ExtensionAPI) {
       const active = requireBinding(ctx), current = generation;
       const sender = delivered.get(params.sequence);
       if (!sender) throw new RoomError('DELIVERED_MESSAGE_REQUIRED');
-      const page = await active.client.read(params.sequence - 1, signal);
+      const page = await active.client.read(params.sequence - 1, signal, 1);
       if (signal?.aborted) throw new RoomError('CANCELLED');
       if (current !== generation || requireBinding(ctx) !== active) throw new RoomError('SESSION_CHANGED');
       const message = page.messages[0];

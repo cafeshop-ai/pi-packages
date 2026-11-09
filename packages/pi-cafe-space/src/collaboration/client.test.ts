@@ -133,6 +133,16 @@ it('never exposes remote error bodies and never retries an uncertain write', asy
   expect(request).toHaveBeenCalledTimes(2);
   expect(JSON.parse(String(request.mock.calls[1]![1]?.body)).op).toBe('send');
 });
+it.each([false, true])('requests one full message with a legacy-compatible forward limit (ignored=%s)', async ignored => {
+  const messages = [1, 2].map(seq => ({ seq, id: 'message-' + seq, memberId: auth.memberId, text: 'Full original' }));
+  const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ ...snapshot,
+    cursor: ignored ? 2 : 1, more: !ignored, messages: ignored ? messages : messages.slice(0, 1) })));
+  const client = new RoomClient(auth, request);
+  expect((await client.read(0, undefined, 1)).messages[0]?.text).toBe('Full original');
+  expect(JSON.parse(String(request.mock.calls[0]![1]?.body))).toEqual({ op: 'read', roomId: auth.roomId, after: 0, limit: 1 });
+  for (const limit of [0, -1, 101, 1.5, Infinity]) await expect(client.read(0, undefined, limit)).rejects.toThrow('INVALID_LIMIT');
+  expect(request).toHaveBeenCalledTimes(1);
+});
 it('detects presence support from validated reads without requiring a new config', async () => {
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ ...snapshot, presence: {} }))).mockResolvedValueOnce(new Response(JSON.stringify(snapshot)));
   const client = new RoomClient(auth, request);

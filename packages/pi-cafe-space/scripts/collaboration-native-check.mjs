@@ -14,6 +14,7 @@ const root = await mkdtemp(join(tmpdir(), 'cafe collaboration native-'));
 const nativeFetch = globalThis.fetch, sessions = [], messages = [], modelCalls = [], errors = [];
 let origin, blockedNetwork = 0, httpRequests = 0;
 const presence = {}, acknowledgements = [], requests = [0, 0];
+const pageOutTargets = [], shownPageOut = [];
 const controls = { tasks: [], waitingOnYou: [], aiPaused: false };
 globalThis.fetch = (input, init) => {
   const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
@@ -28,7 +29,10 @@ const server = createServer((req, res) => {
   let body = ''; req.on('data', b => { body += b; }); req.on('end', () => {
     try {
       const q = JSON.parse(body); assert.equal(q.roomId, roomId); let value;
-      if (q.op === 'read') value = { roomId, memberId: ids[index], cursor: messages.length, more: false, ...controls, presence, members: ids.map(id => ({ id, name: 'Synthetic peer', kind: 'ai' })), messages: messages.filter(m => m.seq > q.after) };
+      if (q.op === 'read') {
+        const page = messages.filter(m => m.seq > q.after).slice(0, q.limit ?? 100), cursor = page.at(-1)?.seq ?? q.after;
+        value = { roomId, memberId: ids[index], cursor, more: cursor < messages.length, ...controls, presence, members: ids.map(id => ({ id, name: 'Synthetic peer', kind: 'ai' })), messages: page };
+      }
       else if (q.op === 'ack') {
         assert(Number.isInteger(q.fetched) && q.fetched >= 0 && q.fetched <= messages.length);
         assert(Number.isInteger(q.delivered) && q.delivered >= 0 && q.delivered <= q.fetched);
@@ -74,7 +78,25 @@ try {
           // Native Pi can append a system-section patch after the latest conversation message.
           const last = context.messages.findLast(message => message.role !== 'system');
           const text = typeof last?.content === 'string' ? last.content : (last?.content ?? []).filter(p => p.type === 'text').map(p => p.text).join('\n');
-          if (last?.role === 'toolResult' && last.toolName === 'cafe_room_read') {
+          if (last?.role === 'toolResult' && pageOutTargets.length) {
+            if (last.toolName === 'cafe_room_show') {
+              assert(!last.isError); const message = JSON.parse(text.slice(text.indexOf('{'))).message;
+              assert(pageOutTargets.includes(message.seq)); assert.equal(message.text, 'Synthetic page-out mention ' + message.seq); shownPageOut.push(message.seq);
+            } else if (last.toolName === 'cafe_room_read') {
+              assert(!last.isError); assert.equal(JSON.parse(text.slice(text.indexOf('{'))).message.seq, pageOutTargets[0] - 100);
+            } else { assert.equal(last.toolName, 'cafe_room_done'); assert(last.isError && text.includes('NEXT_UNDISPATCHED_MESSAGE_REQUIRED')); }
+            output.content = [{ type: 'text', text: 'Synthetic page-out boundary checked; no consumption or reply.' }]; output.stopReason = 'stop';
+          } else if (text.includes('Synthetic page-out mention ') || text === 'Verify restored page-out full text.') {
+            const sequence = text === 'Verify restored page-out full text.' ? pageOutTargets.at(-1) : Number(/\[msg #(\d+) /.exec(text)?.[1]);
+            assert(pageOutTargets.includes(sequence));
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_show', arguments: { sequence } }]; output.stopReason = 'toolUse';
+          } else if (text === 'Verify page-out cannot skip the unread prefix.') {
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done', arguments: { sequence: pageOutTargets.at(-1) } }]; output.stopReason = 'toolUse';
+          } else if (text === 'Read the oldest backlog item without consuming it.') {
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_read', arguments: {} }]; output.stopReason = 'toolUse';
+          } else if (text.includes('[backlog ')) {
+            output.content = [{ type: 'text', text: 'Synthetic backlog observed; no automatic consumption.' }]; output.stopReason = 'stop';
+          } else if (last?.role === 'toolResult' && last.toolName === 'cafe_room_read') {
             const seq = [...text.matchAll(/"seq":(\d+)/g)].at(-1)?.[1];
             if (!seq) { errors.push('Manual read did not return its pending message'); output.stopReason = 'stop'; }
             else { output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done', arguments: { sequence: Number(seq), through: true } }]; output.stopReason = 'toolUse'; }
@@ -227,7 +249,39 @@ try {
   const version = JSON.parse(await readFile(join(piRoot, 'package.json'), 'utf8')).version;
   const automaticWakeups = sessions.reduce((sum, session) => sum + session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'dispatch').length, 0);
   assert.equal(automaticWakeups, 15);
-  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups, nativeControlsAtFixedCursor: true, pausedControlsSurviveRestore: true, goalConfirmationSurvivesRestore: true, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
+  const sharedReplies = messages.length - 3, offset = messages.length;
+  const branch = () => controlRestored.session.sessionManager.getBranch();
+  messages.push(...Array.from({ length: 100 }, (_, i) => ({ seq: offset + i + 1, id: 'backlog-' + i, memberId: ids[1], text: 'Ordinary synthetic backlog' })));
+  await until(() => branch().some(e => e.type === 'custom_message' && e.details?.backlog), 'native backlog summary receipt');
+  await controlRestored.session.waitForIdle();
+  pageOutTargets.push(...[101, 250, 501].map(seq => offset + seq));
+  messages.push(...Array.from({ length: 450 }, (_, i) => {
+    const seq = offset + i + 101, addressed = pageOutTargets.includes(seq);
+    return { seq, id: 'page-out-' + seq, memberId: ids[1], text: addressed ? 'Synthetic page-out mention ' + seq : 'Ordinary synthetic backlog', ...(addressed ? { to: ids[0] } : {}) };
+  }));
+  await until(() => shownPageOut.length === 3, 'native page-out receipts and full-text access at relative #101/#250/#501');
+  await controlRestored.session.waitForIdle();
+  assert.deepEqual(shownPageOut, pageOutTargets);
+  const discovery = branch().findLast(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'discovery')?.data.discovery;
+  assert.deepEqual(discovery.received, pageOutTargets); assert.deepEqual(discovery.pending, []);
+  assert.deepEqual(progress(controlRestored.session), beforeControls);
+  await controlRestored.session.prompt('Verify page-out cannot skip the unread prefix.');
+  await controlRestored.session.prompt('Read the oldest backlog item without consuming it.');
+  assert.deepEqual(progress(controlRestored.session), beforeControls);
+  await controlRestored.session.prompt('/cafe collab pause'); const pageOutPath = controlRestored.session.sessionFile; assert(pageOutPath);
+  controlRestored.session.dispose(); sessions.splice(sessions.indexOf(controlRestored.session), 1);
+  const beforePageOutRestore = modelCalls.length, pageOutRestored = await open(0, SessionManager.open(pageOutPath));
+  await delay(10500); assert.equal(modelCalls.length, beforePageOutRestore, 'Saved native page-out receipts prevent replay');
+  await pageOutRestored.session.prompt('Verify restored page-out full text.');
+  assert.deepEqual(shownPageOut, [...pageOutTargets, pageOutTargets.at(-1)]);
+  assert.deepEqual(progress(pageOutRestored.session), beforeControls);
+  assert(acknowledgements.slice(-2).every(q => q.index === 0 && q.fetched === messages.length && q.delivered === 10));
+  assert.equal(blockedNetwork, 0); assert.deepEqual(errors, []);
+  assert(!tokens.some(token => JSON.stringify(pageOutRestored.session.sessionManager.getBranch()).includes(token)));
+  const pageOutWakeups = pageOutRestored.session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'dispatch' && e.data.discovered).length;
+  assert.equal(pageOutWakeups, 3);
+  console.log('PASS: native page-out #101/#250/#501 receipts grant exact full text, retain the unread prefix, and survive actual session restore without replay');
+  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: automaticWakeups + 1 + pageOutWakeups, pageOutWakeups, pageOutReceiptsSurviveRestore: true, pageOutCannotSkipUnreadPrefix: true, nativeControlsAtFixedCursor: true, pausedControlsSurviveRestore: true, goalConfirmationSurvivesRestore: true, syntheticModelCalls: modelCalls.length, sharedReplies, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
 } finally {
   for (const session of sessions) { try { await session.prompt('/cafe collab pause'); } catch {} session.dispose(); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

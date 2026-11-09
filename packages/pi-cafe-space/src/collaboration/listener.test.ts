@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 import { RoomClient, RoomError, parseSnapshot, type Membership, type Message, type Snapshot } from './client.js';
-import { RoomListener, type ListenerHost } from './listener.js';
+import { RoomListener, parseDiscoveryState, type ListenerHost } from './listener.js';
 const me = 'a'.repeat(32), peer = 'b'.repeat(32), stranger = 'c'.repeat(32);
 const auth: Membership = { origin: 'https://space.example.test', roomId: 'd'.repeat(32), memberId: me, token: 'e'.repeat(64) };
 const message = (seq: number, patch: Partial<Message> = {}): Message => ({ seq, id: 'message-' + seq, memberId: peer, text: 'external data', to: me, replyTo: 0, ...patch });
@@ -13,6 +13,267 @@ function fixture(messages = [message(1)]) {
   const listener = new RoomListener(client, host, 0);
   return { listener, host, read, client };
 }
+function discoveryFixture(messages: Message[], restored?: { cursor: number; pending: number[] }, limitAware = true) {
+  const f = fixture(messages);
+  f.read.mockImplementation(async (after, _signal, limit) => {
+    const page = messages.filter(m => m.seq > after).slice(0, limitAware ? limit ?? 100 : 100);
+    return { ...snapshot(page, after), more: after + page.length < messages.length };
+  });
+  f.host.checkpointDiscovery = vi.fn();
+  const listener = new RoomListener(f.client, f.host, 0, 0, 0, undefined, [], undefined, restored);
+  return { ...f, listener };
+}
+it.each([101, 250, 501])('persists page-out mention #%s separately from processing and resumes its scan', async target => {
+  const messages = Array.from({ length: 550 }, (_, i) => message(i + 1, { to: i + 1 === target ? me : '' }));
+  const f = discoveryFixture(messages);
+  await f.listener.poll(); f.listener.acknowledge(100);
+  const saved = f.listener.discoveryState;
+  const restored = new RoomListener(f.client, f.host, 0, 0, 100, undefined, [], undefined, saved);
+  const offset = f.read.mock.calls.length;
+  for (let i = 0; i < 5; i++) await restored.poll();
+  expect(restored.discoveryState).toEqual({ cursor: 550, pending: [target] });
+  expect(f.read.mock.calls.slice(offset).some(([after]) => after === saved.cursor)).toBe(true);
+  expect(restored.cursor).toBe(0); expect(restored.delivered).toBe(0);
+  expect(restored.pendingConsumptionBatch).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  expect(f.host.checkpoint).not.toHaveBeenCalled();
+  expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith(messages.slice(0, 100), true);
+});
+it('caps the durable discovery queue, including when legacy servers ignore limit, and resumes after processing', async () => {
+  const messages = Array.from({ length: 350 }, (_, i) => message(i + 1));
+  const f = discoveryFixture(messages, { cursor: 199, pending: Array.from({ length: 99 }, (_, i) => i + 101) }, false);
+  await f.listener.poll(); f.listener.acknowledge(100);
+  expect(f.listener.discoveryState).toEqual({ cursor: 200, pending: Array.from({ length: 100 }, (_, i) => i + 101) });
+  const calls = f.read.mock.calls.length; await f.listener.poll();
+  expect(f.read.mock.calls.slice(calls).map(([after]) => after)).toEqual([0]);
+  // Advancing the ordinary processing cursor frees the durable references without consuming them implicitly.
+  for (let i = 0; i < 6; i++) { await f.listener.poll(false); f.listener.consume((i + 1) * 20, true); }
+  await f.listener.poll();
+  expect(f.listener.cursor).toBe(120); expect(f.listener.delivered).toBe(0);
+  expect(f.listener.discoveryState).toEqual({ cursor: 240, pending: [...Array.from({ length: 80 }, (_, i) => i + 121), ...Array.from({ length: 20 }, (_, i) => i + 221)] });
+});
+it('does not scan or persist discovery on manual reads', async () => {
+  const f = discoveryFixture(Array.from({ length: 150 }, (_, i) => message(i + 1)));
+  await f.listener.poll(false);
+  expect(f.read.mock.calls.map(([after]) => after)).toEqual([0]);
+  expect(f.host.checkpointDiscovery).not.toHaveBeenCalled(); expect(f.listener.discoveryState).toEqual({ cursor: 0, pending: [] });
+});
+it('fails closed on a discovery checkpoint error without advancing any progress or dispatching', async () => {
+  const f = discoveryFixture(Array.from({ length: 150 }, (_, i) => message(i + 1)));
+  vi.mocked(f.host.checkpointDiscovery!).mockImplementation(() => { throw Error('disk'); });
+  await f.listener.poll();
+  expect(f.listener.state).toBe('paused'); expect(f.listener.error).toBe('CHECKPOINT_FAILED');
+  expect(f.listener.discoveryState).toEqual({ cursor: 0, pending: [] });
+  expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0);
+  expect(f.host.deliver).not.toHaveBeenCalled(); expect(f.host.checkpoint).not.toHaveBeenCalled();
+});
+it('honors newer pause metadata from the discovery page and only queues active addressed peers', async () => {
+  const messages = Array.from({ length: 104 }, (_, i) => message(i + 1, { to: '' }));
+  messages[100] = message(101); messages[101] = message(102, { memberId: me });
+  messages[102] = message(103, { memberId: stranger }); messages[103] = message(104, { to: peer });
+  const f = discoveryFixture(messages), read = f.read.getMockImplementation()!;
+  f.read.mockImplementation(async (...args) => {
+    const page = await read(...args);
+    return args[0] === 100 ? { ...page, aiPaused: true, members: page.members.map(m => ({ ...m, removed: m.id === stranger })) } : page;
+  });
+  await f.listener.poll();
+  expect(f.listener.discoveryState).toEqual({ cursor: 104, pending: [101] });
+  expect(f.listener.state).toBe('room-paused'); expect(f.host.deliver).not.toHaveBeenCalled();
+});
+it('persists observed controls before a retryable discovery failure, even if the change disappears before retry', async () => {
+  const f = discoveryFixture(Array.from({ length: 250 }, (_, i) => message(i + 1, { to: '' })));
+  f.host.deliverControls = vi.fn(); f.host.checkpointControls = vi.fn();
+  const read = f.read.getMockImplementation()!; let failing = true;
+  f.read.mockImplementation(async (...args) => {
+    if (args[0] === 100 && failing) throw new RoomError('NETWORK_RESULT_UNKNOWN', true, 17000);
+    return { ...await read(...args), waitingOnYou: failing ? [peer] : [] };
+  });
+  expect(await f.listener.poll()).toBe(17000);
+  const observed = f.listener.controlState;
+  expect(observed.pending.flatMap(batch => batch.events).map(event => event.type)).toEqual(['waiting']);
+  expect(f.host.checkpointControls).toHaveBeenCalledExactlyOnceWith(observed);
+  expect(f.listener.discoveryState).toEqual({ cursor: 0, pending: [] });
+  expect(f.host.deliverControls).not.toHaveBeenCalled(); expect(f.host.deliver).not.toHaveBeenCalled();
+  failing = false;
+  const restored = new RoomListener(f.client, f.host, 0, 0, 0, observed, [], undefined, f.listener.discoveryState);
+  await restored.poll();
+  expect(f.host.deliverControls).toHaveBeenCalledExactlyOnceWith(observed.pending[0]);
+  expect(restored.discoveryState.cursor).toBe(200); expect(restored.cursor).toBe(0); expect(restored.delivered).toBe(0);
+});
+it.each(['resolve', 'reject'])('ignores a late discovery %s after local pause without checkpoint or heartbeat', async outcome => {
+  const f = discoveryFixture(Array.from({ length: 150 }, (_, i) => message(i + 1)));
+  f.client.supportsPresence = true; const ack = vi.spyOn(f.client, 'ack').mockResolvedValue();
+  const read = f.read.getMockImplementation()!;
+  let resolve!: (page: Snapshot) => void, reject!: (error: Error) => void;
+  f.read.mockImplementation((...args) => args[0] === 100 ? new Promise((yes, no) => { resolve = yes; reject = no; }) : read(...args));
+  const polling = f.listener.poll(); await vi.waitFor(() => expect(f.read).toHaveBeenCalledTimes(2));
+  expect(f.listener.poll(false)).toBe(polling);
+  f.listener.pause();
+  if (outcome === 'resolve') resolve(await read(100)); else reject(new RoomError('CANCELLED'));
+  await polling;
+  expect(f.listener.discoveryState).toEqual({ cursor: 0, pending: [] });
+  expect(f.listener.state).toBe('paused'); expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0);
+  expect(f.host.checkpointDiscovery).not.toHaveBeenCalled(); expect(f.host.checkpoint).not.toHaveBeenCalled();
+  expect(f.host.deliver).not.toHaveBeenCalled(); expect(ack).not.toHaveBeenCalled();
+});
+it.each(['ROOM_HTTP_401', 'INVALID_ROOM_RESPONSE'])('stops on a terminal discovery failure: %s', async code => {
+  const f = discoveryFixture(Array.from({ length: 150 }, (_, i) => message(i + 1)));
+  const read = f.read.getMockImplementation()!;
+  f.read.mockImplementation((...args) => args[0] === 100 ? Promise.reject(new RoomError(code)) : read(...args));
+  await f.listener.poll(); const calls = f.read.mock.calls.length; await f.listener.poll();
+  expect(f.read).toHaveBeenCalledTimes(calls); expect(f.listener.state).toBe('paused'); expect(f.listener.error).toBe(code);
+  expect(f.listener.discoveryState).toEqual({ cursor: 0, pending: [] });
+  expect(f.host.checkpointDiscovery).not.toHaveBeenCalled(); expect(f.host.deliver).not.toHaveBeenCalled();
+});
+it('retains durable discovery through a failed heartbeat and continues without duplicating pending references', async () => {
+  const f = discoveryFixture(Array.from({ length: 250 }, (_, i) => message(i + 1, { to: i + 1 === 150 ? me : '' })));
+  f.client.supportsPresence = true;
+  const ack = vi.spyOn(f.client, 'ack').mockRejectedValueOnce(new RoomError('ROOM_HTTP_503', true, 19000)).mockResolvedValue();
+  expect(await f.listener.poll()).toBe(19000);
+  expect(f.listener.discoveryState).toEqual({ cursor: 200, pending: [150] });
+  expect(f.host.deliver).not.toHaveBeenCalled(); expect(f.listener.delivered).toBe(0);
+  await f.listener.poll();
+  expect(f.listener.discoveryState).toEqual({ cursor: 250, pending: [150] });
+  expect(f.read.mock.calls.map(([after]) => after)).toEqual([0, 100, 0, 200]);
+  expect(ack).toHaveBeenLastCalledWith({ fetched: 250, delivered: 0, paused: false }, expect.any(AbortSignal));
+  expect(f.host.checkpoint).not.toHaveBeenCalled(); expect(f.host.deliver).toHaveBeenCalledTimes(1);
+});
+it.each([101, 250, 501])('isolates the host receipt for discovered #%s and restores it without skipping backlog', async target => {
+  const messages = Array.from({ length: 550 }, (_, i) => message(i + 1, { to: i + 1 === target ? me : '' }));
+  const f = discoveryFixture(messages); f.host.deliverDiscovered = vi.fn();
+  for (let i = 0; i < 6; i++) {
+    await f.listener.poll();
+    if (f.listener.dispatchedSummary) f.listener.acknowledge(100);
+    if (vi.mocked(f.host.deliverDiscovered).mock.calls.length) break;
+  }
+  expect(f.host.deliverDiscovered).toHaveBeenCalledExactlyOnceWith([messages[target - 1]]);
+  f.listener.acknowledge(target); f.listener.acknowledgeDiscovered(target + 1);
+  expect(f.listener.state).toBe('awaiting-host-receipt'); expect(f.listener.discoveryState.received).toBeUndefined();
+  f.listener.acknowledgeDiscovered(target);
+  expect(f.listener.discoveryState.received).toEqual([target]); expect(f.listener.discoveryState.pending).toEqual([]);
+  expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0); expect(f.host.checkpoint).not.toHaveBeenCalled();
+  expect(() => f.listener.consume(target, true)).toThrow('NEXT_UNDISPATCHED_MESSAGE_REQUIRED');
+  const restored = new RoomListener(f.client, f.host, 0, 0, 100, undefined, [], undefined, f.listener.discoveryState);
+  for (let i = 0; i < 6; i++) await restored.poll();
+  expect(f.host.deliverDiscovered).toHaveBeenCalledTimes(1); expect(restored.cursor).toBe(0);
+  expect(restored.pendingConsumptionBatch[0]).toBe(1);
+});
+it('does not redeliver a discovered receipt when ordinary processing reaches it, and retains its consumption order', async () => {
+  const messages = Array.from({ length: 122 }, (_, i) => message(i + 1, { to: i + 1 === 101 ? me : '' }));
+  const f = discoveryFixture(messages); f.host.deliverDiscovered = vi.fn();
+  await f.listener.poll(); f.listener.acknowledgeDiscovered(101);
+  expect(f.host.deliverDiscovered).toHaveBeenCalledTimes(1);
+  for (let end = 20; end <= 100; end += 20) { await f.listener.poll(false); f.listener.consume(end, true); }
+  await f.listener.poll();
+  expect(f.listener.cursor).toBe(101); expect(f.listener.pendingConsumptionBatch).toEqual([101]);
+  expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith(messages.slice(101), true);
+  f.listener.acknowledge(122);
+  expect(f.listener.pendingConsumptionBatch).toEqual(Array.from({ length: 20 }, (_, i) => i + 101));
+  f.listener.consume(120, true);
+  expect(f.listener.pendingConsumptionBatch).toEqual([121, 122]);
+  expect(f.host.checkpoint).toHaveBeenLastCalledWith(120, true, Array.from({ length: 20 }, (_, i) => i + 101));
+});
+it.each([101, 105])('merges sparse receipt #%s into a real ordinary delivery without duplicates or reordering', async target => {
+  const messages = Array.from({ length: 112 }, (_, i) => message(i + 1, { to: i + 1 === target ? me : '' }));
+  const f = discoveryFixture(messages); f.host.deliverDiscovered = vi.fn();
+  await f.listener.poll(); f.listener.acknowledgeDiscovered(target);
+  for (let end = 20; end <= 100; end += 20) { await f.listener.poll(false); f.listener.consume(end, true); }
+  await f.listener.poll();
+  expect(f.host.deliver).toHaveBeenCalledExactlyOnceWith(messages.slice(100).filter(m => m.seq !== target));
+  f.listener.acknowledge(112);
+  expect(f.listener.delivered).toBe(112);
+  expect(f.listener.pendingConsumptionBatch).toEqual(Array.from({ length: 12 }, (_, i) => i + 101));
+  f.listener.consume(112, true); expect(f.listener.pendingConsumptionBatch).toEqual([]);
+  await f.listener.poll(false); expect(f.listener.pendingConsumptionBatch).toEqual([]);
+});
+it('counts received references toward the discovery bound and keeps them until processing catches up', async () => {
+  const messages = Array.from({ length: 350 }, (_, i) => message(i + 1));
+  const f = discoveryFixture(messages); f.host.deliverDiscovered = vi.fn();
+  for (let seq = 101; seq <= 200; seq++) { await f.listener.poll(); f.listener.acknowledgeDiscovered(seq); }
+  expect(f.listener.discoveryState.received).toHaveLength(100); expect(f.listener.discoveryState.pending).toEqual([]);
+  const calls = f.read.mock.calls.length; await f.listener.poll();
+  expect(f.read.mock.calls.slice(calls).map(([after]) => after)).toEqual([0]);
+  expect(f.listener.discoveryState.cursor).toBe(200); expect(f.listener.cursor).toBe(0);
+});
+it('keeps discovery pending and stops on an unknown host delivery or missing receipt', async () => {
+  vi.useFakeTimers();
+  for (const throwing of [false, true]) {
+    const f = discoveryFixture(Array.from({ length: 101 }, (_, i) => message(i + 1, { to: i === 100 ? me : '' })));
+    f.host.deliverDiscovered = vi.fn(() => { if (throwing) throw Error('unknown'); });
+    await f.listener.poll(); await vi.advanceTimersByTimeAsync(20000); await f.listener.poll(); await f.listener.poll();
+    expect(f.listener.state).toBe('paused'); expect(f.listener.error).toBe('HOST_DELIVERY_UNKNOWN');
+    expect(f.listener.discoveryState.pending).toEqual([101]); expect(f.listener.discoveryState.received).toBeUndefined();
+    expect(f.host.deliverDiscovered).toHaveBeenCalledTimes(1); expect(f.host.checkpoint).not.toHaveBeenCalled();
+  }
+});
+it('does not overwrite a durable sparse receipt arriving during the next discovery scan', async () => {
+  const messages = Array.from({ length: 350 }, (_, i) => message(i + 1, { to: i + 1 === 101 ? me : '' }));
+  const f = discoveryFixture(messages); f.host.deliverDiscovered = vi.fn();
+  await f.listener.poll(); expect(f.listener.state).toBe('awaiting-host-receipt');
+  const read = f.read.getMockImplementation()!; let resolve!: (page: Snapshot) => void;
+  f.read.mockImplementation((...args) => args[0] === 200 ? new Promise(yes => { resolve = yes; }) : read(...args));
+  const polling = f.listener.poll(); await vi.waitFor(() => expect(f.read).toHaveBeenCalledWith(200, expect.any(AbortSignal), 99));
+  f.listener.acknowledgeDiscovered(101); resolve(await read(200, undefined, 99)); await polling;
+  expect(f.listener.discoveryState).toEqual({ cursor: 299, pending: [], received: [101] });
+  expect(f.host.deliverDiscovered).toHaveBeenCalledTimes(1); expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0);
+  expect(f.host.checkpointDiscovery).toHaveBeenLastCalledWith(f.listener.discoveryState);
+});
+it('preserves the discovery batch on receipt checkpoint failure', async () => {
+  const f = discoveryFixture(Array.from({ length: 101 }, (_, i) => message(i + 1, { to: i === 100 ? me : '' })));
+  f.host.deliverDiscovered = vi.fn(); await f.listener.poll();
+  const saved = f.listener.discoveryState;
+  vi.mocked(f.host.checkpointDiscovery!).mockImplementation(() => { throw Error('disk'); });
+  expect(() => f.listener.acknowledgeDiscovered(101)).toThrow('CHECKPOINT_FAILED');
+  expect(f.listener.state).toBe('paused'); expect(f.listener.discoveryState).toEqual(saved);
+  expect(f.listener.cursor).toBe(0); expect(f.listener.delivered).toBe(0);
+});
+it('revalidates a restored discovery reference and respects the fresh pause before dispatch', async () => {
+  const messages = Array.from({ length: 250 }, (_, i) => message(i + 1, { to: i + 1 === 150 ? me : '' }));
+  const f = discoveryFixture(messages, { cursor: 250, pending: [150] }); f.host.deliverDiscovered = vi.fn();
+  const read = f.read.getMockImplementation()!;
+  f.read.mockImplementation(async (...args) => ({ ...await read(...args), aiPaused: args[0] === 149 }));
+  await f.listener.poll();
+  expect(f.read).toHaveBeenLastCalledWith(149, expect.any(AbortSignal), 1);
+  expect(f.listener.state).toBe('room-paused'); expect(f.host.deliverDiscovered).not.toHaveBeenCalled();
+  expect(f.listener.discoveryState.pending).toEqual([150]);
+});
+it.each(['recipient', 'sender', 'removed', 'sequence', 'missing'])('rejects a changed restored discovery %s before dispatch', async fault => {
+  const messages = Array.from({ length: 250 }, (_, i) => message(i + 1, { to: '' })); messages[149] = message(150);
+  const f = discoveryFixture(messages, { cursor: 250, pending: [150] }); f.host.deliverDiscovered = vi.fn();
+  const read = f.read.getMockImplementation()!;
+  f.read.mockImplementation(async (...args) => {
+    const page = await read(...args); if (args[0] !== 149) return page;
+    if (fault === 'missing') return { ...page, messages: [] };
+    if (fault === 'removed') return { ...page, members: page.members.map(m => ({ ...m, removed: m.id === peer })) };
+    return { ...page, messages: page.messages.map(m => ({ ...m, ...(fault === 'recipient' ? { to: stranger } : fault === 'sender' ? { memberId: me } : { seq: 151 }) })) };
+  });
+  await f.listener.poll(); expect(f.listener.error).toBe('DISCOVERY_MESSAGE_MISMATCH'); expect(f.listener.state).toBe('paused');
+  expect(f.host.deliverDiscovered).not.toHaveBeenCalled(); expect(f.listener.discoveryState.pending).toEqual([150]);
+});
+it.each(['pause', 'busy'])('does not dispatch after %s during a targeted discovery fetch', async action => {
+  const messages = Array.from({ length: 250 }, (_, i) => message(i + 1, { to: i + 1 === 150 ? me : '' }));
+  const f = discoveryFixture(messages, { cursor: 250, pending: [150] }); f.host.deliverDiscovered = vi.fn();
+  const read = f.read.getMockImplementation()!; let resolve!: (page: Snapshot) => void;
+  f.read.mockImplementation((...args) => args[0] === 149 ? new Promise(yes => { resolve = yes; }) : read(...args));
+  const polling = f.listener.poll(); await vi.waitFor(() => expect(f.read).toHaveBeenCalledWith(149, expect.any(AbortSignal), 1));
+  if (action === 'pause') f.listener.pause(); else vi.mocked(f.host.isIdle).mockReturnValue(false);
+  resolve(await read(149)); await polling;
+  expect(f.host.deliverDiscovered).not.toHaveBeenCalled(); expect(f.listener.discoveryState.pending).toEqual([150]);
+  expect(f.listener.state).toBe(action === 'pause' ? 'paused' : 'waiting-for-idle');
+});
+it.each([{ cursor: 5, pending: [], received: null }, { cursor: 5, pending: [], received: [0] },
+  { cursor: 5, pending: [], received: [6] }, { cursor: 5, pending: [], received: [1, 1] },
+  { cursor: 5, pending: [], received: [2, 1] }, { cursor: 5, pending: [1], received: [1] },
+  { cursor: 200, pending: [101], received: Array.from({ length: 100 }, (_, i) => i + 1) }])('rejects invalid sparse receipts: %j', value => {
+  expect(() => parseDiscoveryState(value)).toThrow('INVALID_DISCOVERY_STATE');
+});
+it('requires durable discovery checkpoints before enabling page-out delivery', () => {
+  const f = fixture(); expect(() => new RoomListener(f.client, { ...f.host, deliverDiscovered: vi.fn() }, 0)).toThrow('DISCOVERY_CHECKPOINT_REQUIRED');
+});
+it.each([null, {}, { cursor: -1, pending: [] }, { cursor: 1.5, pending: [] }, { cursor: 5, pending: [0] },
+  { cursor: 5, pending: [6] }, { cursor: 5, pending: [2, 1] }, { cursor: 5, pending: [1, 1] },
+  { cursor: 200, pending: Array.from({ length: 101 }, (_, i) => i + 1) }])('rejects malformed restored discovery state: %j', value => {
+  expect(() => parseDiscoveryState(value)).toThrow('INVALID_DISCOVERY_STATE');
+});
 it('retains host-delivered messages until explicit consumption without rewinding delivery', async () => {
   const f = fixture([message(1), message(2)]); await f.listener.poll(); f.listener.acknowledge(2);
   expect(f.listener.cursor).toBe(2); expect(f.listener.delivered).toBe(2);

@@ -111,9 +111,10 @@ export class RoomClient {
     try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
     catch { throw new RoomError('INVALID_ROOM_RESPONSE'); }
   }
-  async read(after: number, signal?: AbortSignal): Promise<Snapshot> {
+  async read(after: number, signal?: AbortSignal, limit?: number): Promise<Snapshot> {
     if (!integer(after, 0)) throw new RoomError('INVALID_CURSOR');
-    const value = await this.post({ op: 'read', after }, signal);
+    if (limit !== undefined && !integer(limit, 1, 100)) throw new RoomError('INVALID_LIMIT');
+    const value = await this.post({ op: 'read', after, ...(limit !== undefined ? { limit } : {}) }, signal);
     const snapshot = parseSnapshot(value, this.membership, after);
     // Presence is returned by relays that support ack; old read/send relays keep working.
     this.supportsPresence = object(value) && object(value.presence);
