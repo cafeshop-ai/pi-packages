@@ -28,7 +28,8 @@
 命令分工：
 
 - `listen`：后台连接器。长轮询读取（`after=fetched`，`wait=25`，服务端支持 `rev` 时带上 `since=<上次看到的 rev>`），每次长轮询之后上报一次心跳（约 25 秒一次，不调用模型），把收件箱、事件日志和游标在**同一事务**里写盘，然后输出新事件。加 `--quiet` 时只负责连接和写事件，不输出。
-- `tail`：只输出事件日志里还没输出过的事件，然后记录位置。用于“连接器常驻、输出端经常重启”的宿主，例如 Monitor 每 30 分钟到期后重新挂接。
+- `tail`：只输出事件日志里还没输出过的事件，然后记录位置。它适合 stdout 直接交给模型的宿主（输出即送达）；读取输出再转交的程序要用 `deliver`，否则程序在转交前崩溃会漏掉这一批。用于“连接器常驻、输出端经常重启”的宿主，例如 Monitor 每 30 分钟到期后重新挂接。
+- `deliver --as <消费方> --handler <可信程序> [--follow]`：交给程序消费方（例如把事件排进宿主队列的适配器）。每批最多 20 个事件，先写成 0600 的批次文件，并在运行处理程序之前记下这次交付；处理程序以批次文件路径为唯一参数，最后一行输出 `{"batch":"<from>-<through>","accepted":true|false}`。只有点名这一批的 `accepted:true` 才推进该消费方和 `delivered`；`accepted:false` 表示没有入队，稍后重发；崩溃、超时、没有回执或回执点名别的批次，一律算 **unknown**，之后拒绝再交付，直到运行 `deliver-resolve --as <消费方> --accepted`（核对过宿主已收到）或 `--resend`（核对过没收到）。
 - `next`、`done`、`skip`、`done --through <seq>`：按需取出并确认消息。
 - `board`、`show <seq>`、`state show`、`goal read`：按需读取，不推送。
 
@@ -83,7 +84,7 @@
 |---|---|
 | Claude Code | 用 Monitor 运行 `space-agent --home <dir> listen`；或常驻 `listen --quiet`，再用 Monitor 运行 `tail`。Monitor 到期后重新挂接即可，按事件号续读 |
 | Pi | cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
-| Codex | `listen --quiet` 加适配器读取 `tail --json`：每批写一个 0600 批次文件，只把文件指针排入宿主队列；队列回执推进 `delivered`，模型处理或明确跳过后才推进 `consumed` |
+| Codex | `listen --quiet` 加 `deliver --as codex --handler <队列脚本> --follow`：队列脚本只把批次文件指针排入宿主队列，入队成功后输出 `accepted:true` 回执；模型处理或明确跳过后再用 `done --through` 推进 `consumed` |
 | 其他 | 按下面的通用兜底 |
 
 ### 通用兜底
@@ -106,7 +107,7 @@
 已有监听器的成员切换时：
 
 1. 先核对成员身份：用原来的凭据，不重新 join。
-2. 把旧监听器的游标对齐到新 home：`fetched` 和 `consumed` 取旧值；不要用最新 cursor 清空积压。
+2. 把旧监听器的游标对齐到新 home：`fetched` 和 `consumed` 都取**确实已经处理过的**位置。旧监听器只记录了“取到”或“送达”的，不能把它们当成 `consumed`；在这之后的消息由 `listen` 重新取回，按积压规则送达。不要用最新 cursor 清空积压。
 3. 停掉旧监听器，再启动 `listen`，保证同一时刻只有一个写者。
 4. 核对 presence 心跳恢复、`hello` 摘要正确，然后退役旧脚本。
 

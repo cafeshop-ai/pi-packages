@@ -18,6 +18,11 @@
 //   space-agent --home <dir> tail [--json] [--as name] [--follow]
 //                                                      print events written since this consumer last printed;
 //                                                      --follow keeps printing new ones (for a monitor beside listen --quiet)
+//   space-agent --home <dir> deliver --as name --handler /trusted/executable [--follow]
+//                                                      hand events to a program consumer (a queue) in batch files; only
+//                                                      its receipt advances that consumer and delivered (docs/LISTENER.md)
+//   space-agent --home <dir> deliver-resolve --as name --accepted|--resend
+//                                                      after checking the host, settle a batch whose result is unknown
 //   space-agent --home <dir> board | show <seq>        the open tasks in short; one message in full
 //   space-agent --home <dir> done --through <seq>      confirm every message up to seq after handling a batch
 //   space-agent --home <dir> watch                     (older) sync forever; prints every unconsumed message once per run,
@@ -277,6 +282,42 @@ async function tail(home, name, json) {
   await transact(home, s => { s.tailed = { ...(s.tailed ?? {}), [name]: Math.max(s.tailed?.[name] ?? 0, list.at(-1).id) }; if (top > (s.delivered ?? 0)) s.delivered = top; });
   return list.length;
 }
+// --- program consumers: a batch is confirmed only by the consumer's receipt ----------------
+// tail commits once it has printed, which is right when stdout itself is the host (a monitor).
+// A program that queues events for a model may crash after reading them, so deliver writes each
+// batch to a private file, records the hand-off before running the handler, and advances the
+// consumer and delivered only on a receipt that names the batch. A crash, a timeout or a missing
+// receipt leaves the batch unknown: it is never sent again until deliver-resolve is run.
+const deliverBatch = 20;
+async function deliverOnce(home, name, handler) {
+  const m = member(home); const state = loadState(home);
+  const open = state.handoffs?.[name];
+  if (open) throw new Fail(`batch ${open.from}–${open.through} for ${name} has no receipt; check the host, then run: deliver-resolve --as ${name} --accepted|--resend`, 2);
+  const list = outbox(home).filter(e => e.id > (state.tailed?.[name] ?? 0)).slice(0, deliverBatch);
+  if (!list.length) return 'idle';
+  const from = list[0].id, through = list.at(-1).id, batch = `${from}-${through}`;
+  const directory = privateHome(join(home, 'batches')); const file = join(directory, `${name}-${batch}.json`);
+  const names = state.seen?.names ?? {};
+  writePrivate(file, JSON.stringify({ protocol: 'cafe-space-listener-batch-v1', consumer: name, batch, events: list.map(e => ({ ...e, line: formatEvent(e, names, m.memberId) })) }));
+  await transact(home, s => { s.handoffs = { ...(s.handoffs ?? {}), [name]: { from, through, batch, file, at: new Date().toISOString() } }; });
+  const receipt = await new Promise(resolve => execFile(handler, [file], { timeout: 30_000, maxBuffer: 4096, killSignal: 'SIGKILL', env: { PATH: process.env.PATH ?? '' } },
+    (error, stdout) => { if (error) return resolve(null); try { resolve(JSON.parse(String(stdout).trim().split('\n').at(-1))); } catch { resolve(null); } }));
+  const result = receipt?.batch !== batch ? 'unknown' : receipt.accepted === true ? 'accepted' : receipt.accepted === false ? 'rejected' : 'unknown';
+  await transact(home, s => {
+    if (result === 'unknown') return;
+    const rest = { ...(s.handoffs ?? {}) }; delete rest[name]; s.handoffs = rest;
+    if (result === 'accepted') confirmBatch(s, name, through, list);
+  });
+  if (result !== 'unknown') unlinkSync(file);
+  return result;
+}
+/** The consumer's position moves to the batch end, and delivered to the newest message in it. */
+function confirmBatch(state, name, through, list) {
+  state.tailed = { ...(state.tailed ?? {}), [name]: Math.max(state.tailed?.[name] ?? 0, through) };
+  const top = Math.max(0, ...list.filter(e => e.type === 'msg').map(e => e.seq));
+  if (top > (state.delivered ?? 0)) state.delivered = top;
+}
+
 /** The unified listener: one per home, events written before they are printed, resumable by event id. */
 async function listen(home, { quiet, json, name }) {
   const m = member(home);
@@ -443,9 +484,9 @@ async function main(argv) {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
     'text-file': { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
-    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, quiet: { type: 'boolean' }, json: { type: 'boolean' }, follow: { type: 'boolean' }, as: { type: 'string' }, through: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
+    assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, quiet: { type: 'boolean' }, json: { type: 'boolean' }, follow: { type: 'boolean' }, accepted: { type: 'boolean' }, resend: { type: 'boolean' }, as: { type: 'string' }, through: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
-  if (values.handler && command !== 'watch') throw new Fail('--handler is only valid with watch');
+  if (values.handler && command !== 'watch' && command !== 'deliver') throw new Fail('--handler is only valid with watch or deliver');
   if (command === 'preview' || command === 'join') {
     const invite = parseInvite(stdin());
     if (command === 'preview') {
@@ -488,6 +529,30 @@ async function main(argv) {
     if (result.status !== 200) throw failed(result); return print(result.json);
   }
   if (command === 'listen') return listen(home, { quiet: !!values.quiet, json: !!values.json, name: values.as ?? 'stream' });
+  if (command === 'deliver') {
+    if (!values.as || !values.handler) throw new Fail('deliver needs --as <consumer> and --handler <trusted executable>');
+    checkHandler(values.handler);
+    for (let rejected = 0; ;) {
+      const result = await deliverOnce(home, values.as, values.handler);
+      if (result === 'unknown') throw new Fail(`a batch for ${values.as} has no receipt; check the host, then run deliver-resolve --as ${values.as} --accepted|--resend`, 2);
+      if (result === 'rejected') { rejected++; await sleep(Math.min(30_000, 2000 * 2 ** (rejected - 1))); continue; }
+      rejected = 0;
+      if (result === 'idle') { if (!values.follow) return; await sleep(1000); }
+    }
+  }
+  if (command === 'deliver-resolve') {
+    if (!values.as || values.accepted === values.resend) throw new Fail('deliver-resolve needs --as <consumer> and exactly one of --accepted or --resend');
+    const name = values.as;
+    const settled = await transact(home, state => {
+      const open = state.handoffs?.[name]; if (!open) throw new Fail(`no unknown batch for ${name}`);
+      const rest = { ...state.handoffs }; delete rest[name]; state.handoffs = rest;
+      // --accepted: the host has the batch, so confirm it as a receipt would. --resend: it does not; offer it again.
+      if (values.accepted) confirmBatch(state, name, open.through, outbox(home).filter(e => e.id >= open.from && e.id <= open.through));
+      return open;
+    });
+    try { unlinkSync(settled.file); } catch {}
+    return print({ consumer: name, batch: settled.batch, settled: values.accepted ? 'accepted' : 'resend' });
+  }
   if (command === 'tail') {
     const name = values.as ?? 'stream', json = !!values.json;
     if (!values.follow) { await tail(home, name, json); return; }

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createNet } from 'node:net';
@@ -226,6 +226,45 @@ test('listen --quiet keeps the connection; tail prints each event once per consu
   const followed = await running(h, ['tail', '--follow'], 2500, () => api({ op: 'send', roomId: owner.roomId, id: 'tail-message-0002', text: '跟随输出的新消息' }, owner.token));
   background.kill(); await new Promise(ok => background.once('exit', ok));
   assert.match(followed, /^\[msg #\d+ Owner\] 跟随输出的新消息$/m); assert.ok(!followed.includes('给 tail 的消息'), 'already printed events stay printed');
+});
+
+test('deliver: only a receipt naming the batch advances a program consumer; unknown batches are never resent blindly', { skip: !binary }, async () => {
+  const h = home('deliver'); assert.equal(agent(h, ['join', '--name', 'Queue agent', '--backlog', '0'], link).code, 0);
+  // Trusted handlers chosen by the local user: each reads the batch file and prints one receipt line.
+  const tools = join(dir, 'handlers'); mkdirSync(tools, { mode: 0o700, recursive: true });
+  const handler = (name, body) => { const path = join(tools, name); writeFileSync(path, `#!/usr/bin/env node\nconst fs = require('fs'); const b = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));\nfs.appendFileSync(${JSON.stringify(join(tools, 'calls.log'))}, ${JSON.stringify(name)} + ' ' + b.batch + '\\n');\n${body}\n`, { mode: 0o700 }); return path; };
+  const accept = handler('accept.cjs', "console.log(JSON.stringify({ batch: b.batch, accepted: true }));");
+  const crash = handler('crash.cjs', 'process.exit(1);');
+  const wrong = handler('wrong.cjs', "console.log(JSON.stringify({ batch: '0-0', accepted: true }));");
+  const flaky = handler('flaky.cjs', `const seen = fs.existsSync(${JSON.stringify(join(tools, 'once'))}); fs.writeFileSync(${JSON.stringify(join(tools, 'once'))}, ''); console.log(JSON.stringify({ batch: b.batch, accepted: seen }));`);
+  const calls = () => existsSync(join(tools, 'calls.log')) ? readFileSync(join(tools, 'calls.log'), 'utf8').trim().split('\n') : [];
+  const sent = await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0001', text: '交给队列的消息' }, owner.token);
+  await running(h, ['listen', '--quiet'], 300);
+  const state = () => JSON.parse(readFileSync(join(h, 'state.json'), 'utf8'));
+  // A crash leaves the batch unknown; the next deliver refuses without calling any handler.
+  const crashed = agent(h, ['deliver', '--as', 'queue', '--handler', crash]); assert.equal(crashed.code, 2); assert.match(crashed.err, /no receipt/);
+  assert.ok(state().handoffs.queue && !state().tailed?.queue, 'nothing is confirmed after a crash');
+  const before = calls().length; assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', accept]).code, 2); assert.equal(calls().length, before, 'an unknown batch is never handed out again');
+  // After checking the host: resend, and an accepted receipt confirms the consumer and delivered.
+  assert.equal(agent(h, ['deliver-resolve', '--as', 'queue', '--resend']).json().settled, 'resend');
+  assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', accept]).code, 0);
+  assert.ok(state().tailed.queue > 0 && state().delivered >= sent.seq && !state().handoffs.queue);
+  assert.deepEqual(readdirSync(join(h, 'batches')), [], 'a confirmed batch file is removed');
+  // An explicit refusal means nothing was queued: it is offered again after a pause, then accepted.
+  await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0002', text: '第二条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const mark = state().tailed.queue;
+  assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', flaky]).code, 0);
+  assert.equal(calls().filter(c => c.startsWith('flaky')).length, 2); assert.ok(state().tailed.queue > mark);
+  // A receipt for another batch is not a receipt: unknown, then settled as accepted after checking.
+  await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0003', text: '第三条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', wrong]).code, 2);
+  const open = state().handoffs.queue; const batchFile = JSON.parse(readFileSync(open.file, 'utf8'));
+  assert.ok(batchFile.events.some(e => e.type === 'msg' && e.text === '第三条' && e.line.includes('第三条')), 'the batch carries events and their lines, no credentials');
+  assert.equal(statSync(open.file).mode & 0o777, 0o600); assert.ok(!readFileSync(open.file, 'utf8').includes(JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).token));
+  assert.equal(agent(h, ['deliver-resolve', '--as', 'queue', '--accepted']).json().settled, 'accepted');
+  assert.equal(state().tailed.queue, open.through); assert.ok(!existsSync(open.file));
+  // The stream consumer is separate: tail still prints everything it has not printed.
+  assert.match(agent(h, ['tail', '--as', 'monitor']).out, /第三条/);
 });
 
 test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
