@@ -278,6 +278,17 @@ test('deliver: only a receipt naming the batch advances a program consumer; unkn
   assert.match(agent(h, ['tail', '--as', 'monitor']).out, /第三条/);
 });
 
+test('listen survives a lock left by a dead process: it says so and keeps running until unlocked', { skip: !binary }, async () => {
+  const h = home('stale-lock'); assert.equal(agent(h, ['join', '--name', 'Stale lock', '--backlog', '0'], link).code, 0);
+  const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }); const pid = Number(dead.stdout.trim());
+  writeFileSync(join(h, 'state.lock'), `${pid} stale\n`, { mode: 0o600 });
+  const child = spawn(process.execPath, [client, '--home', h, 'listen', '--quiet'], { stdio: ['ignore', 'pipe', 'pipe'] }); let err = '';
+  child.stderr.on('data', b => err += b); await sleep(1500);
+  assert.equal(child.exitCode, null, 'listen keeps running instead of exiting'); assert.match(err, /ended while holding[\s\S]*unlock/);
+  child.kill(); await new Promise(ok => child.once('exit', ok)); outputs.push(err);
+  assert.equal(agent(h, ['unlock']).json().unlocked, true);
+});
+
 test('watch replays the unconsumed backlog after a restart, and never what was confirmed', { skip: !binary }, async () => {
   const h = home('replay'); assert.equal(agent(h, ['join', '--name', 'Replay agent'], link).code, 0);
   const backlog = await api({ op: 'send', roomId: owner.roomId, id: 'replay-message-1', text: '重启前未处理' }, owner.token);
