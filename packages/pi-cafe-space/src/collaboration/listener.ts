@@ -2,6 +2,7 @@ import { RoomClient, RoomError, type Message, type Snapshot } from './client.js'
 import { maxBatchMessages } from '../../scripts/listener-events.mjs';
 import { captureControls, controlReceipt, newControlState, sameControls, type ControlBatch, type ControlState } from './controls.js';
 
+export interface BacklogSummary { from: number; through: number; count: number; at: number }
 export interface ListenerHost {
   isIdle(): boolean;
   deliver(messages: readonly Message[], backlog?: boolean): void;
@@ -22,7 +23,8 @@ export class RoomListener {
   private dispatchedAt = 0;
   private summaryPending = false;
   private controlPending: number | undefined;
-  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0, private backlogThrough = 0, private controls = newControlState(), private unconsumedDelivered: number[] = []) {
+  private readonly restoredAt = Date.now();
+  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0, private backlogThrough = 0, private controls = newControlState(), private unconsumedDelivered: number[] = [], private lastSummary?: BacklogSummary) {
     if (unconsumedDelivered.some((seq, i) => !Number.isSafeInteger(seq) || seq < 1 || seq > cursor || (i > 0 && seq <= unconsumedDelivered[i - 1]!))) throw new RoomError('INVALID_CURSOR');
     if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor || !Number.isSafeInteger(backlogThrough) || backlogThrough < 0) throw new RoomError('INVALID_CURSOR');
     if (!!host.deliverControls !== !!host.checkpointControls) throw new RoomError('CONTROL_CHECKPOINT_REQUIRED');
@@ -47,6 +49,9 @@ export class RoomListener {
     if (!this.controls.goalDelivered.includes(revision)) throw new RoomError('DELIVERED_GOAL_REQUIRED');
     this.saveControls({ ...this.controls, goalConsumed: Math.max(this.controls.goalConsumed, revision) });
   }
+  get dispatchedSummary(): BacklogSummary | undefined {
+    return this.summaryPending ? { from: this.queued[0]!.seq, through: this.queued.at(-1)!.seq, count: this.queued.length, at: this.dispatchedAt } : undefined;
+  }
   get delivered(): number { return this.deliveredCursor; }
   get pendingConsumptionBatch(): readonly number[] { return [...this.unconsumedDelivered.slice(0, maxBatchMessages), ...this.undispatchedBatch.map(m => m.seq)].slice(0, maxBatchMessages); }
   get pending(): Message | undefined { return this.queued[0]; }
@@ -56,7 +61,10 @@ export class RoomListener {
   acknowledge(sequence: number) {
     if (!this.awaitingReceipt || this.controlPending !== undefined || this.queued.at(-1)?.seq !== sequence) return;
     // Only the host's actual message event acknowledges dispatch, never sendMessage() returning void.
-    if (this.summaryPending) this.backlogThrough = Math.max(this.backlogThrough, sequence);
+    if (this.summaryPending) {
+      this.lastSummary = this.dispatchedSummary;
+      this.backlogThrough = Math.max(this.backlogThrough, sequence);
+    }
     else {
       this.commit(sequence);
       this.deliveredCursor = Math.max(this.deliveredCursor, sequence);
@@ -127,7 +135,11 @@ export class RoomListener {
       }
       if (deliver && this.pending && !this.awaitingReceipt) {
         const backlog = this.queued.length > maxBatchMessages;
-        if (backlog && this.pending.seq <= this.backlogThrough) return 5000;
+        if (backlog && this.backlogThrough > 0) {
+          const prior = this.lastSummary;
+          if ((prior?.from === this.pending.seq && prior.through === this.queued.at(-1)!.seq && prior.count === this.queued.length) ||
+            Date.now() - (prior?.at ?? this.restoredAt) < 60000) return 5000;
+        }
         if (!this.host.isIdle()) { this.state = 'waiting-for-idle'; return 5000; }
         this.summaryPending = backlog;
         this.awaitingReceipt = true;

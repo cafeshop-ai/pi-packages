@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { RoomClient, RoomError, readMembership, type Message } from './client.js';
-import { RoomListener } from './listener.js';
+import { RoomListener, type BacklogSummary } from './listener.js';
 import { controlReceipt, newControlState, sameControls, type ControlBatch, type ControlState } from './controls.js';
 import { formatEvent, maxBatchMessages } from '../../scripts/listener-events.mjs';
 import { registerCafeRoute } from './commands.js';
@@ -26,6 +26,12 @@ const receiptMessages = (details: Record<string, unknown>): ReceiptMessage[] | u
 };
 const sameBatch = (messages: ReceiptMessage[], expected?: ReceiptMessage[]) => !!expected && expected.length === messages.length &&
   messages.every((m, i) => m.seq === expected[i]!.seq && m.senderId === expected[i]!.senderId);
+
+const storedSummary = (value: unknown, through: number): BacklogSummary | undefined => {
+  if (!record(value) || !sequence(value.from) || value.from < 1 || value.through !== through || !sequence(value.count) ||
+    value.count <= maxBatchMessages || value.count > through - value.from + 1 || !sequence(value.at)) return;
+  return { from: value.from, through, count: value.count, at: Math.min(value.at, Date.now()) };
+};
 
 /** Explicit opt-in entry point: never imports or starts the computer-room gateway. */
 // shortcut: one live session per membership; add a cross-process lease before shared-token use.
@@ -111,6 +117,8 @@ export default function collaborationExtension(pi: ExtensionAPI) {
         const client = new RoomClient(auth);
         let cursor: number | undefined;
         let hostDelivered = 0, backlogThrough = 0;
+        let lastSummary: BacklogSummary | undefined;
+        const summaries = new Map<string, BacklogSummary>();
         let controls = newControlState();
         const controlAttempts = new Map<string, ControlBatch>();
         const backlogAttempts = new Set<string>();
@@ -134,14 +142,20 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             if (entry.data.kind === 'dispatch' && sequence(entry.data.seq) && typeof entry.data.attempt === 'string') {
               attempts.set(entry.data.attempt, entry.data.seq);
               if (record(entry.data.control)) controlAttempts.set(entry.data.attempt, entry.data.control as unknown as ControlBatch);
-              if (entry.data.backlog === true) backlogAttempts.add(entry.data.attempt);
+              if (entry.data.backlog === true) {
+                backlogAttempts.add(entry.data.attempt);
+                const summary = storedSummary(entry.data.summary, entry.data.seq);
+                if (summary) summaries.set(entry.data.attempt, summary);
+              }
               if (entry.data.messages !== undefined) batches.set(entry.data.attempt, receiptMessages(entry.data));
             }
             if (entry.data.kind === 'resolution' && sequence(entry.data.seq) && typeof entry.data.attempt === 'string' && ['retry', 'skip'].includes(String(entry.data.decision))) {
               resolved.add(entry.data.attempt);
               if (entry.data.decision === 'skip') {
                 if (controlAttempts.has(entry.data.attempt)) controls = controlReceipt(controls, controlAttempts.get(entry.data.attempt)!, true);
-                else if (backlogAttempts.has(entry.data.attempt)) backlogThrough = Math.max(backlogThrough, entry.data.seq);
+                else if (backlogAttempts.has(entry.data.attempt)) {
+                  backlogThrough = Math.max(backlogThrough, entry.data.seq); lastSummary = summaries.get(entry.data.attempt);
+                }
                 else cursor = Math.max(cursor ?? 0, entry.data.seq);
               }
             }
@@ -160,7 +174,11 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             if (!messages || (typeof entry.details.attempt === 'string' && batches.has(entry.details.attempt) &&
               (!sameBatch(messages, batches.get(entry.details.attempt)) || backlogAttempts.has(entry.details.attempt) !== (entry.details.backlog === true)))) continue;
             const last = messages.at(-1)!;
-            if (entry.details.backlog === true) backlogThrough = Math.max(backlogThrough, last.seq);
+            if (entry.details.backlog === true && typeof entry.details.attempt === 'string' && (receipts.has(entry.details.attempt) || resolved.has(entry.details.attempt))) continue;
+            if (entry.details.backlog === true) {
+              backlogThrough = Math.max(backlogThrough, last.seq);
+              lastSummary = summaries.get(String(entry.details.attempt)) ?? storedSummary(entry.details.summary, last.seq);
+            }
             else {
               cursor = Math.max(cursor ?? 0, last.seq);
               for (const message of messages) delivered.set(message.seq, message.senderId);
@@ -206,16 +224,17 @@ export default function collaborationExtension(pi: ExtensionAPI) {
             const introduction = !introductionSent, last = messages.at(-1)!;
             const lines = backlog ? [formatEvent({ type: 'backlog', from: messages[0]!.seq, to: last.seq, count: messages.length })] : messages.map(message => formatEvent({ type: 'msg', seq: message.seq, from: message.memberId,
               ...(message.to ? { to: message.to } : {}), ...(message.replyTo ? { replyTo: message.replyTo } : {}), text: message.text }, next.names, auth.memberId));
+            const summary = next.dispatchedSummary;
             activeBacklog = backlog; activeControls = undefined;
             activeBatch = (backlog ? [last] : messages).map(m => ({ seq: m.seq, senderId: m.memberId }));
-            pi.appendEntry(stateType, { kind: 'dispatch', scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, attempt: activeAttempt });
+            pi.appendEntry(stateType, { kind: 'dispatch', scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(summary ? { summary } : {}), attempt: activeAttempt });
             automaticTurns++;
             pi.sendMessage({ customType: eventType, display: true,
               content: `${introduction ? deliveryIntroduction + '\n\n' : ''}${lines.join('\n')}`,
-              details: { scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, attempt: activeAttempt, introduction },
+              details: { scope: newScope, seq: last.seq, senderId: last.memberId, messages: activeBatch, backlog, ...(summary ? { summary } : {}), attempt: activeAttempt, introduction },
             }, { triggerTurn: true, deliverAs: 'followUp' });
           },
-        }, cursor, hostDelivered, backlogThrough, controls, [...delivered.keys()].filter(seq => seq <= cursor! && !consumed.has(seq)).sort((a, b) => a - b));
+        }, cursor, hostDelivered, backlogThrough, controls, [...delivered.keys()].filter(seq => seq <= cursor! && !consumed.has(seq)).sort((a, b) => a - b), lastSummary);
         next.captureControls(snapshot);
         listener = next;
         let lastState = next.state;
