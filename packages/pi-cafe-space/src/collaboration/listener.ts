@@ -1,10 +1,13 @@
-import { RoomClient, RoomError, type Message } from './client.js';
+import { RoomClient, RoomError, type Message, type Snapshot } from './client.js';
 import { maxBatchMessages } from '../../scripts/listener-events.mjs';
+import { captureControls, controlReceipt, newControlState, sameControls, type ControlBatch, type ControlState } from './controls.js';
 
 export interface ListenerHost {
   isIdle(): boolean;
   deliver(messages: readonly Message[], backlog?: boolean): void;
   checkpoint(cursor: number, consumed?: boolean, messages?: readonly number[]): void;
+  deliverControls?(batch: ControlBatch): void;
+  checkpointControls?(state: ControlState): void;
 }
 /** Receipt means Pi stored the external message, not that a model read it or completed work. */
 export class RoomListener {
@@ -18,16 +21,37 @@ export class RoomListener {
   private awaitingReceipt = false;
   private dispatchedAt = 0;
   private summaryPending = false;
-  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0, private backlogThrough = 0) {
+  private controlPending: number | undefined;
+  constructor(readonly client: RoomClient, private readonly host: ListenerHost, cursor: number, private deliveredCursor = 0, private backlogThrough = 0, private controls = newControlState()) {
     if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(deliveredCursor) || deliveredCursor < 0 || deliveredCursor > cursor || !Number.isSafeInteger(backlogThrough) || backlogThrough < 0) throw new RoomError('INVALID_CURSOR');
+    if (!!host.deliverControls !== !!host.checkpointControls) throw new RoomError('CONTROL_CHECKPOINT_REQUIRED');
     this.cursor = cursor;
+  }
+  get controlState(): ControlState { return structuredClone(this.controls); }
+  captureControls(page: Snapshot) {
+    if (this.host.deliverControls) this.saveControls(captureControls(this.controls, page, this.client.membership.memberId));
+  }
+  private saveControls(next: ControlState) {
+    if (sameControls(next, this.controls)) return;
+    try { this.host.checkpointControls?.(next); this.controls = next; }
+    catch { this.error = 'CHECKPOINT_FAILED'; this.pause(); throw new RoomError('CHECKPOINT_FAILED'); }
+  }
+  acknowledgeControls(batch: ControlBatch) {
+    if (this.controlPending !== batch.id) return;
+    this.saveControls(controlReceipt(this.controls, batch));
+    this.controlPending = undefined; this.awaitingReceipt = false;
+    if (this.state !== 'paused') this.state = 'listening';
+  }
+  consumeGoal(revision: number) {
+    if (!this.controls.goalDelivered.includes(revision)) throw new RoomError('DELIVERED_GOAL_REQUIRED');
+    this.saveControls({ ...this.controls, goalConsumed: Math.max(this.controls.goalConsumed, revision) });
   }
   get pending(): Message | undefined { return this.queued[0]; }
   get undispatched(): Message | undefined { return this.undispatchedBatch[0]; }
   get undispatchedBatch(): readonly Message[] { return this.awaitingReceipt ? [] : this.queued.slice(0, maxBatchMessages); }
   pause() { this.state = 'paused'; this.abort.abort(); }
   acknowledge(sequence: number) {
-    if (!this.awaitingReceipt || this.queued.at(-1)?.seq !== sequence) return;
+    if (!this.awaitingReceipt || this.controlPending !== undefined || this.queued.at(-1)?.seq !== sequence) return;
     // Only the host's actual message event acknowledges dispatch, never sendMessage() returning void.
     if (this.summaryPending) this.backlogThrough = Math.max(this.backlogThrough, sequence);
     else {
@@ -79,12 +103,22 @@ export class RoomListener {
           else if (!this.queued.length) this.commit(message.seq);
         }
       }
+      this.captureControls(snapshot);
       this.error = undefined;
       // Only the running background listener advertises presence, never a manual read or a reply.
       if (deliver && this.client.supportsPresence) await this.client.ack({ fetched: snapshot.cursor, delivered: this.deliveredCursor, paused: snapshot.aiPaused === true }, this.abort.signal);
       if (this.abort.signal.aborted) return 5000;
       if (snapshot.aiPaused) { this.state = 'room-paused'; return 5000; }
       if (!this.awaitingReceipt) this.state = 'listening';
+      const controls = this.controls.pending[0];
+      if (deliver && controls && !this.awaitingReceipt && this.host.deliverControls) {
+        if (!this.host.isIdle()) { this.state = 'waiting-for-idle'; return 5000; }
+        this.controlPending = controls.id; this.awaitingReceipt = true;
+        this.state = 'awaiting-host-receipt'; this.dispatchedAt = Date.now();
+        try { this.host.deliverControls(structuredClone(controls)); }
+        catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
+        return 5000;
+      }
       if (deliver && this.pending && !this.awaitingReceipt) {
         const backlog = this.queued.length > maxBatchMessages;
         if (backlog && this.pending.seq <= this.backlogThrough) return 5000;
