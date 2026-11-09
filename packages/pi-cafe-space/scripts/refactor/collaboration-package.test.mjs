@@ -12,6 +12,13 @@ test('release allowlist includes the independent room bridge without source, tes
  assert(files.includes('scripts/space-agent.mjs'), 'the universal client must be available in the installed package');
  assert(files.includes('scripts/collaboration-goal.mjs'), 'the universal client must include its Goal dependency');
 });
+test('the bridge shared script imports exist in the release allowlist', async () => {
+ const files = releaseFiles(['windows-amd64']);
+ const client = await readFile(new URL('../../src/collaboration/client.ts', import.meta.url), 'utf8');
+ const scripts = [...client.matchAll(/from ['"]\.\.\/\.\.\/(scripts\/[^'"]+\.mjs)['"]/g)].map(match => match[1]);
+ assert(scripts.includes('scripts/collaboration-goal.mjs'));
+ for (const script of scripts) { assert(files.includes(script), script); await readFile(new URL('../../' + script, import.meta.url)); }
+});
 test('release packages the managed ACP host and target enumerator without offline-test fixtures', () => {
  const files=releaseFiles(['windows-amd64']);
  const runtime=files.filter(file=>file.startsWith('scripts/acp/'));

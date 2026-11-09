@@ -1,10 +1,16 @@
 import { isAbsolute } from 'node:path';
 import { readPrivateJSON } from '../extension/private-json.js';
+import { goalState, type Goal } from '../../scripts/collaboration-goal.mjs';
 
 export interface Membership { origin: string; roomId: string; memberId: string; token: string }
 export interface Member { id: string; name: string; kind: 'human' | 'ai'; removed: boolean }
-export interface Message { seq: number; id: string; memberId: string; text: string; to: string; replyTo: number }
-export interface Snapshot { roomId: string; memberId: string; cursor: number; more: boolean; members: Member[]; messages: Message[]; aiPaused?: boolean }
+export interface Message { seq: number; id: string; memberId: string; text: string; to: string; replyTo: number; at?: string }
+export interface Task { id: number; title: string; status: 'todo' | 'doing' | 'done'; assignee?: string; result?: number; goalId?: number }
+export interface MemberState { state: 'working' | 'waiting' | 'idle' | 'away'; waitingFor?: 'member' | 'review' | 'user' | 'external' | 'decision'; detail?: string; ref?: number; since: string; updatedAt: string }
+export interface Snapshot {
+  roomId: string; memberId: string; cursor: number; more: boolean; members: Member[]; messages: Message[]; aiPaused?: boolean;
+  title?: string; tasks?: Task[]; goal?: Goal | null; goalRevision?: number; states?: Record<string, MemberState>; waitingOnYou?: string[]; rev?: number;
+}
 const id = /^[a-f0-9]{32}$/;
 const messageId = /^[a-zA-Z0-9_-]{8,80}$/;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -23,9 +29,10 @@ export function readMembership(path: string): Membership {
   if (typeof value.roomId !== 'string' || !id.test(value.roomId) || typeof value.memberId !== 'string' || !id.test(value.memberId) || typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new RoomError('INVALID_ROOM_CONFIG');
   return { origin, roomId: value.roomId, memberId: value.memberId, token: value.token };
 }
+const timestamp = (v: unknown): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v));
 export function parseMessage(value: unknown): Message {
-  if (!object(value) || !integer(value.seq, 1) || typeof value.id !== 'string' || !messageId.test(value.id) || typeof value.memberId !== 'string' || !id.test(value.memberId) || !text(value.text, 8000) || (value.to !== undefined && (typeof value.to !== 'string' || !id.test(value.to))) || (value.replyTo !== undefined && !integer(value.replyTo, 0, value.seq - 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
-  return { seq: value.seq, id: value.id, memberId: value.memberId, text: value.text, to: value.to as string ?? '', replyTo: value.replyTo as number ?? 0 };
+  if (!object(value) || !integer(value.seq, 1) || typeof value.id !== 'string' || !messageId.test(value.id) || typeof value.memberId !== 'string' || !id.test(value.memberId) || !text(value.text, 8000) || (value.to !== undefined && (typeof value.to !== 'string' || !id.test(value.to))) || (value.replyTo !== undefined && !integer(value.replyTo, 0, value.seq - 1)) || (value.at !== undefined && !timestamp(value.at))) throw new RoomError('INVALID_ROOM_RESPONSE');
+  return { seq: value.seq, id: value.id, memberId: value.memberId, text: value.text, to: value.to as string ?? '', replyTo: value.replyTo as number ?? 0, ...(value.at !== undefined ? { at: value.at as string } : {}) };
 }
 export function parseSnapshot(value: unknown, auth: Membership, after: number): Snapshot {
   if (!object(value) || value.roomId !== auth.roomId || value.memberId !== auth.memberId || !integer(value.cursor, after) || typeof value.more !== 'boolean' || !Array.isArray(value.members) || value.members.length > 64 || !Array.isArray(value.messages) || value.messages.length > 100) throw new RoomError('INVALID_ROOM_RESPONSE');
@@ -37,7 +44,47 @@ export function parseSnapshot(value: unknown, auth: Membership, after: number): 
   const messages = value.messages.map(parseMessage);
   if (messages.some((v, i) => v.seq !== after + i + 1 || !members.some(m => m.id === v.memberId)) || value.cursor !== after + messages.length || (value.more && messages.length === 0)) throw new RoomError('INVALID_ROOM_RESPONSE');
   if (value.aiPaused !== undefined && typeof value.aiPaused !== 'boolean') throw new RoomError('INVALID_ROOM_RESPONSE');
-  return { roomId: auth.roomId, memberId: auth.memberId, cursor: value.cursor, more: value.more, members, messages, aiPaused: value.aiPaused === true };
+  const controls: Partial<Snapshot> = {};
+  if (value.title !== undefined) {
+    if (!text(value.title, 80)) throw new RoomError('INVALID_ROOM_RESPONSE');
+    controls.title = value.title;
+  }
+  if (value.rev !== undefined) {
+    if (!integer(value.rev, 0)) throw new RoomError('INVALID_ROOM_RESPONSE');
+    controls.rev = value.rev;
+  }
+  try { Object.assign(controls, goalState(value)); }
+  catch { throw new RoomError('INVALID_ROOM_RESPONSE'); }
+  const memberId = (v: unknown): v is string => typeof v === 'string' && id.test(v) && members.some(m => m.id === v);
+  if (value.tasks !== undefined) {
+    if (!Array.isArray(value.tasks) || value.tasks.length > 200) throw new RoomError('INVALID_ROOM_RESPONSE');
+    controls.tasks = value.tasks.map(t => {
+      if (!object(t) || !integer(t.id, 1) || !text(t.title, 200) || typeof t.status !== 'string' || !['todo', 'doing', 'done'].includes(t.status) ||
+        (t.assignee !== undefined && !memberId(t.assignee)) || (t.result !== undefined && !integer(t.result, 1)) || (t.goalId !== undefined && !integer(t.goalId, 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
+      return { id: t.id, title: t.title, status: t.status as Task['status'], ...(t.assignee !== undefined ? { assignee: t.assignee as string } : {}),
+        ...(t.result !== undefined ? { result: t.result as number } : {}), ...(t.goalId !== undefined ? { goalId: t.goalId as number } : {}) };
+    });
+    if (new Set(controls.tasks.map(t => t.id)).size !== controls.tasks.length) throw new RoomError('INVALID_ROOM_RESPONSE');
+  }
+  if (value.states !== undefined) {
+    if (!object(value.states) || Object.keys(value.states).length > 64) throw new RoomError('INVALID_ROOM_RESPONSE');
+    controls.states = Object.fromEntries(Object.entries(value.states).map(([member, s]) => {
+      if (!memberId(member) || !object(s) || typeof s.state !== 'string' || !['working', 'waiting', 'idle', 'away'].includes(s.state) ||
+        !timestamp(s.since) || !timestamp(s.updatedAt) || (s.state === 'waiting') !== (s.waitingFor !== undefined) ||
+        (s.waitingFor !== undefined && (typeof s.waitingFor !== 'string' || !['member', 'review', 'user', 'external', 'decision'].includes(s.waitingFor))) ||
+        (s.detail !== undefined && !text(s.detail, 280)) || (s.state === 'waiting' && !text(s.detail, 280)) ||
+        (s.ref !== undefined && !integer(s.ref, 1))) throw new RoomError('INVALID_ROOM_RESPONSE');
+      return [member, { state: s.state as MemberState['state'], since: s.since, updatedAt: s.updatedAt,
+        ...(s.waitingFor !== undefined ? { waitingFor: s.waitingFor as NonNullable<MemberState['waitingFor']> } : {}),
+        ...(s.detail !== undefined ? { detail: s.detail as string } : {}), ...(s.ref !== undefined ? { ref: s.ref as number } : {}) }];
+    }));
+  }
+  if (value.waitingOnYou !== undefined) {
+    if (!Array.isArray(value.waitingOnYou) || value.waitingOnYou.length > 64 || !value.waitingOnYou.every(memberId) ||
+      value.waitingOnYou.includes(auth.memberId) || new Set(value.waitingOnYou).size !== value.waitingOnYou.length) throw new RoomError('INVALID_ROOM_RESPONSE');
+    controls.waitingOnYou = value.waitingOnYou;
+  }
+  return { ...controls, roomId: auth.roomId, memberId: auth.memberId, cursor: value.cursor, more: value.more, members, messages, aiPaused: value.aiPaused === true };
 }
 export class RoomClient {
   supportsPresence = false;

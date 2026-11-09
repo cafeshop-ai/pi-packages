@@ -1,12 +1,69 @@
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
-import { RoomClient, RoomError, parseMessage, readMembership, type Membership } from './client.js';
+import { RoomClient, RoomError, parseMessage, parseSnapshot, readMembership, type Membership } from './client.js';
+import { formatEvent, helloEvent, pageEvents } from '../../scripts/listener-events.mjs';
 const auth: Membership = { origin: 'https://space.example.test', roomId: 'a'.repeat(32), memberId: 'b'.repeat(32), token: 'c'.repeat(64) };
 const snapshot = { roomId: auth.roomId, memberId: auth.memberId, cursor: 0, more: false, members: [{ id: auth.memberId, name: 'Local AI', kind: 'ai' }], messages: [] };
 const directories: string[] = [];
+const now = '2026-11-09T05:00:00Z', peer = 'd'.repeat(32);
+const controls = {
+  ...snapshot, title: 'Room', rev: 12, aiPaused: true,
+  members: [...snapshot.members, { id: peer, name: 'Peer', kind: 'ai' }],
+  tasks: [{ id: 42, title: 'Task', status: 'doing', assignee: peer, goalId: 1, result: 99 }],
+  goalRevision: 2, goal: { id: 1, title: 'Goal', criteria: 'Verify', reviewer: auth.memberId, createdBy: peer, status: 'active', updatedAt: now },
+  waitingOnYou: [peer], states: { [peer]: { state: 'waiting', waitingFor: 'review', detail: 'Review task', ref: 99, since: now, updatedAt: now } },
+};
+
+it('retains validated control changes without a message cursor change or unknown fields', () => {
+  const result = parseSnapshot({ ...controls, token: auth.token, tasks: controls.tasks.map(t => ({ ...t, key: 'private' })) }, auth, 0);
+  expect(result).toMatchObject(controls);
+  expect(result.messages).toEqual([]); expect(result.cursor).toBe(0);
+  expect(JSON.stringify(result)).not.toContain(auth.token); expect(result.tasks?.[0]).not.toHaveProperty('key');
+  expect(parseSnapshot(snapshot, auth, 0)).not.toHaveProperty('goalRevision');
+  expect(parseSnapshot({ ...snapshot, goal: null, goalRevision: 3, rev: 0 }, auth, 0)).toMatchObject({ goal: null, goalRevision: 3, rev: 0 });
+});
+
+it.each([
+  { rev: -1 }, { rev: Number.MAX_SAFE_INTEGER + 1 }, { title: 'x'.repeat(81) },
+  { tasks: Array(201).fill(controls.tasks[0]) }, { tasks: [controls.tasks[0], controls.tasks[0]] },
+  { tasks: [{ ...controls.tasks[0], status: 'unknown' }] }, { tasks: [{ ...controls.tasks[0], status: ['doing'] }] },
+  { tasks: [{ ...controls.tasks[0], assignee: 'f'.repeat(32) }] },
+  { goalRevision: undefined }, { goal: null, goalRevision: -1 }, { goalRevision: 0 },
+  { goal: { ...controls.goal, status: 'done' } }, { goal: { ...controls.goal, criteria: '' } },
+  { states: { [peer]: { ...controls.states[peer], waitingFor: 'execute' } } },
+  { states: { [peer]: { ...controls.states[peer], since: 'invalid' } } },
+  { states: { [peer]: { ...controls.states[peer], state: ['idle'], waitingFor: undefined } } },
+  { states: { [peer]: { ...controls.states[peer], waitingFor: ['review'] } } },
+  { waitingOnYou: [peer, peer] }, { waitingOnYou: [auth.memberId] }, { waitingOnYou: ['f'.repeat(32)] },
+])('rejects malformed control metadata: %j', change => {
+  expect(() => parseSnapshot({ ...controls, ...change }, auth, 0)).toThrow('INVALID_ROOM_RESPONSE');
+});
+
+it('keeps optional message timestamps for sentAt and rejects invalid ones', () => {
+  const message = { seq: 1, id: 'message-1', memberId: peer, text: 'Hello', at: now };
+  expect(parseMessage(message).at).toBe(now);
+  expect(() => parseMessage({ ...message, at: 'invalid' })).toThrow('INVALID_ROOM_RESPONSE');
+});
+
+it('feeds decoded pages into the unified core using every shared listener fixture', () => {
+  const fixture = JSON.parse(readFileSync(new URL('../../protocol/fixtures/listener/events.json', import.meta.url), 'utf8'));
+  for (const c of fixture.cases) {
+    const fresh = c.input.fresh.map((m: any) => ({ ...m, id: m.id.padEnd(8, '_') }));
+    const after = fresh.length ? fresh[0].seq - 1 : 0;
+    const goal = c.input.page.goal;
+    const page = parseSnapshot({ ...snapshot, ...c.input.page, messages: fresh, cursor: after + fresh.length,
+      ...(goal ? { goal: { ...controls.goal, ...goal } } : {}) }, { ...auth, memberId: c.me }, after);
+    const seen = structuredClone(c.input.seen);
+    const events = pageEvents(seen, page, page.messages, c.me, c.input.goalConsumed);
+    expect(events, c.name).toEqual(c.events);
+    expect(events.map((e: any) => formatEvent(e, seen.names, c.me)), c.name).toEqual(c.lines);
+    expect(seen, c.name).toEqual(c.seenAfter);
+    if (c.hello) expect(helloEvent(page, c.me)).toEqual(c.hello);
+  }
+});
 
 it('reads, acknowledges and replies beyond message 500 without accepting unsafe sequences', async () => {
   const peer = 'd'.repeat(32);
