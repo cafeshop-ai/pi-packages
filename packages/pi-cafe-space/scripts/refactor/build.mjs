@@ -110,7 +110,7 @@ export async function buildCandidate() {
     await rm(join(source, 'src'), { recursive: true, force: true }); await sourceCopy(join(root, 'src'), join(source, 'src'));
     for (const directory of [join(source, 'scripts'), join(output, 'scripts')]) {
       await mkdir(directory, { recursive: true });
-      for (const file of ['collaboration-goal.mjs', 'collaboration-goal.d.mts']) await copyFile(join(root, 'scripts', file), join(directory, file));
+      for (const file of ['collaboration-goal.mjs', 'collaboration-goal.d.mts', 'listener-events.mjs', 'listener-events.d.mts']) await copyFile(join(root, 'scripts', file), join(directory, file));
     }
     try {
       const overlay = JSON.parse(await readFile(join(root, 'scripts/refactor/candidate-overrides/extension-import.json'), 'utf8'));
