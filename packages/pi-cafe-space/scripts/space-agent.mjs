@@ -69,7 +69,13 @@ const print = value => process.stdout.write(clean(typeof value === 'string' ? va
 
 // --- private storage -------------------------------------------------------
 // Paths go through stdin, never PowerShell source; SID checks do not depend on the OS language.
+// Each check starts PowerShell (about a second), so a path verified once stays verified for the
+// life of this process: the home directory's protected ACL lets only the owner and SYSTEM create
+// or replace files in it, and a replaced file inherits that ACL.
+const verifiedWindows = new Set();
 function windowsPrivate(path, directory = false, create = false) {
+  const key = `${directory ? 'directory' : 'file'}:${path}`;
+  if (verifiedWindows.has(key)) return;
   const script = `
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.Encoding]::UTF8
@@ -117,6 +123,7 @@ if (!$owned) { throw 'Missing owner access or child inheritance' }
       { input: JSON.stringify({ path, directory, create }), encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     if (result !== 'ok') throw Error('ACL check did not finish');
   } catch { throw new Fail(`${path} requires a private Windows ACL (owner and SYSTEM only), inheritable for directories, with no reparse points`); }
+  verifiedWindows.add(key);
 }
 function privateHome(home) {
   if (process.platform === 'win32') {
