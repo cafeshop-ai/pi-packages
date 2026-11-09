@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,10 +142,10 @@ type request struct {
 	To        string  `json:"to,omitempty"`
 	ReplyTo   int     `json:"replyTo,omitempty"`
 	After     int     `json:"after,omitempty"`
-	Before    int     `json:"before,omitempty"`
-	Latest    int     `json:"latest,omitempty"`
-	Limit     int     `json:"limit,omitempty"`
-	Excerpt   int     `json:"excerpt,omitempty"`
+	Before    *int    `json:"before,omitempty"`
+	Latest    *int    `json:"latest,omitempty"`
+	Limit     *int    `json:"limit,omitempty"`
+	Excerpt   *int    `json:"excerpt,omitempty"`
 	MemberID  string  `json:"memberId,omitempty"`
 	Wait      int     `json:"wait,omitempty"`
 	Fetched   *int    `json:"fetched,omitempty"`
@@ -695,7 +696,9 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 	room := *original
 	room.Members = append([]Member{}, original.Members...)
 	room.Invites = append([]string{}, original.Invites...)
-	room.Messages = append([]Message{}, original.Messages...)
+	// Messages are only ever appended, never changed in place. A clipped slice shares the stored
+	// array for reads, and any append must reallocate, so a failed write cannot touch it.
+	room.Messages = slices.Clip(original.Messages)
 	room.Tasks = append([]Task{}, original.Tasks...)
 	if original.Goal != nil {
 		goal := *original.Goal
@@ -767,14 +770,25 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 		// History reads (feature "history"): latest is the newest N messages, before pages
 		// older ones, limit sizes a page, excerpt cuts long texts for skimming.
 		total := len(room.Messages)
-		if q.After < 0 || q.After > total || q.Before < 0 || q.Before > total+1 || q.Latest < 0 || q.Latest > pageSize ||
-			q.Before > 0 && (q.After > 0 || q.Latest > 0) || q.Latest > 0 && q.After > 0 {
+		// Pointers tell an explicit 0 (rejected) from an omitted field.
+		given := func(p *int) (int, bool) {
+			if p == nil {
+				return 0, false
+			}
+			return *p, true
+		}
+		before, hasBefore := given(q.Before)
+		latest, hasLatest := given(q.Latest)
+		size, hasLimit := given(q.Limit)
+		cut, hasExcerpt := given(q.Excerpt)
+		if q.After < 0 || q.After > total || hasBefore && (before < 1 || before > total+1 || q.After > 0 || hasLatest) ||
+			hasLatest && (latest < 1 || latest > pageSize || q.After > 0) {
 			return nil, fail(400, "INVALID_CURSOR")
 		}
-		if q.Limit < 0 || q.Limit > pageSize || q.Latest > 0 && q.Limit > 0 || q.Excerpt != 0 && (q.Excerpt < minExcerpt || q.Excerpt > maxExcerpt) {
+		if hasLimit && (size < 1 || size > pageSize || hasLatest) || hasExcerpt && (cut < minExcerpt || cut > maxExcerpt) {
 			return nil, fail(400, "INVALID_LIMIT")
 		}
-		if q.Wait < 0 || q.Wait > maxWait || q.Wait > 0 && q.Before > 0 {
+		if q.Wait < 0 || q.Wait > maxWait || q.Wait > 0 && (hasBefore || hasLatest) {
 			return nil, fail(400, "INVALID_WAIT")
 		}
 		members := append([]Member{}, room.Members...)
@@ -782,22 +796,22 @@ func (s *Store) apply(q request, token, address string) (any, error) {
 			members[i].TokenHash = ""
 		}
 		limit := pageSize
-		if q.Limit > 0 {
-			limit = q.Limit
+		if hasLimit {
+			limit = size
 		}
 		start, end := q.After, q.After+limit
 		switch {
-		case q.Latest > 0:
-			start, end = total-q.Latest, total
-		case q.Before > 0:
-			start, end = q.Before-1-limit, q.Before-1
+		case hasLatest:
+			start, end = total-latest, total
+		case hasBefore:
+			start, end = before-1-limit, before-1
 		}
 		start, end = max(start, 0), min(end, total)
-		page := excerpts(room.Messages[start:end], q.Excerpt)
+		page := excerpts(room.Messages[start:end], cut)
 		result := map[string]any{"roomId": room.ID, "title": room.Title, "expires": room.Expires, "members": members, "messages": page, "latestSeq": total, "older": start > 0, "memberId": actor.ID, "presence": s.presenceView(&room), "aiPaused": room.AIPaused, "tasks": tasksView(room.Tasks), "goal": room.Goal, "goalRevision": room.GoalRevision}
 		// An older page never moves a reader's cursor, so it carries none: persisting one
 		// from it would skip everything newer.
-		if q.Before == 0 {
+		if !hasBefore {
 			result["cursor"], result["more"] = end, end < total
 		}
 		return result, nil

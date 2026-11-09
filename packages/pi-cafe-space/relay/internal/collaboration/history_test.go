@@ -2,6 +2,7 @@ package collaboration
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -124,8 +125,8 @@ func TestHistoryReadsRejectAmbiguousRequests(t *testing.T) {
 	id, owner := create(t, s)
 	history(t, s, id, 10, func(i int) string { return "x" })
 	for _, q := range []map[string]any{
-		{"latest": 101}, {"latest": -1}, {"latest": 5, "after": 2}, {"latest": 5, "before": 3},
-		{"before": 12}, {"before": -1}, {"before": 5, "after": 2},
+		{"latest": 101}, {"latest": -1}, {"latest": 0}, {"latest": 5, "after": 2}, {"latest": 5, "before": 3},
+		{"before": 12}, {"before": -1}, {"before": 0}, {"before": 5, "after": 2},
 	} {
 		q["op"], q["roomId"] = "read", id
 		if v := call(t, s, q, owner, 400); v["error"] != "INVALID_CURSOR" {
@@ -133,15 +134,18 @@ func TestHistoryReadsRejectAmbiguousRequests(t *testing.T) {
 		}
 	}
 	for _, q := range []map[string]any{
-		{"limit": 101}, {"limit": -1}, {"latest": 5, "limit": 5}, {"after": 1, "excerpt": 39}, {"after": 1, "excerpt": 2001},
+		{"limit": 101}, {"limit": -1}, {"limit": 0}, {"latest": 5, "limit": 5}, {"after": 1, "excerpt": 39}, {"after": 1, "excerpt": 2001}, {"after": 1, "excerpt": 0},
 	} {
 		q["op"], q["roomId"] = "read", id
 		if v := call(t, s, q, owner, 400); v["error"] != "INVALID_LIMIT" {
 			t.Fatalf("%v: %v", q, v)
 		}
 	}
-	if v := call(t, s, map[string]any{"op": "read", "roomId": id, "before": 5, "wait": 1}, owner, 400); v["error"] != "INVALID_WAIT" {
-		t.Fatal("an older page never waits")
+	for _, q := range []map[string]any{{"before": 5, "wait": 1}, {"latest": 5, "wait": 1}} {
+		q["op"], q["roomId"] = "read", id
+		if v := call(t, s, q, owner, 400); v["error"] != "INVALID_WAIT" {
+			t.Fatalf("wait is only for after reads: %v", q)
+		}
 	}
 	// Plain after reads keep their exact old shape.
 	old := call(t, s, map[string]any{"op": "read", "roomId": id, "after": 0}, owner, 200)
@@ -168,5 +172,23 @@ func TestGuideAndContractSteerAgentsToCatchUpFromTheTail(t *testing.T) {
 	}
 	if strings.Contains(guide, `"after":0}. Persist cursor`) {
 		t.Error("guide must no longer start agents by reading the whole history")
+	}
+}
+
+func TestFailedSendLeavesSharedHistoryIntact(t *testing.T) {
+	s := store(t)
+	id, owner := create(t, s)
+	history(t, s, id, 3, func(i int) string { return fmt.Sprintf("message %d", i) })
+	// Give the stored slice spare capacity, the case where an unclipped append would write into it.
+	room := s.rooms[id]
+	room.Messages = append(make([]Message, 0, 16), room.Messages...)
+	page := call(t, s, map[string]any{"op": "read", "roomId": id, "latest": 3}, owner, 200)
+	s.directory = filepath.Join(t.TempDir(), "missing")
+	call(t, s, map[string]any{"op": "send", "roomId": id, "id": "lost-message", "text": "not saved"}, owner, 503)
+	if got := s.rooms[id].Messages; len(got) != 3 || got[:4][3].Text != "" {
+		t.Fatalf("a failed send must not publish or write into the stored array: %v", got[:4])
+	}
+	if text := page["messages"].([]any)[2].(map[string]any)["text"]; text != "message 3" {
+		t.Fatal("an earlier page must stay as served")
 	}
 }
