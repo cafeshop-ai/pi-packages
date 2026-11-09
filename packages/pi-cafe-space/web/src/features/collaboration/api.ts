@@ -9,7 +9,7 @@ export interface Task { id: number; title: string; status: TaskStatus; assignee?
 export interface Goal { id: number; title: string; criteria: string; reviewer: string; status: 'active' | 'paused' | 'review' | 'done'; createdBy: string; result?: number; resultBy?: string; updatedAt: string }
 export interface GoalState { goal: Goal | null; goalRevision: number; tasks: Task[] }
 /** older: earlier messages exist before this page; latestSeq: the newest seq. Pages read with before carry no cursor. */
-export interface Snapshot { roomId: string; title: string; expires: string; members: Member[]; messages: Message[]; cursor: number; more: boolean; older?: boolean; latestSeq?: number; memberId: string; presence?: Record<string, Presence>; aiPaused?: boolean; tasks?: Task[]; goal?: Goal | null; goalRevision?: number }
+export interface Snapshot { roomId: string; title: string; expires: string | null; members: Member[]; messages: Message[]; cursor: number; more: boolean; older?: boolean; latestSeq?: number; memberId: string; presence?: Record<string, Presence>; aiPaused?: boolean; tasks?: Task[]; goal?: Goal | null; goalRevision?: number }
 const errors: Record<string, string> = {
   INVALID_GOAL: '请填写目标、验收条件并选择在场的人类验收人。', GOAL_CHANGED: 'Goal 已变化，请读取最新状态后再操作，不要重复提交。', GOAL_EXISTS: '房间已有未完成的 Goal，请先完成或删除它。', GOAL_NOT_ACTIVE: 'Goal 未在进行中，相关任务已暂停；请检查目标状态及验收人。', GOAL_TASKS_OPEN: '请先完成 Goal 下的任务，再提交验收。', GOAL_REVIEWER_REQUIRED: '只有指定的人类验收人可以通过或退回 Goal。',
   MEMBER_REQUIRED: '成员凭据已失效或已被移除。', INVITE_INVALID: '邀请已撤销或无效，请向同事索取新邀请。',

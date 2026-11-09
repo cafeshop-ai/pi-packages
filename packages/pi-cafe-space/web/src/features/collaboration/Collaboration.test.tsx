@@ -106,6 +106,15 @@ it('keeps message sequence order when polling catches up with a locally sent mes
 });
 const sent = () => (fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, v]) => JSON.parse(v.body as string));
 const openMenu = async () => fireEvent.click(await screen.findByRole('button', { name: '房间菜单' }));
+it('shows an operator-marked permanent room without a misleading expiry date', async () => {
+  saveMembership(auth);
+  fetcher.mockImplementation(async () => response({ ...snapshot, expires: null }));
+  mount('/collab/' + roomId);
+  await screen.findByRole('heading', { name: '多人讨论' });
+  await openMenu();
+  expect(screen.getByText('不过期')).toBeInTheDocument();
+  expect(screen.queryByText(/到期$/)).not.toBeInTheDocument();
+});
 const fromMenu = async (item: string) => { await openMenu(); fireEvent.click(await screen.findByRole('menuitem', { name: item })); };
 it('requires confirmation before revoking invitations and stops writes after membership is revoked', async () => {
   saveMembership(auth); mount('/collab/' + roomId); await screen.findByRole('heading', { name: '多人讨论' }); await fromMenu('撤销全部邀请');
