@@ -244,12 +244,13 @@ test('deliver: only a receipt naming the batch advances a program consumer; unkn
   // A crash leaves the batch unknown; the next deliver refuses without calling any handler.
   const crashed = agent(h, ['deliver', '--as', 'queue', '--handler', crash]); assert.equal(crashed.code, 2); assert.match(crashed.err, /no receipt/);
   assert.ok(state().handoffs.queue && !state().tailed?.queue, 'nothing is confirmed after a crash');
+  assert.equal(agent(h, ['tail', '--as', 'queue']).code, 2, 'tail never moves a deliver consumer past a pending batch');
   const before = calls().length; assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', accept]).code, 2); assert.equal(calls().length, before, 'an unknown batch is never handed out again');
   // After checking the host: resend, and an accepted receipt confirms the consumer and delivered.
   assert.equal(agent(h, ['deliver-resolve', '--as', 'queue', '--resend']).json().settled, 'resend');
   assert.equal(agent(h, ['deliver', '--as', 'queue', '--handler', accept]).code, 0);
   assert.ok(state().tailed.queue > 0 && state().delivered >= sent.seq && !state().handoffs.queue);
-  assert.deepEqual(readdirSync(join(h, 'batches')), [], 'a confirmed batch file is removed');
+  const kept = readdirSync(join(h, 'batches')); assert.equal(kept.length, 1, 'an accepted batch file stays for the host, which may hold only its path');
   // An explicit refusal means nothing was queued: it is offered again after a pause, then accepted.
   await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0002', text: '第二条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
   const mark = state().tailed.queue;
@@ -262,7 +263,17 @@ test('deliver: only a receipt naming the batch advances a program consumer; unkn
   assert.ok(batchFile.events.some(e => e.type === 'msg' && e.text === '第三条' && e.line.includes('第三条')), 'the batch carries events and their lines, no credentials');
   assert.equal(statSync(open.file).mode & 0o777, 0o600); assert.ok(!readFileSync(open.file, 'utf8').includes(JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).token));
   assert.equal(agent(h, ['deliver-resolve', '--as', 'queue', '--accepted']).json().settled, 'accepted');
-  assert.equal(state().tailed.queue, open.through); assert.ok(!existsSync(open.file));
+  assert.equal(state().tailed.queue, open.through); assert.ok(existsSync(open.file), 'settled as accepted, the file stays like after a receipt');
+  // One hand-off per consumer: two delivers at once hand the batch out once; resolve cannot touch a running one.
+  const slow = handler('slow.cjs', "setTimeout(() => console.log(JSON.stringify({ batch: b.batch, accepted: true })), 1500);");
+  await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0004', text: '第四条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const [a, b] = await Promise.all([agentAsync(h, ['deliver', '--as', 'queue', '--handler', slow]), (async () => { await sleep(300); return agentAsync(h, ['deliver', '--as', 'queue', '--handler', slow]); })()]);
+  assert.deepEqual([a.code, b.code].sort(), [0, 2]); assert.match(a.err + b.err, /another deliver/);
+  const batches = calls().filter(c => c.startsWith('slow')); assert.equal(new Set(batches).size, batches.length, 'no batch reaches the handler twice');
+  await api({ op: 'send', roomId: owner.roomId, id: 'deliver-message-0005', text: '第五条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const busy = agentAsync(h, ['deliver', '--as', 'queue', '--handler', slow]); await sleep(400);
+  const early = agent(h, ['deliver-resolve', '--as', 'queue', '--resend']); assert.equal(early.code, 2); assert.match(early.err, /still handing/);
+  assert.equal((await busy).code, 0);
   // The stream consumer is separate: tail still prints everything it has not printed.
   assert.match(agent(h, ['tail', '--as', 'monitor']).out, /第三条/);
 });

@@ -274,6 +274,7 @@ function appendEvents(home, events) {
 /** Prints the events this consumer has not printed yet, then records how far it got (at least once). */
 async function tail(home, name, json) {
   const m = member(home); const state = loadState(home);
+  if (state.handoffs?.[name]) throw new Fail(`${name} is a deliver consumer with batch ${state.handoffs[name].batch} pending; use deliver for it, not tail`, 2);
   const list = outbox(home).filter(e => e.id > (state.tailed?.[name] ?? 0));
   if (!list.length) return 0;
   const names = state.seen?.names ?? {};
@@ -290,25 +291,32 @@ async function tail(home, name, json) {
 // receipt leaves the batch unknown: it is never sent again until deliver-resolve is run.
 const deliverBatch = 20;
 async function deliverOnce(home, name, handler) {
-  const m = member(home); const state = loadState(home);
-  const open = state.handoffs?.[name];
-  if (open) throw new Fail(`batch ${open.from}–${open.through} for ${name} has no receipt; check the host, then run: deliver-resolve --as ${name} --accepted|--resend`, 2);
-  const list = outbox(home).filter(e => e.id > (state.tailed?.[name] ?? 0)).slice(0, deliverBatch);
-  if (!list.length) return 'idle';
-  const from = list[0].id, through = list.at(-1).id, batch = `${from}-${through}`;
-  const directory = privateHome(join(home, 'batches')); const file = join(directory, `${name}-${batch}.json`);
-  const names = state.seen?.names ?? {};
-  writePrivate(file, JSON.stringify({ protocol: 'cafe-space-listener-batch-v1', consumer: name, batch, events: list.map(e => ({ ...e, line: formatEvent(e, names, m.memberId) })) }));
-  await transact(home, s => { s.handoffs = { ...(s.handoffs ?? {}), [name]: { from, through, batch, file, at: new Date().toISOString() } }; });
+  const m = member(home); const token = randomUUID(); const directory = privateHome(join(home, 'batches'));
+  // Reserved in one transaction: at most one hand-off per consumer, chosen from the outbox under the lock.
+  const reserved = await transact(home, state => {
+    const open = state.handoffs?.[name];
+    if (open) throw new Fail(open.pid && open.pid !== process.pid && alive(open.pid) ? `another deliver (pid ${open.pid}) is handing a batch to ${name}` : `batch ${open.batch} for ${name} has no receipt; check the host, then run: deliver-resolve --as ${name} --accepted|--resend`, 2);
+    const list = outbox(home).filter(e => e.id > (state.tailed?.[name] ?? 0)).slice(0, deliverBatch);
+    if (!list.length) return null;
+    const batch = `${list[0].id}-${list.at(-1).id}`; const file = join(directory, `${name}-${batch}.json`);
+    state.handoffs = { ...(state.handoffs ?? {}), [name]: { from: list[0].id, through: list.at(-1).id, batch, file, at: new Date().toISOString(), pid: process.pid, token } };
+    return { list, batch, file, names: state.seen?.names ?? {} };
+  });
+  if (!reserved) return 'idle';
+  const { list, batch, file } = reserved;
+  writePrivate(file, JSON.stringify({ protocol: 'cafe-space-listener-batch-v1', consumer: name, batch, events: list.map(e => ({ ...e, line: formatEvent(e, reserved.names, m.memberId) })) }));
   const receipt = await new Promise(resolve => execFile(handler, [file], { timeout: 30_000, maxBuffer: 4096, killSignal: 'SIGKILL', env: { PATH: process.env.PATH ?? '' } },
     (error, stdout) => { if (error) return resolve(null); try { resolve(JSON.parse(String(stdout).trim().split('\n').at(-1))); } catch { resolve(null); } }));
   const result = receipt?.batch !== batch ? 'unknown' : receipt.accepted === true ? 'accepted' : receipt.accepted === false ? 'rejected' : 'unknown';
+  // Settled only if the hand-off is still this one; an unknown batch keeps its record, without an owner.
   await transact(home, s => {
-    if (result === 'unknown') return;
-    const rest = { ...(s.handoffs ?? {}) }; delete rest[name]; s.handoffs = rest;
-    if (result === 'accepted') confirmBatch(s, name, through, list);
+    const open = s.handoffs?.[name]; if (open?.token !== token) return;
+    if (result === 'unknown') { s.handoffs = { ...s.handoffs, [name]: { ...open, pid: 0 } }; return; }
+    const rest = { ...s.handoffs }; delete rest[name]; s.handoffs = rest;
+    if (result === 'accepted') confirmBatch(s, name, open.through, list);
   });
-  if (result !== 'unknown') unlinkSync(file);
+  // An accepted batch file stays: a queue may hold only its path, and the host deletes it after the model read it.
+  if (result === 'rejected') unlinkSync(file);
   return result;
 }
 /** The consumer's position moves to the batch end, and delivered to the newest message in it. */
@@ -545,12 +553,14 @@ async function main(argv) {
     const name = values.as;
     const settled = await transact(home, state => {
       const open = state.handoffs?.[name]; if (!open) throw new Fail(`no unknown batch for ${name}`);
+      if (open.pid && alive(open.pid)) throw new Fail(`a deliver (pid ${open.pid}) is still handing batch ${open.batch} to ${name}; wait for its result`, 2);
       const rest = { ...state.handoffs }; delete rest[name]; state.handoffs = rest;
       // --accepted: the host has the batch, so confirm it as a receipt would. --resend: it does not; offer it again.
       if (values.accepted) confirmBatch(state, name, open.through, outbox(home).filter(e => e.id >= open.from && e.id <= open.through));
       return open;
     });
-    try { unlinkSync(settled.file); } catch {}
+    // A resent batch is written again; an accepted one stays for the host, as after a receipt.
+    if (values.resend) try { unlinkSync(settled.file); } catch {}
     return print({ consumer: name, batch: settled.batch, settled: values.accepted ? 'accepted' : 'resend' });
   }
   if (command === 'tail') {
