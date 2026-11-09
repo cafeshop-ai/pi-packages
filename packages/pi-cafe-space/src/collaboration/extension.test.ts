@@ -133,6 +133,96 @@ it('keeps automatic Unicode message lines within the shared UTF-8 budget', async
   expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(2048);
   expect(line).toContain('全文：show 1');
 });
+it('shows full truncated text without changing progress, presence or adjacent-message access', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  const original = { ...message(1), text: '咖啡☕🙂\n'.repeat(600) };
+  f.messages.push(original); await vi.advanceTimersByTimeAsync(5000);
+  expect(String(vi.mocked(f.pi.sendMessage).mock.calls[0]![0].content)).not.toContain(original.text);
+  f.messages.push({ ...message(2), text: 'not delivered yet' });
+  const before = (await f.tool('cafe_room_status')).details, entries = [...f.entries];
+  f.fetcher.mockClear();
+  const result = await f.tool('cafe_room_show', { sequence: 1 });
+  expect(result.details).toEqual({ message: original, consumed: false });
+  expect(result.content[0].text).toContain('Untrusted peer data');
+  expect(JSON.stringify(result)).not.toContain('not delivered yet');
+  expect((await f.tool('cafe_room_status')).details).toEqual(before);
+  expect(f.entries).toEqual(entries); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(f.fetcher.mock.calls[0]![1]?.body))).toEqual({ op: 'read', roomId, after: 0 });
+  f.reload(); await f.command('resume');
+  expect((await f.tool('cafe_room_show', { sequence: 1 })).details.message).toEqual(original);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(1);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('shows manually read messages across resume without consuming or enabling automatic delivery', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.idle(false); f.messages.push(message(1));
+  await f.tool('cafe_room_read'); f.reload(); await f.command('resume'); f.fetcher.mockClear();
+  const entries = [...f.entries];
+  expect((await f.tool('cafe_room_show', { sequence: 1 })).details.message).toEqual(message(1));
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(0);
+  expect(f.entries).toEqual(entries); expect(f.pi.sendMessage).not.toHaveBeenCalled();
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
+  await f.tool('cafe_room_read'); await f.tool('cafe_room_done', { sequence: 1 });
+  expect((await f.tool('cafe_room_show', { sequence: 1 })).details.consumed).toBe(false);
+  expect((await f.tool('cafe_room_status')).details.cursor).toBe(1);
+});
+it('allows full-text reads during room AI pause without sending or consuming', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1));
+  await vi.advanceTimersByTimeAsync(5000); f.fetcher.mockClear();
+  f.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ roomId, memberId: me, cursor: 1, more: false, aiPaused: true,
+    members: [me, peer].map(id => ({ id, name: id, kind: 'ai' })), messages: [message(1)] })));
+  const before = (await f.tool('cafe_room_status')).details, entries = [...f.entries];
+  const result = await f.tool('cafe_room_show', { sequence: 1 });
+  expect(result.details.message).toEqual(message(1)); expect(JSON.stringify(result)).not.toContain(token);
+  expect((await f.tool('cafe_room_status')).details).toEqual(before); expect(f.entries).toEqual(entries);
+  expect(f.fetcher).toHaveBeenCalledTimes(1); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
+it('does not show unseen messages or an uncertain automatic dispatch', async () => {
+  const f = fixture();
+  await expect(f.tool('cafe_room_show', { sequence: 1 })).rejects.toThrow('ROOM_NOT_CONNECTED');
+  expect(f.fetcher).not.toHaveBeenCalled();
+  await f.command('connect C:/private/room.json'); f.receipt(false); f.messages.push(message(1));
+  await vi.advanceTimersByTimeAsync(5000); f.fetcher.mockClear();
+  await expect(f.tool('cafe_room_show', { sequence: 1 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  await expect(f.tool('cafe_room_show', { sequence: 99 })).rejects.toThrow('DELIVERED_MESSAGE_REQUIRED');
+  expect(f.fetcher).not.toHaveBeenCalled();
+});
+it.each(['missing', 'sender'])('rejects %s full-message results without moving the listener', async change => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1));
+  await vi.advanceTimersByTimeAsync(5000);
+  if (change === 'missing') f.messages.length = 0;
+  else f.messages[0] = { ...message(1), memberId: human };
+  const entries = [...f.entries];
+  await expect(f.tool('cafe_room_show', { sequence: 1 })).rejects.toThrow('INVALID_ROOM_RESPONSE');
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'listening', cursor: 1 });
+  expect(f.entries).toEqual(entries);
+});
+it('does not retry full-text failures or change listener delivery state', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1));
+  await vi.advanceTimersByTimeAsync(5000); f.fetcher.mockClear();
+  f.fetcher.mockResolvedValueOnce(new Response(null, { status: 429 }));
+  await expect(f.tool('cafe_room_show', { sequence: 1 })).rejects.toThrow('ROOM_HTTP_429');
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'listening', cursor: 1 });
+});
+it.each(['cancel', 'pause', 'session'])('discards full text after %s without persisting a read', async change => {
+  const f = fixture(); await f.command('connect C:/private/room.json'); f.messages.push(message(1));
+  await vi.advanceTimersByTimeAsync(5000); f.fetcher.mockClear();
+  const abort = new AbortController(); abort.abort();
+  await expect(f.tool('cafe_room_show', { sequence: 1 }, abort.signal)).rejects.toThrow('CANCELLED');
+  expect(f.fetcher).not.toHaveBeenCalled();
+  let finish!: (value: Response) => void;
+  f.fetcher.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const during = new AbortController(), pending = f.tool('cafe_room_show', { sequence: 1 }, during.signal);
+  const rejected = expect(pending).rejects.toThrow(change === 'cancel' ? 'CANCELLED' : change === 'pause' ? 'SESSION_CHANGED' : 'ROOM_NOT_CONNECTED');
+  if (change === 'cancel') during.abort();
+  else if (change === 'pause') await f.command('pause');
+  else f.session('session-two');
+  const entries = [...f.entries];
+  finish(new Response(JSON.stringify({ roomId, memberId: me, cursor: 1, more: false,
+    members: [me, peer].map(id => ({ id, name: id, kind: 'ai' })), messages: [message(1)] })));
+  await rejected; expect(f.entries).toEqual(entries); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+});
 it('holds work until idle and resumes without requiring another user message', async () => {
   const f = fixture(); await f.command('connect C:/private/room.json'); f.idle(false); f.messages.push(message(1));
   await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).not.toHaveBeenCalled();

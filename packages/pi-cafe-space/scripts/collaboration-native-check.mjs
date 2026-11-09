@@ -81,7 +81,7 @@ try {
           else if (text === 'Read and confirm the next pending room message manually.') {
             output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_read', arguments: {} }]; output.stopReason = 'toolUse';
           } else {
-            const match = /External Café Space room message #(\d+)/.exec(text);
+            const match = /\[msg #(\d+) /.exec(text);
             if (!match) { output.content = [{ type: 'text', text: 'Unexpected fixture input' }]; output.stopReason = 'stop'; errors.push('Missing labeled external message: ' + JSON.stringify({ role: last?.role, types: Array.isArray(last?.content) ? last.content.map(p => p.type) : typeof last?.content, text: text.slice(0, 200) })); }
             else if (text.includes('Discussion complete; no response needed.')) { output.content = [{ type: 'text', text: 'No reply required.' }]; output.stopReason = 'stop'; }
             else {
