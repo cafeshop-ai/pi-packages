@@ -14,6 +14,7 @@ const root = await mkdtemp(join(tmpdir(), 'cafe collaboration native-'));
 const nativeFetch = globalThis.fetch, sessions = [], messages = [], modelCalls = [], errors = [];
 let origin, blockedNetwork = 0, httpRequests = 0;
 const presence = {}, acknowledgements = [], requests = [0, 0];
+const controls = { tasks: [], waitingOnYou: [], aiPaused: false };
 globalThis.fetch = (input, init) => {
   const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
   if (!origin || url !== origin + '/api/collaboration') { blockedNetwork++; throw Error('Non-fixture network forbidden'); }
@@ -27,7 +28,7 @@ const server = createServer((req, res) => {
   let body = ''; req.on('data', b => { body += b; }); req.on('end', () => {
     try {
       const q = JSON.parse(body); assert.equal(q.roomId, roomId); let value;
-      if (q.op === 'read') value = { roomId, memberId: ids[index], cursor: messages.length, more: false, aiPaused: false, presence, members: ids.map(id => ({ id, name: 'Synthetic peer', kind: 'ai' })), messages: messages.filter(m => m.seq > q.after) };
+      if (q.op === 'read') value = { roomId, memberId: ids[index], cursor: messages.length, more: false, ...controls, presence, members: ids.map(id => ({ id, name: 'Synthetic peer', kind: 'ai' })), messages: messages.filter(m => m.seq > q.after) };
       else if (q.op === 'ack') {
         assert(Number.isInteger(q.fetched) && q.fetched >= 0 && q.fetched <= messages.length);
         assert(Number.isInteger(q.delivered) && q.delivered >= 0 && q.delivered <= q.fetched);
@@ -77,9 +78,17 @@ try {
             const seq = [...text.matchAll(/"seq":(\d+)/g)].at(-1)?.[1];
             if (!seq) { errors.push('Manual read did not return its pending message'); output.stopReason = 'stop'; }
             else { output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done', arguments: { sequence: Number(seq), through: true } }]; output.stopReason = 'toolUse'; }
-          } else if (last?.role === 'toolResult') { output.content = [{ type: 'text', text: 'Private synthetic completion; not uploaded to the room.' }]; output.stopReason = 'stop'; }
+          } else if (last?.role === 'toolResult') {
+            if (last.toolName === 'cafe_room_show') assert(last.isError && text.includes('DELIVERED_MESSAGE_REQUIRED'), 'Controls must not grant unseen-message access');
+            output.content = [{ type: 'text', text: 'Private synthetic completion; not uploaded to the room.' }]; output.stopReason = 'stop'; }
           else if (text === 'Read and confirm the next pending room message manually.') {
             output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_read', arguments: { limit: 20 } }]; output.stopReason = 'toolUse';
+          } else if (text === 'Confirm delivered synthetic Goal.') {
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_done_goal', arguments: { revision: 1 } }]; output.stopReason = 'toolUse';
+          } else if (text === 'Verify control grants no message access.') {
+            output.content = [{ type: 'toolCall', id: 'synthetic-' + modelCalls.length, name: 'cafe_room_show', arguments: { sequence: 13 } }]; output.stopReason = 'toolUse';
+          } else if (/\[(task #|goal r|pause |waiting-on-you|waiting-ended|member[+-])/.test(text)) {
+            output.content = [{ type: 'text', text: 'Observed synthetic control delta; no room reply or message consumption.' }]; output.stopReason = 'stop';
           } else {
             const match = /\[msg #(\d+) /.exec(text);
             if (!match) { output.content = [{ type: 'text', text: 'Unexpected fixture input' }]; output.stopReason = 'stop'; errors.push('Missing labeled external message: ' + JSON.stringify({ role: last?.role, types: Array.isArray(last?.content) ? last.content.map(p => p.type) : typeof last?.content, text: text.slice(0, 200) })); }
@@ -97,9 +106,9 @@ try {
     const settings = SettingsManager.inMemory({ cacheWarming: 'off', compaction: { enabled: false }, retry: { enabled: false } });
     const loader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: 'Synthetic test. No external provider or user tools.', additionalExtensionPaths: [extensionPath] });
     await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
-    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, modelRuntime: runtime, model: runtime.getModel('cafe-synthetic-' + index, 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager: manager ?? SessionManager.create(dir, join(dir, 'sessions')), noTools: 'all', tools: ['cafe_room_done', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_status'], thinkingLevel: 'off' });
+    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, modelRuntime: runtime, model: runtime.getModel('cafe-synthetic-' + index, 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager: manager ?? SessionManager.create(dir, join(dir, 'sessions')), noTools: 'all', tools: ['cafe_room_done', 'cafe_room_done_goal', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_show', 'cafe_room_status'], thinkingLevel: 'off' });
     sessions.push(session); await session.bindExtensions({});
-    assert.deepEqual(session.getActiveToolNames().sort(), ['cafe_room_done', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_status']);
+    assert.deepEqual(session.getActiveToolNames().sort(), ['cafe_room_done', 'cafe_room_done_goal', 'cafe_room_read', 'cafe_room_reply', 'cafe_room_show', 'cafe_room_status']);
     await session.prompt('/cafe collab status');
     if (manager) await delay(5500);
     assert.equal(requests[index], requestCount, 'Loading/status must not connect, including a previously bound session');
@@ -170,9 +179,55 @@ try {
   await until(() => acknowledgements.length > beats, 'path-free resume after real native reload');
   assert.equal(modelCalls.length, 26); assert.equal(messages.length, 12);
   console.log('PASS: native reload stays disconnected; resume revalidates original config, rejects changed/missing files, and does not replay');
+  // Controls change while the message stream stays at sequence 12.
+  const controlState = session => session.sessionManager.getBranch().findLast(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'controls')?.data.controls;
+  const progress = session => {
+    const records = session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && ['cursor', 'consumed'].includes(e.data?.kind)).map(e => e.data);
+    return { cursor: Math.max(0, ...records.map(e => e.seq)), consumed: records.filter(e => e.kind === 'consumed') };
+  };
+  const beforeControls = progress(restoredAgain.session), callsBeforeControls = modelCalls.length;
+  controls.tasks = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, title: 'Synthetic task ' + (i + 1), status: 'todo' }));
+  controls.waitingOnYou = [ids[1]];
+  controls.goalRevision = 1;
+  controls.goal = { id: 1, title: 'Synthetic Goal', criteria: 'Observe controls only', status: 'active', reviewer: ids[1], createdBy: ids[1], updatedAt: new Date().toISOString() };
+  await until(() => controlState(restoredAgain.session)?.goalDelivered.includes(1) && controlState(restoredAgain.session)?.pending.length === 0, 'bounded controls delivered at the same message cursor');
+  await restoredAgain.session.waitForIdle();
+  assert.equal(modelCalls.length, callsBeforeControls + 2);
+  const batches = restoredAgain.session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'dispatch' && e.data.control);
+  assert.deepEqual(batches.map(e => e.data.control.events.length), [20, 7]);
+  assert.equal(controlState(restoredAgain.session).goalConsumed, 0, 'Host receipt must not confirm Goal handling');
+  assert.deepEqual(progress(restoredAgain.session), beforeControls); assert.equal(messages.length, 12);
+  await restoredAgain.session.prompt('Verify control grants no message access.');
+  await restoredAgain.session.prompt('Confirm delivered synthetic Goal.');
+  assert.equal(controlState(restoredAgain.session).goalConsumed, 1);
+  console.log('PASS: native bounded task/Goal/waiting controls at fixed cursor, no message access or implicit consumption');
+  controls.aiPaused = true; controls.tasks[0].status = 'doing';
+  const beforePause = modelCalls.length;
+  await until(() => controlState(restoredAgain.session)?.seen.paused === true, 'paused controls persisted');
+  await delay(5500); assert.equal(modelCalls.length, beforePause);
+  const pendingControls = controlState(restoredAgain.session).pending;
+  assert(pendingControls.length > 0); assert(acknowledgements.some(q => q.index === 0 && q.paused));
+  await restoredAgain.session.prompt('/cafe collab pause'); const controlPath = restoredAgain.session.sessionFile; assert(controlPath);
+  restoredAgain.session.dispose(); sessions.splice(sessions.indexOf(restoredAgain.session), 1);
+  const controlRestored = await open(0, SessionManager.open(controlPath));
+  await delay(5500); assert.equal(modelCalls.length, beforePause);
+  assert.deepEqual(controlState(controlRestored.session).pending, pendingControls);
+  controls.aiPaused = false;
+  await until(() => controlState(controlRestored.session)?.seen.paused === false && controlState(controlRestored.session)?.pending.length === 0, 'pending controls delivered after resume');
+  await controlRestored.session.waitForIdle();
+  assert.equal(modelCalls.length, beforePause + 2); assert.equal(controlState(controlRestored.session).goalConsumed, 1);
+  assert.deepEqual(progress(controlRestored.session), beforeControls); assert.equal(messages.length, 12);
+  const afterControls = modelCalls.length;
+  await controlRestored.session.reload(); await controlRestored.session.prompt('/cafe collab resume');
+  await delay(10500); assert.equal(modelCalls.length, afterControls);
+  assert.deepEqual(progress(controlRestored.session), beforeControls);
+  assert(acknowledgements.slice(-2).every(q => q.index === 0 && q.fetched === 12 && q.delivered === 10 && !q.paused));
+  console.log('PASS: native pause queues controls without model turns; saved-session restore and reload preserve receipts and Goal acknowledgement without replay');
   assert.equal(blockedNetwork, 0); assert.deepEqual(errors, []);
   const version = JSON.parse(await readFile(join(piRoot, 'package.json'), 'utf8')).version;
-  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups: 11, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
+  const automaticWakeups = sessions.reduce((sum, session) => sum + session.sessionManager.getBranch().filter(e => e.customType === 'cafe-collaboration-state' && e.data?.kind === 'dispatch').length, 0);
+  assert.equal(automaticWakeups, 15);
+  console.log(JSON.stringify({ passed: true, nativePiVersion: version, compiledEntry: values.extension !== undefined, automaticWakeups, nativeControlsAtFixedCursor: true, pausedControlsSurviveRestore: true, goalConfirmationSurvivesRestore: true, syntheticModelCalls: modelCalls.length, sharedReplies: messages.length - 3, restoredWithoutReplay: true, newWorkAfterRestore: true, manualConsumptionSurvivesRestore: true, automaticReceiptDoesNotConsume: true, explicitBatchConsumptionAfterRestore: true, pathFreeResume: true, nativeReloadWithoutAutoConnect: true, changedConfigRejectedBeforeNetwork: true, realModelRequests: 0, connectorHeartbeats: acknowledgements.length, blockedNetwork, httpRequests, scope: 'Actual Pi SDKs and loopback HTTP; synthetic model and relay, not live Pi/Claude acceptance.' }, null, 2));
 } finally {
   for (const session of sessions) { try { await session.prompt('/cafe collab pause'); } catch {} session.dispose(); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
