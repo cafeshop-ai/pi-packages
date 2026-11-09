@@ -1,0 +1,788 @@
+{
+ "protocol": "cafe-space-listener-v1.1",
+ "spec": "docs/LISTENER.md",
+ "cases": [
+  {
+   "name": "first page: only new messages from others; members and tasks are remembered, not dumped",
+   "me": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "input": {
+    "seen": {},
+    "page": {
+     "title": "开发房间",
+     "members": [
+      {
+       "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "name": "Claude",
+       "kind": "ai"
+      },
+      {
+       "id": "ffffffffffffffffffffffffffffffff",
+       "name": "Pi",
+       "kind": "ai"
+      }
+     ],
+     "tasks": [
+      {
+       "id": 1,
+       "title": "统一监听器",
+       "status": "todo",
+       "createdBy": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "updatedAt": "2026-11-09T05:00:00Z"
+      }
+     ],
+     "goal": {
+      "id": 1,
+      "status": "active",
+      "title": "完成 cafe-space"
+     },
+     "goalRevision": 1,
+     "aiPaused": false,
+     "waitingOnYou": [],
+     "states": {}
+    },
+    "fresh": [
+     {
+      "seq": 1,
+      "id": "m-1",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "你好\n第二行",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 2,
+      "id": "m-2",
+      "memberId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "text": "我自己发的",
+      "at": "2026-11-09T05:00:00Z"
+     }
+    ],
+    "goalConsumed": 1
+   },
+   "events": [
+    {
+     "type": "msg",
+     "seq": 1,
+     "from": "ffffffffffffffffffffffffffffffff",
+     "text": "你好\n第二行",
+     "sentAt": "2026-11-09T05:00:00Z"
+    }
+   ],
+   "lines": [
+    "[msg #1 Pi] 你好 ⏎ 第二行"
+   ],
+   "seenAfter": {
+    "names": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+     "ffffffffffffffffffffffffffffffff": "Pi"
+    },
+    "members": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+     "ffffffffffffffffffffffffffffffff": false
+    },
+    "tasks": {
+     "1": "[\"todo\",\"\",\"统一监听器\",0,0]"
+    },
+    "taskTitles": {
+     "1": "统一监听器"
+    },
+    "goalShown": 1,
+    "paused": false,
+    "waits": {}
+   },
+   "hello": {
+    "type": "hello",
+    "title": "开发房间",
+    "members": 2,
+    "openTasks": 1,
+    "mine": 0,
+    "goal": {
+     "revision": 1,
+     "status": "active"
+    },
+    "paused": false,
+    "waitingOnYou": 0
+   },
+   "helloLine": "[room 开发房间] 成员 2 · 未完成任务 1，看板用 board 查看 · Goal r1 active"
+  },
+  {
+   "name": "later page: only what changed, and the wait on you",
+   "me": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "input": {
+    "seen": {
+     "names": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+      "ffffffffffffffffffffffffffffffff": "Pi"
+     },
+     "members": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+      "ffffffffffffffffffffffffffffffff": false
+     },
+     "tasks": {
+      "1": "[\"todo\",\"\",\"统一监听器\",0,0]"
+     },
+     "taskTitles": {
+      "1": "统一监听器"
+     },
+     "goalShown": 1,
+     "paused": false,
+     "waits": {}
+    },
+    "page": {
+     "title": "开发房间",
+     "members": [
+      {
+       "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "name": "Claude",
+       "kind": "ai"
+      },
+      {
+       "id": "ffffffffffffffffffffffffffffffff",
+       "name": "Pi",
+       "kind": "ai"
+      },
+      {
+       "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+       "name": "前端",
+       "kind": "ai"
+      }
+     ],
+     "tasks": [
+      {
+       "id": 1,
+       "title": "统一监听器",
+       "status": "doing",
+       "createdBy": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "updatedAt": "2026-11-09T05:00:00Z",
+       "assignee": "ffffffffffffffffffffffffffffffff"
+      },
+      {
+       "id": 2,
+       "title": "Windows ACL",
+       "status": "todo",
+       "createdBy": "ffffffffffffffffffffffffffffffff",
+       "updatedAt": "2026-11-09T05:00:00Z"
+      }
+     ],
+     "goal": {
+      "id": 1,
+      "status": "paused",
+      "title": "完成 cafe-space"
+     },
+     "goalRevision": 2,
+     "aiPaused": true,
+     "waitingOnYou": [
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+     ],
+     "states": {
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {
+       "state": "waiting",
+       "waitingFor": "review",
+       "on": [
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+       ],
+       "ref": 3,
+       "detail": "等复核 #62",
+       "since": "2026-11-09T05:00:00Z",
+       "updatedAt": "2026-11-09T05:00:00Z"
+      }
+     }
+    },
+    "fresh": [
+     {
+      "seq": 3,
+      "id": "m-3",
+      "memberId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "text": "请复核",
+      "at": "2026-11-09T05:00:00Z",
+      "to": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "replyTo": 1
+     }
+    ],
+    "goalConsumed": 1
+   },
+   "events": [
+    {
+     "type": "msg",
+     "seq": 3,
+     "from": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "to": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "replyTo": 1,
+     "text": "请复核",
+     "sentAt": "2026-11-09T05:00:00Z"
+    },
+    {
+     "type": "member",
+     "change": "joined",
+     "member": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "kind": "ai"
+    },
+    {
+     "type": "task",
+     "task": 1,
+     "title": "统一监听器",
+     "status": "doing",
+     "assignee": "ffffffffffffffffffffffffffffffff",
+     "change": "updated",
+     "was": "todo",
+     "reassigned": true
+    },
+    {
+     "type": "task",
+     "task": 2,
+     "title": "Windows ACL",
+     "status": "todo",
+     "change": "created"
+    },
+    {
+     "type": "goal",
+     "revision": 2,
+     "goal": 1,
+     "status": "paused",
+     "title": "完成 cafe-space"
+    },
+    {
+     "type": "pause",
+     "paused": true
+    },
+    {
+     "type": "waiting",
+     "change": "started",
+     "member": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "waitingFor": "review",
+     "detail": "等复核 #62",
+     "ref": 3
+    }
+   ],
+   "lines": [
+    "[msg #3 前端 → 你 ↩#1] 请复核",
+    "[member+ 前端 (ai)]",
+    "[task #1 todo→doing Pi] 统一监听器",
+    "[task #2 新建 todo 未指派] Windows ACL",
+    "[goal r2 paused] 完成 cafe-space（goal read 查看；确认：done-goal 2）",
+    "[pause on] 房间已暂停 AI 发言：只读，不发帖",
+    "[waiting-on-you 前端 review #3] 等复核 #62"
+   ],
+   "seenAfter": {
+    "names": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+     "ffffffffffffffffffffffffffffffff": "Pi",
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+    },
+    "members": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+     "ffffffffffffffffffffffffffffffff": false,
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": false
+    },
+    "tasks": {
+     "1": "[\"doing\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",0,0]",
+     "2": "[\"todo\",\"\",\"Windows ACL\",0,0]"
+    },
+    "taskTitles": {
+     "1": "统一监听器",
+     "2": "Windows ACL"
+    },
+    "goalShown": 2,
+    "paused": true,
+    "waits": {
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "2026-11-09T05:00:00Z|3|等复核 #62"
+    }
+   }
+  },
+  {
+   "name": "a member leaves, a task is done or deleted, a wait ends, the pause lifts",
+   "me": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "input": {
+    "seen": {
+     "names": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+      "ffffffffffffffffffffffffffffffff": "Pi",
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+     },
+     "members": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+      "ffffffffffffffffffffffffffffffff": false,
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": false
+     },
+     "tasks": {
+      "1": "[\"doing\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",0,0]",
+      "2": "[\"todo\",\"\",\"Windows ACL\",0,0]"
+     },
+     "taskTitles": {
+      "1": "统一监听器",
+      "2": "Windows ACL"
+     },
+     "goalShown": 2,
+     "paused": true,
+     "waits": {
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "2026-11-09T05:00:00Z|3|等复核 #62"
+     }
+    },
+    "page": {
+     "title": "开发房间",
+     "members": [
+      {
+       "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "name": "Claude",
+       "kind": "ai"
+      },
+      {
+       "id": "ffffffffffffffffffffffffffffffff",
+       "name": "Pi",
+       "kind": "ai"
+      },
+      {
+       "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+       "name": "前端",
+       "kind": "ai",
+       "removed": true
+      }
+     ],
+     "tasks": [
+      {
+       "id": 1,
+       "title": "统一监听器",
+       "status": "done",
+       "createdBy": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "updatedAt": "2026-11-09T05:00:00Z",
+       "assignee": "ffffffffffffffffffffffffffffffff",
+       "result": 4
+      }
+     ],
+     "goal": {
+      "id": 1,
+      "status": "paused",
+      "title": "完成 cafe-space"
+     },
+     "goalRevision": 2,
+     "aiPaused": false,
+     "waitingOnYou": [],
+     "states": {}
+    },
+    "fresh": [],
+    "goalConsumed": 1
+   },
+   "events": [
+    {
+     "type": "member",
+     "change": "left",
+     "member": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+     "type": "task",
+     "task": 1,
+     "title": "统一监听器",
+     "status": "done",
+     "assignee": "ffffffffffffffffffffffffffffffff",
+     "change": "updated",
+     "was": "doing",
+     "result": 4
+    },
+    {
+     "type": "task",
+     "change": "deleted",
+     "task": 2,
+     "title": "Windows ACL"
+    },
+    {
+     "type": "pause",
+     "paused": false
+    },
+    {
+     "type": "waiting",
+     "change": "ended",
+     "member": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+   ],
+   "lines": [
+    "[member- 前端]",
+    "[task #1 doing→done Pi 结果 #4] 统一监听器",
+    "[task #2 已删除] Windows ACL",
+    "[pause off] 房间已恢复 AI 发言",
+    "[waiting-ended 前端]"
+   ],
+   "seenAfter": {
+    "names": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+     "ffffffffffffffffffffffffffffffff": "Pi",
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+    },
+    "members": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+     "ffffffffffffffffffffffffffffffff": false,
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": true
+    },
+    "tasks": {
+     "1": "[\"done\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",4,0]"
+    },
+    "taskTitles": {
+     "1": "统一监听器"
+    },
+    "goalShown": 2,
+    "paused": false,
+    "waits": {}
+   }
+  },
+  {
+   "name": "more than 20 new messages become one backlog line",
+   "me": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "input": {
+    "seen": {
+     "names": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+      "ffffffffffffffffffffffffffffffff": "Pi",
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+     },
+     "members": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+      "ffffffffffffffffffffffffffffffff": false,
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": true
+     },
+     "tasks": {
+      "1": "[\"done\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",4,0]"
+     },
+     "taskTitles": {
+      "1": "统一监听器"
+     },
+     "goalShown": 2,
+     "paused": false,
+     "waits": {}
+    },
+    "page": {
+     "title": "开发房间",
+     "members": [
+      {
+       "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "name": "Claude",
+       "kind": "ai"
+      },
+      {
+       "id": "ffffffffffffffffffffffffffffffff",
+       "name": "Pi",
+       "kind": "ai"
+      },
+      {
+       "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+       "name": "前端",
+       "kind": "ai",
+       "removed": true
+      }
+     ],
+     "tasks": [
+      {
+       "id": 1,
+       "title": "统一监听器",
+       "status": "done",
+       "createdBy": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "updatedAt": "2026-11-09T05:00:00Z",
+       "assignee": "ffffffffffffffffffffffffffffffff",
+       "result": 4
+      }
+     ],
+     "goal": {
+      "id": 1,
+      "status": "paused",
+      "title": "完成 cafe-space"
+     },
+     "goalRevision": 2,
+     "aiPaused": false,
+     "waitingOnYou": [],
+     "states": {}
+    },
+    "fresh": [
+     {
+      "seq": 10,
+      "id": "m-10",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 10",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 11,
+      "id": "m-11",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 11",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 12,
+      "id": "m-12",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 12",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 13,
+      "id": "m-13",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 13",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 14,
+      "id": "m-14",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 14",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 15,
+      "id": "m-15",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 15",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 16,
+      "id": "m-16",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 16",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 17,
+      "id": "m-17",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 17",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 18,
+      "id": "m-18",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 18",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 19,
+      "id": "m-19",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 19",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 20,
+      "id": "m-20",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 20",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 21,
+      "id": "m-21",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 21",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 22,
+      "id": "m-22",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 22",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 23,
+      "id": "m-23",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 23",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 24,
+      "id": "m-24",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 24",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 25,
+      "id": "m-25",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 25",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 26,
+      "id": "m-26",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 26",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 27,
+      "id": "m-27",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 27",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 28,
+      "id": "m-28",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 28",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 29,
+      "id": "m-29",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 29",
+      "at": "2026-11-09T05:00:00Z"
+     },
+     {
+      "seq": 30,
+      "id": "m-30",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "积压 30",
+      "at": "2026-11-09T05:00:00Z"
+     }
+    ],
+    "goalConsumed": 2
+   },
+   "events": [
+    {
+     "type": "backlog",
+     "from": 10,
+     "to": 30,
+     "count": 21
+    }
+   ],
+   "lines": [
+    "[backlog #10–#30 共 21 条] 没有逐条推送：用 next 分批读取，处理后 done"
+   ],
+   "seenAfter": {
+    "names": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+     "ffffffffffffffffffffffffffffffff": "Pi",
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+    },
+    "members": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+     "ffffffffffffffffffffffffffffffff": false,
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": true
+    },
+    "tasks": {
+     "1": "[\"done\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",4,0]"
+    },
+    "taskTitles": {
+     "1": "统一监听器"
+    },
+    "goalShown": 2,
+    "paused": false,
+    "waits": {}
+   }
+  },
+  {
+   "name": "long text is cut at 1500 characters and points to show",
+   "me": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "input": {
+    "seen": {
+     "names": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+      "ffffffffffffffffffffffffffffffff": "Pi",
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+     },
+     "members": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+      "ffffffffffffffffffffffffffffffff": false,
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": true
+     },
+     "tasks": {
+      "1": "[\"done\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",4,0]"
+     },
+     "taskTitles": {
+      "1": "统一监听器"
+     },
+     "goalShown": 2,
+     "paused": false,
+     "waits": {}
+    },
+    "page": {
+     "title": "开发房间",
+     "members": [
+      {
+       "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "name": "Claude",
+       "kind": "ai"
+      },
+      {
+       "id": "ffffffffffffffffffffffffffffffff",
+       "name": "Pi",
+       "kind": "ai"
+      },
+      {
+       "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+       "name": "前端",
+       "kind": "ai",
+       "removed": true
+      }
+     ],
+     "tasks": [
+      {
+       "id": 1,
+       "title": "统一监听器",
+       "status": "done",
+       "createdBy": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "updatedAt": "2026-11-09T05:00:00Z",
+       "assignee": "ffffffffffffffffffffffffffffffff",
+       "result": 4
+      }
+     ],
+     "goal": {
+      "id": 1,
+      "status": "paused",
+      "title": "完成 cafe-space"
+     },
+     "goalRevision": 2,
+     "aiPaused": false,
+     "waitingOnYou": [],
+     "states": {}
+    },
+    "fresh": [
+     {
+      "seq": 40,
+      "id": "m-40",
+      "memberId": "ffffffffffffffffffffffffffffffff",
+      "text": "长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长",
+      "at": "2026-11-09T05:00:00Z"
+     }
+    ],
+    "goalConsumed": 2
+   },
+   "events": [
+    {
+     "type": "msg",
+     "seq": 40,
+     "from": "ffffffffffffffffffffffffffffffff",
+     "text": "长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长",
+     "truncated": true,
+     "sentAt": "2026-11-09T05:00:00Z"
+    }
+   ],
+   "lines": [
+    "[msg #40 Pi] 长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长…（全文：show 40）"
+   ],
+   "seenAfter": {
+    "names": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "Claude",
+     "ffffffffffffffffffffffffffffffff": "Pi",
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "前端"
+    },
+    "members": {
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+     "ffffffffffffffffffffffffffffffff": false,
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": true
+    },
+    "tasks": {
+     "1": "[\"done\",\"ffffffffffffffffffffffffffffffff\",\"统一监听器\",4,0]"
+    },
+    "taskTitles": {
+     "1": "统一监听器"
+    },
+    "goalShown": 2,
+    "paused": false,
+    "waits": {}
+   }
+  }
+ ]
+}
