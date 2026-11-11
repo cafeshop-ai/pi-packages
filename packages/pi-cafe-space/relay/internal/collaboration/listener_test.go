@@ -84,6 +84,7 @@ func TestTheServerOffersTheFilesTheGuideNames(t *testing.T) {
 		testOrigin + endpoint + "/agent/cafe-room.js", "SHA-256 " + b.Get(agentdist.PiBridge).SHA256, "~/.pi/agent/extensions/cafe-room.js",
 		"/reload", "keeps the conversation", "/cafe collab migrate --consumed-through", "a listen process or polling never wakes Pi",
 		"stop it normally and confirm the process exited with no pending delivery", "never fetched, delivered or the newest seq you saw", "without evidence use 0",
+		"bind this session yourself with the cafe_room_connect tool", "SPACE_AGENT_LISTENER_RUNNING", "send any message so you continue",
 	} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("the guide does not say %q", want)

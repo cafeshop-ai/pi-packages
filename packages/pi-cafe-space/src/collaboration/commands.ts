@@ -33,7 +33,8 @@ export function registerCafeRoute(pi: ExtensionAPI, area: Area, command: Command
       }
       const gateway = routes.get('gateway');
       if (gateway) { await gateway.handler(args, ctx); return; }
-      if (ctx.hasUI) ctx.ui.notify('仅加载了讨论桥接，未启动电脑网关。用法：/cafe collab connect <私有配置绝对路径> · /cafe collab resume · /cafe collab pause · /cafe collab status', 'info');
+      // Most often the collab word is missing: say so, instead of suggesting the bridge is broken.
+      if (ctx.hasUI) ctx.ui.notify(`没有“${args.trim().split(/\s+/)[0] ?? ''}”这个命令：房间命令都以 /cafe collab 开头，例如 /cafe collab status、/cafe collab migrate --consumed-through <序号> <凭据绝对路径，不加引号>。这里只加载了讨论桥接，没有电脑网关。`, 'info');
     },
   });
 }

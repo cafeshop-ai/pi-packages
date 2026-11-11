@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import extension from './extension.js';
 import * as client from './client.js';
@@ -145,6 +148,52 @@ it('does nothing on load; explicit connect skips old history and injects only ne
   f.messages.push(message(2)); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
   const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0]; expect(payload.content).toContain('untrusted peer data'); expect(JSON.stringify(payload)).not.toContain(token);
   expect((await f.tool('cafe_room_status')).details.cursor).toBe(2);
+});
+it('lets the model bind its own session with cafe_room_connect, then resume it after a reload', async () => {
+  const f = fixture(); f.messages.push(...Array.from({ length: 30 }, (_, i) => message(i + 1)));
+  const connected = await f.tool('cafe_room_connect', { config: 'C:/private/room with spaces.json', consumedThrough: 25 });
+  expect(connected.details).toMatchObject({ outcome: 'CONNECTED', cursor: 25, consumed: 25, delivered: 0 });
+  expect(client.readMembership).toHaveBeenCalledWith('C:/private/room with spaces.json');
+  // The same single binding record as the user's migrate command; the token never reaches the session.
+  expect(f.entries[0].data).toMatchObject({ kind: 'binding', consumedThrough: 25, configPath: 'C:/private/room with spaces.json' });
+  expect(JSON.stringify(f.entries) + JSON.stringify(connected)).not.toContain(token);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(f.pi.sendMessage).mock.calls[0]![0].content).toContain('[msg #26');
+  f.reload();
+  expect((await f.tool('cafe_room_status')).details.state).toBe('disconnected');
+  const resumed = await f.tool('cafe_room_connect', { config: 'C:/ignored.json', consumedThrough: 0 });
+  expect(resumed.details).toMatchObject({ outcome: 'RESUMED', consumed: 25 });
+  expect(client.readMembership).toHaveBeenLastCalledWith('C:/private/room with spaces.json');
+});
+it.each([
+  [{}, 'ABSOLUTE_PRIVATE_CONFIG_REQUIRED'], [{ config: 'room.json', consumedThrough: 0 }, 'ABSOLUTE_PRIVATE_CONFIG_REQUIRED'],
+  [{ config: '"C:/private/room.json"', consumedThrough: 0 }, 'ABSOLUTE_PRIVATE_CONFIG_REQUIRED'], [{ config: 'C:/private/room.json' }, 'CONSUMED_THROUGH_REQUIRED'],
+])('refuses a self-binding without an absolute unquoted config and a handled prefix: %j', async (params, outcome) => {
+  const f = fixture();
+  expect((await f.tool('cafe_room_connect', params)).details).toMatchObject({ outcome, state: 'disconnected' });
+  expect(client.readMembership).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.entries).toEqual([]);
+});
+it.each([
+  [{ listener: process.pid }, 'SPACE_AGENT_LISTENER_RUNNING'], [{ deliveryWatcher: { pid: process.pid } }, 'SPACE_AGENT_LISTENER_RUNNING'],
+  [{ delivery: { seq: 4, pid: 0 } }, 'SPACE_AGENT_DELIVERY_PENDING'],
+])('refuses to share a member with a running or unsettled space-agent: %j', async (state, outcome) => {
+  const home = mkdtempSync(join(tmpdir(), 'cafe-connect-')); cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ fetched: 5, consumed: 5, skipped: [], ...state }));
+  const f = fixture(); f.messages.push(...Array.from({ length: 5 }, (_, i) => message(i + 1)));
+  expect((await f.tool('cafe_room_connect', { config: join(home, 'member.json'), consumedThrough: 5 })).details).toMatchObject({ outcome, state: 'disconnected' });
+  expect(client.readMembership).not.toHaveBeenCalled(); expect(f.entries).toEqual([]);
+  // Once that listener is gone, a stale pid no longer blocks the binding.
+  writeFileSync(join(home, 'state.json'), JSON.stringify({ fetched: 5, consumed: 5, skipped: [], listener: 2 ** 31 - 2 }));
+  if (!('delivery' in state)) expect((await f.tool('cafe_room_connect', { config: join(home, 'member.json'), consumedThrough: 5 })).details.outcome).toBe('CONNECTED');
+});
+it('reports a refused migration to the model instead of only to the screen', async () => {
+  const f = fixture();
+  await f.command('connect C:/private/room.json');
+  f.session('session-two');
+  const result = await f.tool('cafe_room_connect', { config: 'C:/private/room.json', consumedThrough: 0 });
+  expect(result.details.outcome).toBe('NOT_CONNECTED');
+  expect(result.details.notices).toContain('ROOM_ALREADY_INITIALIZED_USE_RESUME');
 });
 it('migrates an explicit handled prefix without skipping backlog or inventing host delivery, and restores it', async () => {
   const f = fixture(); f.messages.push(...Array.from({ length: 550 }, (_, i) => message(i + 1)));

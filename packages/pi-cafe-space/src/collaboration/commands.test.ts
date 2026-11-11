@@ -43,7 +43,8 @@ it('bridge-only does not pretend /cafe status is the computer gateway or access 
   registerCafeRoute(f.api(), 'collab', { description: 'bridge', handler: collab });
   await f.commands.get('cafe').handler('status', f.ctx);
   expect(collab).not.toHaveBeenCalled();
-  expect(f.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('未启动电脑网关'), 'info');
+  expect(f.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('没有电脑网关'), 'info');
+  expect(f.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('房间命令都以 /cafe collab 开头'), 'info');
   await f.commands.get('cafe').handler('collab status', f.ctx);
   expect(collab).toHaveBeenCalledExactlyOnceWith('status', f.ctx);
 });

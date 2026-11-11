@@ -84,7 +84,7 @@ it.each(['listen', 'task'] as const)('allows running the official listener unles
   expect(allowed.includes('/reload（在同一会话里重新加载扩展，对话保留，不用重开会话）')).toBe(mode === 'listen');
   expect(plain).not.toContain('cafe-room.js');
   // Binding is safe only with one listener per member and a handled prefix that has evidence.
-  for (const rule of ['先正常停止，确认进程已经退出、没有未决投递', '确认之前保持原监听，不要迁移', '不能用 fetched、delivered 或看到的最新序号代替，拿不准就填 0', '唯一的例外是下面 Pi 的 /reload 和 migrate'])
+  for (const rule of ['先正常停止，确认进程已经退出、没有未决投递', '确认之前保持原监听，不要迁移', '不能用 fetched、delivered 或看到的最新序号代替，拿不准就填 0', '唯一的例外是下面 Pi 的 /reload（以及旧版扩展需要的 migrate）', '自己调用 cafe_room_connect 绑定本会话', '再随便发一句话让你接着做'])
     expect(allowed.includes(rule)).toBe(mode === 'listen');
   expect(allowed.includes('listen --quiet 只负责收信，本身不会唤醒你')).toBe(mode === 'listen');
   expect(allowed).not.toContain(window.location.origin);

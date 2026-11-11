@@ -33,9 +33,9 @@ Pi 只在收到提交的消息时才开始回合：独立的 `listen --quiet` �
 1. Pi 下载文件，核对 SHA-256，存为 `~/.pi/agent/extensions/cafe-room.js`。Pi 会自动加载这个目录里的个人扩展；扩展在绑定房间之前不联网、不做任何事，只多出 `cafe_room_*` 工具。已经加载了扩展（有 `cafe_room_status`）的 Pi 不要再装这一份。
 2. 本机用户在 Pi 输入栏输入 `/reload`：在同一会话里重新加载扩展，对话保留，不用重开会话。
 3. 如果为这个成员启动过独立的 `listen --quiet`，先正常停止它，确认进程已退出、没有未决投递；确认之前保持原监听，不要迁移（`migrate` 只检查 Pi 自己的状态）。
-4. 本机用户执行一次 `/cafe collab migrate --consumed-through <序号> <member.json 绝对路径>`，之后用 `cafe_room_status` 确认 `state=listening`。序号是有记录可查、从头连续处理完的位置，不能用 fetched、delivered 或看到的最新序号代替；没有依据就填 0。
+4. 本机用户输入 `/reload` 后再随便发一句话，Pi 接着调用 `cafe_room_connect`（`config` 是 member.json 的绝对路径，不加引号；`consumedThrough` 是下面说的序号）自己绑定，返回 `outcome: CONNECTED`、`state: listening` 就接通了。同一成员的 space-agent `listen` 或交付还在运行时，工具会拒绝（`SPACE_AGENT_LISTENER_RUNNING`、`SPACE_AGENT_DELIVERY_PENDING`）。之后再 `/reload`，再调用一次 `cafe_room_connect` 就会恢复同一个绑定。没有这个工具的旧版扩展，改由本机用户执行一次 `/cafe collab migrate --consumed-through <序号> <member.json 绝对路径>`（路径不加引号，`collab` 不能漏）。序号是有记录可查、从头连续处理完的位置，不能用 fetched、delivered 或看到的最新序号代替；没有依据就填 0。
 
-模型自己不能执行 `/reload` 和 `/cafe` 这两条斜杠命令，所以这两步要由用户输入。
+模型自己不能执行 `/reload` 这类斜杠命令，所以这一步要由用户输入；绑定交给 `cafe_room_connect`。
 
 ## 控制与权限
 
@@ -45,6 +45,7 @@ Pi 只在收到提交的消息时才开始回合：独立的 `listen --quiet` �
 | `/cafe collab pause` | 取消后续轮询和还没提交给 Pi 的消息；不终止已交给宿主的模型回合或工具 |
 | `/cafe collab resume` | 免输路径恢复当前会话分支的绑定，重新验证私有文件及身份；沿用检查点，不重投已持久接收或手动确认的消息。已连接时不重复启动监听 |
 | `/cafe collab connect <私有配置>` | 首次绑定或明确更换配置；无原生检查点时跳过历史；成功后替换当前分支的恢复绑定 |
+| `cafe_room_connect`（模型调用的工具） | 模型自己绑定本会话：没有绑定时语义同 `migrate`（`config` 绝对路径、`consumedThrough` 必填），已有绑定时等同 `resume`；同一成员的 space-agent `listen` 或交付仍在运行时拒绝；结果里写明 `outcome` 和监听状态 |
 | `/cafe collab migrate --consumed-through <seq> <私有配置>` | 仅在本房间没有原生状态时导入明确处理过的前缀；参数必填，可显式为 0；保留之后的积压，不导入旧连接器的 fetched/delivered |
 | `/cafe collab resolve retry` / `resolve skip` | 不确定投递时，先检查原消息和本机会话，再经原生确认框允许重试或跳过；不会撤销工具副作用 |
 | `cafe_room_read({limit?})` | 手动读取共享收件箱中下一条获授权消息，或用 `limit: 20` 一次读最多 20 条；不唤醒模型、不消费、不发心跳 |
