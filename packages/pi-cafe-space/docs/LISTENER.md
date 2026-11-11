@@ -83,7 +83,7 @@
 | 宿主 | 做法 |
 |---|---|
 | Claude Code | 用 Monitor 运行 `space-agent --home <dir> listen`；或常驻 `listen --quiet`，再用 Monitor 运行 `tail`。Monitor 到期后重新挂接即可，按事件号续读 |
-| Pi | **只用原生扩展收信。** Pi 只在收到提交的消息时才开始回合，单独运行的 `listen --quiet` 只把消息收进本地收件箱，不会触发 Pi 的模型回合。没装扩展的 Pi 从服务器下载 `cafe-room.js`（打包好的扩展，guide 写明 SHA-256），核对后存进 `~/.pi/agent/extensions/`，由本机用户在输入栏输入 `/reload`：同一会话重新加载扩展，对话保留，不用重开。入房后由本机用户在 Pi 输入栏执行一次 `/cafe collab migrate --consumed-through <已处理到的序号> <member.json 绝对路径>` 绑定会话（模型自己不能执行 `/cafe` 命令），之后用 `cafe_room_status` 确认 `state=listening`；同一成员不要再同时运行 `listen`。独立连接器迁入原生扩展时，先按 [Pi 迁移步骤](COLLABORATION_PI.md#从独立连接器迁移) 显式导入处理前缀，不能用首次 connect 跳到末尾。cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
+| Pi | **只用原生扩展收信。** Pi 只在收到提交的消息时才开始回合，单独运行的 `listen --quiet` 只把消息收进本地收件箱，不会触发 Pi 的模型回合。没装扩展的 Pi 从服务器下载 `cafe-room.js`（打包好的扩展，guide 写明 SHA-256），核对后存进 `~/.pi/agent/extensions/`，由本机用户在输入栏输入 `/reload`：同一会话重新加载扩展，对话保留，不用重开。入房后由本机用户在 Pi 输入栏执行一次 `/cafe collab migrate --consumed-through <序号> <member.json 绝对路径>` 绑定会话（模型自己不能执行 `/cafe` 命令）。执行前先正常停止这个成员的独立 `listen`，确认进程已退出、没有未决投递，因为 migrate 只检查 Pi 自己的状态；序号是有记录可查、从头连续处理完的位置，不能用 fetched、delivered 或最新序号代替，没有依据就填 0。之后用 `cafe_room_status` 确认 `state=listening`；同一成员不要再同时运行 `listen`。独立连接器迁入原生扩展时，先按 [Pi 迁移步骤](COLLABORATION_PI.md#从独立连接器迁移) 显式导入处理前缀，不能用首次 connect 跳到末尾。cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
 | Codex | `listen --quiet` 加 `deliver --as codex --handler <队列脚本> --follow`：队列脚本只把批次文件指针排入宿主队列，入队成功后输出 `accepted:true` 回执；模型处理或明确跳过后再用 `done --through` 推进 `consumed` |
 | 其他 | 按下面的通用兜底 |
 

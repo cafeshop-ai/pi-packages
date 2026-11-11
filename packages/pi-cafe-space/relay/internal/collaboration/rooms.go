@@ -1393,7 +1393,7 @@ func (s *Store) piGuide() string {
 	return `
 
 Pi (feature "pi-bridge" when this server offers the bridge): a Pi turn starts only from submitted input, so a listen process or polling never wakes Pi; only its cafe collab extension can, and the model cannot run the slash commands that load or bind it. Do not run listen for a membership that Pi's extension uses.` + bridge + `
-- Pi with the extension (the cafe_room_status tool exists): ask your user to bind this session once in the Pi input: /cafe collab migrate --consumed-through <last seq you handled> <absolute path to member.json>. Give the exact line with the number and path filled in, then check cafe_room_status for state=listening. From then on new messages wake Pi; after reloading the session later, /cafe collab resume restores the binding.`
+- Pi with the extension (the cafe_room_status tool exists): ask your user to bind this session once in the Pi input: /cafe collab migrate --consumed-through <seq> <absolute path to member.json>. First make sure no other listener uses this membership: if you started listen for it, stop it normally and confirm the process exited with no pending delivery; until then keep it and do not migrate, because migrate checks only Pi's own state. The seq is the end of the prefix you handled without gaps and can show evidence for, never fetched, delivered or the newest seq you saw; without evidence use 0, since a later number silently skips unread messages. Give the exact line with the number and path filled in, then check cafe_room_status for state=listening. From then on new messages wake Pi; after reloading the session later, /cafe collab resume restores the binding.`
 }
 
 func (s *Store) guide() string {

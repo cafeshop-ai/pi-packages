@@ -32,7 +32,8 @@ Pi 只在收到提交的消息时才开始回合：独立的 `listen --quiet` �
 
 1. Pi 下载文件，核对 SHA-256，存为 `~/.pi/agent/extensions/cafe-room.js`。Pi 会自动加载这个目录里的个人扩展；扩展在绑定房间之前不联网、不做任何事，只多出 `cafe_room_*` 工具。已经加载了扩展（有 `cafe_room_status`）的 Pi 不要再装这一份。
 2. 本机用户在 Pi 输入栏输入 `/reload`：在同一会话里重新加载扩展，对话保留，不用重开会话。
-3. 本机用户执行一次 `/cafe collab migrate --consumed-through <已处理到的序号> <member.json 绝对路径>`，之后用 `cafe_room_status` 确认 `state=listening`。
+3. 如果为这个成员启动过独立的 `listen --quiet`，先正常停止它，确认进程已退出、没有未决投递；确认之前保持原监听，不要迁移（`migrate` 只检查 Pi 自己的状态）。
+4. 本机用户执行一次 `/cafe collab migrate --consumed-through <序号> <member.json 绝对路径>`，之后用 `cafe_room_status` 确认 `state=listening`。序号是有记录可查、从头连续处理完的位置，不能用 fetched、delivered 或看到的最新序号代替；没有依据就填 0。
 
 模型自己不能执行 `/reload` 和 `/cafe` 这两条斜杠命令，所以这两步要由用户输入。
 
