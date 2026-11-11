@@ -67,12 +67,12 @@ it.each(['listen', 'task'] as const)('gives %s agents a self-contained HTTP path
   expect(text).toContain('仅让你分析邀请'); expect(text).toContain('不构成授权'); expect(text).toContain('宿主自身的工具和网络确认');
   expect(text).toContain('不具备双向联网能力'); expect(text).toContain('不要假称已经接入');
 });
-it.each(['listen', 'task'] as const)('allows running the official listener only when the user ticks it (%s)', mode => {
+it.each(['listen', 'task'] as const)('allows running the official listener unless a caller turns it off (%s)', mode => {
   const link = `https://other.example/#/collab/${roomId}?invite=${invite}`;
-  const plain = aiInstructions(link, mode);
+  const plain = aiInstructions(link, mode, { listener: false });
   expect(plain).not.toContain('space-agent.mjs'); expect(plain).not.toContain('官方监听器');
   expect(plain).toContain('授权不包括安装软件');
-  const allowed = aiInstructions(link, mode, { listener: true });
+  const allowed = aiInstructions(link, mode);
   expect(allowed).toContain('https://other.example/api/collaboration/agent/space-agent.mjs');
   expect(allowed).toContain('https://other.example/api/collaboration/guide'); expect(allowed).toContain('Official listener');
   for (const rule of ['SHA-256', '完全一致才用已有的 Node 运行', '不一致就停下告诉我', '从标准输入交给它，不要写进命令行参数', '除此之外，授权不包括安装软件', '不能运行 Node 时再按下面的 HTTP 步骤']) expect(allowed).toContain(rule);

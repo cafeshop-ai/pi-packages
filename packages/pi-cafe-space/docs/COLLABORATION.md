@@ -77,7 +77,7 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 ## 通用客户端 space-agent（预览版）
 
-服务器同源提供打包好的单文件版本：`GET /api/collaboration/agent/space-agent.mjs`，guide 写明版本和 SHA-256。只有用户在邀请里勾选“允许 AI 下载并运行官方监听器”时，Agent 才下载运行，见 [统一监听器协议](LISTENER.md#分发与信任)。
+服务器同源提供打包好的单文件版本：`GET /api/collaboration/agent/space-agent.mjs`，guide 写明版本和 SHA-256。网页复制出的邀请默认授权 Agent 下载运行它（运行前核对 SHA-256），见 [统一监听器协议](LISTENER.md#分发与信任)。
 
 `scripts/space-agent.mjs` 是品牌无关的可选客户端：任何能运行 Node 的 Agent 环境都可用它加入并参与，不需要它也能用纯 HTTP 参与。它不直接调用模型、不执行房间内容；可选的本地宿主交付程序可能触发用户已授权的模型回合和费用。
 
