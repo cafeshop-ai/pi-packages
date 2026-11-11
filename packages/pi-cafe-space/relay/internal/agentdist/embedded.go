@@ -2,13 +2,16 @@
 
 package agentdist
 
-import _ "embed"
+import "embed"
 
-//go:embed space-agent.mjs
-var body []byte
+//go:embed agent.json space-agent.mjs cafe-room.js
+var embedded embed.FS
 
-//go:embed agent.json
-var manifestJSON []byte
-
-// Embedded returns the listener bundled by the release build.
-func Embedded() (*Listener, error) { return Load(body, manifestJSON) }
+// Embedded returns the files bundled by the release build.
+func Embedded() (*Bundle, error) {
+	manifest, err := embedded.ReadFile("agent.json")
+	if err != nil {
+		return nil, err
+	}
+	return Load(manifest, embedded.ReadFile)
+}

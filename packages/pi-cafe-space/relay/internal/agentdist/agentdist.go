@@ -1,7 +1,8 @@
-// Package agentdist holds the official room listener (docs/LISTENER.md) that the Space server
-// offers same-origin. The release build bundles scripts/space-agent.mjs into one file and writes
-// its manifest next to it; the server serves that file unchanged and names its SHA-256 in the
-// room guide, so an agent can check what it downloaded before running it.
+// Package agentdist holds the files the Space server offers agents same-origin: the official room
+// listener (docs/LISTENER.md) and the Pi room bridge, the cafe collab extension that lets a Pi
+// session be woken by room messages. The release build bundles each into one file and writes one
+// manifest; the server serves the files unchanged and names their SHA-256 in the room guide, so an
+// agent can check what it downloaded before running or loading it.
 package agentdist
 
 import (
@@ -12,44 +13,71 @@ import (
 	"regexp"
 )
 
-// Name is the file name and the last path segment under which the listener is served.
-const Name = "space-agent.mjs"
+// Listener and PiBridge are the file names, and the last path segment under which each is served.
+const (
+	Listener = "space-agent.mjs"
+	PiBridge = "cafe-room.js"
+)
 
-const manifestFormat = "pi-cafe-space-agent-v1"
+const manifestFormat = "pi-cafe-space-agent-v2"
 
-// MaxBytes bounds the embedded listener; the bundle is far smaller.
-const MaxBytes = 1 << 20
+// MaxBytes bounds each embedded file; the bundles are far smaller.
+const MaxBytes = 2 << 20
 
-// Listener is the verified bundle and what the guide says about it.
-type Listener struct {
-	Version  string // the package version of the build
-	Protocol string // the listener protocol version in docs/LISTENER.md
+// File is one verified bundle and what the guide says about it.
+type File struct {
+	Name     string
+	Protocol string // the listener protocol version in docs/LISTENER.md; empty for the bridge
 	SHA256   string
 	Body     []byte
 }
 
+// Bundle is every file of one build, all from the same package version.
+type Bundle struct {
+	Version string
+	files   map[string]*File
+}
+
+// Get returns the named file, or nil when this build does not carry it.
+func (b *Bundle) Get(name string) *File {
+	if b == nil {
+		return nil
+	}
+	return b.files[name]
+}
+
 type manifest struct {
-	Format   string `json:"format"`
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Protocol string `json:"protocol"`
-	Bytes    int    `json:"bytes"`
-	SHA256   string `json:"sha256"`
+	Format  string `json:"format"`
+	Version string `json:"version"`
+	Files   []struct {
+		Name     string `json:"name"`
+		Protocol string `json:"protocol,omitempty"`
+		Bytes    int    `json:"bytes"`
+		SHA256   string `json:"sha256"`
+	} `json:"files"`
 }
 
 var versionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$`)
 var hashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// Load checks the bundle against its manifest. A mismatch is an error, never a partial listener.
-func Load(body, manifestJSON []byte) (*Listener, error) {
+// Load checks every file against the manifest. Any mismatch is an error, never a partial bundle.
+func Load(manifestJSON []byte, read func(name string) ([]byte, error)) (*Bundle, error) {
 	var m manifest
-	if json.Unmarshal(manifestJSON, &m) != nil || m.Format != manifestFormat || m.Name != Name ||
-		!versionPattern.MatchString(m.Version) || !versionPattern.MatchString(m.Protocol) || !hashPattern.MatchString(m.SHA256) {
-		return nil, errors.New("invalid listener manifest")
+	if json.Unmarshal(manifestJSON, &m) != nil || m.Format != manifestFormat || !versionPattern.MatchString(m.Version) || len(m.Files) == 0 {
+		return nil, errors.New("invalid agent manifest")
 	}
-	sum := sha256.Sum256(body)
-	if len(body) == 0 || len(body) > MaxBytes || len(body) != m.Bytes || hex.EncodeToString(sum[:]) != m.SHA256 {
-		return nil, errors.New("listener does not match its manifest")
+	b := &Bundle{Version: m.Version, files: map[string]*File{}}
+	for _, f := range m.Files {
+		known := f.Name == Listener && versionPattern.MatchString(f.Protocol) || f.Name == PiBridge && f.Protocol == ""
+		if !known || b.files[f.Name] != nil || !hashPattern.MatchString(f.SHA256) {
+			return nil, errors.New("invalid agent manifest")
+		}
+		body, err := read(f.Name)
+		sum := sha256.Sum256(body)
+		if err != nil || len(body) == 0 || len(body) > MaxBytes || len(body) != f.Bytes || hex.EncodeToString(sum[:]) != f.SHA256 {
+			return nil, errors.New(f.Name + " does not match the agent manifest")
+		}
+		b.files[f.Name] = &File{Name: f.Name, Protocol: f.Protocol, SHA256: f.SHA256, Body: body}
 	}
-	return &Listener{Version: m.Version, Protocol: m.Protocol, SHA256: m.SHA256, Body: body}, nil
+	return b, nil
 }

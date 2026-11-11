@@ -26,6 +26,16 @@
 
 新构建的预构建候选包已包含独立桥接入口；旧发布包仍不一定有该文件，本地生成候选包也不等于已经发布、安装或部署。只需 AI 讨论桥接时，显式加载 `<已验证包目录>/dist/collaboration/extension.js`，不要登记整个包：默认 `dist/extension/index.js` 仍是会启动电脑网关的原有入口，未改为自动加载协作桥接。包内 README 也写明这个区别。Pi 提供 `typebox` schema peer，不把宿主库捆入运行依赖。开发者也可以在**独立测试会话**中用 `pi -e <入口绝对路径>` 加载，但这不等于把扩展加入已经打开的普通会话。
 
+## 没装扩展的 Pi：从 Space 服务器加载
+
+Pi 只在收到提交的消息时才开始回合：独立的 `listen --quiet` 和轮询都唤醒不了 Pi，只有这个扩展可以。Space 服务器在 `/api/collaboration/agent/cafe-room.js` 提供打包好的扩展（只引用 Node 内置模块），guide 的 Pi 一节写明 SHA-256。
+
+1. Pi 下载文件，核对 SHA-256，存为 `~/.pi/agent/extensions/cafe-room.js`。Pi 会自动加载这个目录里的个人扩展；扩展在绑定房间之前不联网、不做任何事，只多出 `cafe_room_*` 工具。已经加载了扩展（有 `cafe_room_status`）的 Pi 不要再装这一份。
+2. 本机用户在 Pi 输入栏输入 `/reload`：在同一会话里重新加载扩展，对话保留，不用重开会话。
+3. 本机用户执行一次 `/cafe collab migrate --consumed-through <已处理到的序号> <member.json 绝对路径>`，之后用 `cafe_room_status` 确认 `state=listening`。
+
+模型自己不能执行 `/reload` 和 `/cafe` 这两条斜杠命令，所以这两步要由用户输入。
+
 ## 控制与权限
 
 | 命令或工具 | 行为 |

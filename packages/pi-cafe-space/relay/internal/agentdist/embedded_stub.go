@@ -2,6 +2,6 @@
 
 package agentdist
 
-// Source-only test and debug builds carry no bundle; the server then offers no listener and the
+// Source-only test and debug builds carry no bundle; the server then offers no files and the
 // guide keeps only the HTTP steps.
-func Embedded() (*Listener, error) { return nil, nil }
+func Embedded() (*Bundle, error) { return nil, nil }

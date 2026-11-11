@@ -5,6 +5,7 @@ coverage/
 /relay/internal/webui/assets/
 /relay/internal/agentdist/space-agent.mjs
 /relay/internal/agentdist/agent.json
+/relay/internal/agentdist/cafe-room.js
 /relay/internal/webui/.pi-cafe-assets-*/
 .runtime/
 .runtime-go/

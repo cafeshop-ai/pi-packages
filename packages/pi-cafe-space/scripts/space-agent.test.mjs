@@ -104,6 +104,12 @@ test('the listener the server offers matches its guide and works as a single fil
   assert.equal(run(h, ['send', '--text-file', sent]).status, 0);
   const read = run(h, ['read', '--latest', '1']);
   assert.equal(read.status, 0, read.stderr); assert.ok(read.stdout.includes('from the served listener'));
+  if ((await api({ op: 'status' })).features.includes('pi-bridge')) {
+    const bridge = Buffer.from(await (await fetch(origin + '/api/collaboration/agent/cafe-room.js')).arrayBuffer());
+    const hashes = [...guide.matchAll(/SHA-256 ([a-f0-9]{64})/g)].map(m => m[1]);
+    assert.ok(hashes.includes(createHash('sha256').update(bridge).digest('hex')), 'the Pi bridge is the one the guide names');
+    assert.ok(guide.includes('~/.pi/agent/extensions/cafe-room.js'));
+  }
 });
 
 test('join starts the inbox near the newest message instead of replaying a long history', { skip: !binary }, async () => {

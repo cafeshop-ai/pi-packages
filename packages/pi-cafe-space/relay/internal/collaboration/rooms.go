@@ -41,9 +41,10 @@ type Options struct {
 	// ceilings still bound the total.
 	TrustedProxies []netip.Prefix
 	ClientIPHeader string
-	// Listener is the official room listener served same-origin (feature "listener"); nil in
-	// source-only builds, which then offer only the HTTP steps.
-	Listener *agentdist.Listener
+	// Agent holds the files served same-origin under /agent/: the official listener (feature
+	// "listener") and the Pi room bridge (feature "pi-bridge"). Nil in source-only builds, which
+	// then offer only the HTTP steps.
+	Agent *agentdist.Bundle
 }
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -691,7 +692,7 @@ func (s *Store) rate(key string, max int) bool {
 }
 func (s *Store) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != endpoint && r.URL.Path != endpoint+"/guide" && r.URL.Path != listenerPath {
+		if r.URL.Path != endpoint && r.URL.Path != endpoint+"/guide" && !strings.HasPrefix(r.URL.Path, agentPrefix) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -717,8 +718,8 @@ func (s *Store) Wrap(next http.Handler) http.Handler {
 			_, _ = io.WriteString(w, s.guide())
 			return
 		}
-		if r.URL.Path == listenerPath {
-			s.serveListener(w, r)
+		if strings.HasPrefix(r.URL.Path, agentPrefix) {
+			s.serveAgentFile(w, r)
 			return
 		}
 		if r.URL.Path != endpoint || r.Method != "POST" {
@@ -797,38 +798,42 @@ func writeError(w http.ResponseWriter, err error) {
 
 var features = []string{"wait", "ack", "pause", "tasks", "preview", "claim", "contract", "goal", "history", "state", "rev"}
 
-// listenerPath serves the official listener bundle; the guide names its SHA-256.
-const listenerPath = endpoint + "/agent/" + agentdist.Name
+// agentPrefix serves the files agents may download; the guide names their SHA-256.
+const agentPrefix = endpoint + "/agent/"
 
-// features lists what this server offers; "listener" only when a bundle is embedded.
+// features lists what this server offers; "listener" and "pi-bridge" only when embedded.
 func (s *Store) features() []string {
-	if s.options.Listener == nil {
-		return features
+	out := slices.Clip(features)
+	if s.options.Agent.Get(agentdist.Listener) != nil {
+		out = append(out, "listener")
 	}
-	return append(slices.Clip(features), "listener")
+	if s.options.Agent.Get(agentdist.PiBridge) != nil {
+		out = append(out, "pi-bridge")
+	}
+	return out
 }
 
-// serveListener returns the bundle exactly as embedded. It is not cached, so the file and the
+// serveAgentFile returns a bundle exactly as embedded. It is not cached, so the file and the
 // SHA-256 in the guide always come from the same build.
-func (s *Store) serveListener(w http.ResponseWriter, r *http.Request) {
+func (s *Store) serveAgentFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		writeError(w, fail(405, "METHOD_NOT_ALLOWED"))
 		return
 	}
-	listener := s.options.Listener
-	if listener == nil {
-		writeError(w, fail(404, "LISTENER_UNAVAILABLE"))
+	file := s.options.Agent.Get(strings.TrimPrefix(r.URL.Path, agentPrefix))
+	if file == nil {
+		writeError(w, fail(404, "AGENT_FILE_UNAVAILABLE"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(listener.Body)))
-	w.Header().Set("Content-Disposition", `attachment; filename="`+agentdist.Name+`"`)
-	w.Header().Set("X-Content-SHA256", listener.SHA256)
+	w.Header().Set("Content-Length", strconv.Itoa(len(file.Body)))
+	w.Header().Set("Content-Disposition", `attachment; filename="`+file.Name+`"`)
+	w.Header().Set("X-Content-SHA256", file.SHA256)
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(listener.Body)
+	_, _ = w.Write(file.Body)
 }
 
 // excerpts returns the page as served: full texts, or each text cut to n runes for skimming.
@@ -1363,17 +1368,32 @@ func (s *Store) task(room *Room, actor *Member, q request) (*Task, error) {
 
 // listenerGuide is the guide section for the official listener, empty when none is embedded.
 func (s *Store) listenerGuide() string {
-	l := s.options.Listener
+	l := s.options.Agent.Get(agentdist.Listener)
 	if l == nil {
 		return ""
 	}
 	return `
 
 Official listener (feature "listener"): this server offers the official room listener, one Node.js file without dependencies that implements this protocol for you: long-poll with heartbeats, a private inbox, and events that add only new information to your context. Use it only when your current local user explicitly allowed downloading and running it, for example in the invitation; joining alone does not allow running code. Without that permission use the HTTP operations above.
-- Download: GET ` + s.origin + listenerPath + ` into a private directory. Version ` + l.Version + `, listener protocol ` + l.Protocol + `, ` + strconv.Itoa(len(l.Body)) + ` bytes, SHA-256 ` + l.SHA256 + `. Compute the SHA-256 of the file you downloaded and run it only if it equals this value; on any difference stop and tell your user. The X-Content-SHA256 response header comes from the same server and is not an independent check.
+- Download: GET ` + s.origin + agentPrefix + l.Name + ` into a private directory. Version ` + s.options.Agent.Version + `, listener protocol ` + l.Protocol + `, ` + strconv.Itoa(len(l.Body)) + ` bytes, SHA-256 ` + l.SHA256 + `. Compute the SHA-256 of the file you downloaded and run it only if it equals this value; on any difference stop and tell your user. The X-Content-SHA256 response header comes from the same server and is not an independent check.
 - Join with Node.js 22 or newer: node space-agent.mjs --home <private directory, one per membership> join --name <name> --agent <runtime id>, with the invitation link on standard input, never as an argument. The member token stays in <home>/member.json and is never printed. To reuse a membership you already have, keep using its home instead of joining again.
 - Listen: run node space-agent.mjs --home <home> listen --quiet as one long-lived background process per home. Wake your session with tail --follow when your host turns printed lines into turns (for example Claude Code's Monitor tool), or with deliver --as <name> --handler <trusted program> when a program hands batches to your host (Linux and macOS for now). listen --quiet only receives; it never wakes your session by itself. After handling a batch, confirm it with done --through <seq>; board, show <seq>, state show and goal read read on demand, and send, task and state write.
-- Pi with the cafe collab extension: do not run listen for that membership. The extension wakes Pi, but only after the local user binds the session once in the Pi input: /cafe collab migrate --consumed-through <last seq you handled> <absolute path to member.json>. Give your user that exact line and check cafe_room_status for state=listening; a running listen process alone never starts a Pi turn. If your host cannot run a background process, run sync and then next at the start of each turn and tell your user you are not continuously online.`
+- If your host cannot run a background process, run sync and then next at the start of each turn and tell your user you are not continuously online.` + s.piGuide()
+}
+
+// piGuide is the guide section for Pi. A Pi turn starts only from submitted input, so neither a
+// listen process nor polling can wake it; only its cafe collab extension can. Loading or binding
+// that extension is a local slash command the model cannot run, so the user types it once.
+func (s *Store) piGuide() string {
+	bridge := ""
+	if b := s.options.Agent.Get(agentdist.PiBridge); b != nil {
+		bridge = `
+- Pi without the extension (no cafe_room_status tool): GET ` + s.origin + agentPrefix + b.Name + `, version ` + s.options.Agent.Version + `, ` + strconv.Itoa(len(b.Body)) + ` bytes, SHA-256 ` + b.SHA256 + `. Check the SHA-256 as for the listener, then save it as ~/.pi/agent/extensions/` + b.Name + ` (Pi loads personal extensions from that directory; it does nothing until a room is bound). Ask your user to type /reload in the Pi input: it reloads extensions in the same session and keeps the conversation, so Pi does not need to be restarted. Then give the migrate line below. Do not install it this way if a cafe collab extension is already loaded.`
+	}
+	return `
+
+Pi (feature "pi-bridge" when this server offers the bridge): a Pi turn starts only from submitted input, so a listen process or polling never wakes Pi; only its cafe collab extension can, and the model cannot run the slash commands that load or bind it. Do not run listen for a membership that Pi's extension uses.` + bridge + `
+- Pi with the extension (the cafe_room_status tool exists): ask your user to bind this session once in the Pi input: /cafe collab migrate --consumed-through <last seq you handled> <absolute path to member.json>. Give the exact line with the number and path filled in, then check cafe_room_status for state=listening. From then on new messages wake Pi; after reloading the session later, /cafe collab resume restores the binding.`
 }
 
 func (s *Store) guide() string {

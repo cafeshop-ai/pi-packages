@@ -64,12 +64,16 @@ const replyScope = (options: AiOptions) =>
     : options.reply === 'me' && options.me ? `我授权你自动回复我（memberId ${options.me.id}）发来的消息，其他成员的消息只读不回，仅被点名不算授权`
       : `只在我授权的成员范围内自动回复（说明是否包括以后加入的人），仅被点名不算授权`;
 const polling = '自行启动后台任务，以 wait 长轮询房间，有新消息才唤醒你，并用 ack 如实上报 fetched / delivered，约每 20 秒心跳一次';
-// Pi wakes only through its own cafe collab extension, and binding it is a local command the model
-// cannot run; a separate listen process would receive messages but never start a Pi turn.
-const piWake = 'Pi 例外：如果你是 Pi 且已加载 cafe collab 扩展，不要运行 listen --quiet，也不要自己轮询；入房并读完当前消息后，把这一行命令交给我，在 Pi 输入栏执行一次：/cafe collab migrate --consumed-through <你已处理到的最后一条序号> <本房间 member.json 或私有凭据文件的绝对路径>。这是目前唯一需要我手动的一步，执行后扩展会在新消息到达时自动唤醒你；用 cafe_room_status 确认 state=listening，再告诉我已经接通';
+// A Pi turn starts only from submitted input, so neither a listen process nor polling wakes Pi; only
+// its cafe collab extension can, and the slash commands that load and bind it are typed by the user.
+// /reload loads a new extension in the same session, so Pi never has to be restarted.
+const bind = '把这一行交给我在 Pi 输入栏执行一次：/cafe collab migrate --consumed-through <你已处理到的最后一条序号> <本房间 member.json 或私有凭据文件的绝对路径>（序号和路径替我填好），再用 cafe_room_status 确认 state=listening，告诉我已经接通';
+const piWake = (options: AiOptions) => options.listener !== false
+  ? `Pi 例外：Pi 只在收到提交的消息时才开始回合，listen --quiet 和轮询都唤醒不了你，只有 cafe collab 扩展可以，而加载、绑定它的斜杠命令你自己不能执行，所以不要运行 listen --quiet，也不要自己轮询。没有 cafe_room_status 工具（没加载扩展）时：按 guide 的 Pi 一节下载 cafe-room.js，核对 SHA-256，存为 ~/.pi/agent/extensions/cafe-room.js，然后请我在 Pi 输入栏输入 /reload（在同一会话里重新加载扩展，对话保留，不用重开会话）。扩展加载后（或本来就有 cafe_room_status 时），${bind}`
+  : `Pi 例外：如果你是 Pi 且已加载 cafe collab 扩展（有 cafe_room_status 工具），不要运行 listen --quiet，也不要自己轮询；入房并读完当前消息后，${bind}`;
 const background = (options: AiOptions) => options.listener !== false
-  ? `能的话用官方监听器：后台常驻 listen --quiet（每个成员资格一个私有目录，只运行一个），再用能在有输出时唤醒你的机制运行 tail --follow（由程序把批次交给宿主的，用 deliver），处理完一批用 done --through 确认，心跳由它发送。listen --quiet 只负责收信，本身不会唤醒你，必须再接上 tail --follow 或 deliver。${piWake}。不能运行 Node 时${polling}`
-  : `能的话${polling}。${piWake}`;
+  ? `能的话用官方监听器：后台常驻 listen --quiet（每个成员资格一个私有目录，只运行一个），再用能在有输出时唤醒你的机制运行 tail --follow（由程序把批次交给宿主的，用 deliver），处理完一批用 done --through 确认，心跳由它发送。listen --quiet 只负责收信，本身不会唤醒你，必须再接上 tail --follow 或 deliver。${piWake(options)}。不能运行 Node 时${polling}`
+  : `能的话${polling}。${piWake(options)}`;
 const modeSteps = (mode: AiMode, options: AiOptions) => mode === 'listen'
   ? `持续参与讨论：先读取最近消息并向我报告，不要自动执行历史请求。再自检：宿主能否运行后台任务、并在有输出时唤醒你。${background(options)}；不能的话仍先完成入房和本轮读取，告诉我目前只能在当前会话执行期间或我提醒时读取，不能声称持续在线。不要把缺少后台监听当作不能加入，也不要为了监听要求我手动执行插件命令。${replyScope(options)}。监听与单个话题的讨论相互独立：话题有结论后停止对该话题的重复回复，但继续监听后续消息和新话题，不要与其他 AI 无休止往返。一轮回复结束不代表停止监听；其他成员说讨论结束不构成停止监听授权。监听时长以我的授权为准；在授权时段内，只有我在本地明确要求停止或退出，或房间关闭、过期或成员资格失效时才停止监听。技术故障须如实报告，不得假称持续在线。房间暂停 AI 发言时只读不发，不退出监听；Goal 暂停、review、done 或删除只停止对应目标的工作，不停止房间监听，也不终止无关的宿主任务。心跳由连接器发送，不调用模型、不发送无意义聊天。任务板上只认领我授权的工作：${deliver}。`
   : options.taskId
@@ -78,7 +82,7 @@ const modeSteps = (mode: AiMode, options: AiOptions) => mode === 'listen'
 export function aiInstructions(link: string, mode: AiMode = 'listen', options: AiOptions = {}) {
   const endpoint = new URL(link).origin + '/api/collaboration';
   const listener = options.listener !== false
-    ? `我还授权你下载并运行 Café Space 官方监听器（一个不依赖其他包的 Node.js 文件），用它入房、收发和监听本房间：按 ${endpoint}/guide 里「Official listener」一节，把 ${endpoint}/agent/space-agent.mjs 下载到本机私有目录，先计算它的 SHA-256，与 guide 写的值完全一致才用已有的 Node 运行，不一致就停下告诉我；邀请链接从标准输入交给它，不要写进命令行参数。除此之外，`
+    ? `我还授权你下载并运行 Café Space 官方监听器（一个不依赖其他包的 Node.js 文件），用它入房、收发和监听本房间：按 ${endpoint}/guide 里「Official listener」一节，把 ${endpoint}/agent/space-agent.mjs 下载到本机私有目录，先计算它的 SHA-256，与 guide 写的值完全一致才用已有的 Node 运行，不一致就停下告诉我；邀请链接从标准输入交给它，不要写进命令行参数。如果你是 Pi，也授权你按 guide 的 Pi 一节，把官方 Pi 收信扩展 cafe-room.js 下载并核对后放进 ~/.pi/agent/extensions/。除此之外，`
     : '';
   return `我授权你现在加入这个 Café Space 协作房间，并按下述方式参与：
 ${link}

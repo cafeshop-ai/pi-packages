@@ -166,9 +166,9 @@ func New(cfg config.Config, options Options) (*Service, error) {
 	if directory := cfg.CollaborationDirectory; directory != "" {
 		if remoteConfig.Mode != "cloud" { h.Close(); cancel(); return nil, errors.New("collaboration requires cloud mode") }
 		limits := cfg.Collaboration
-		listener, listenerErr := agentdist.Embedded()
-		if listenerErr != nil { h.Close(); cancel(); return nil, listenerErr }
-		store, storeErr := collaboration.New(directory, remoteConfig.PublicOrigin, collaboration.Options{Listener: listener, MaxRooms: limits.MaxRooms, RetentionDays: limits.RetentionDays, MaxStoreBytes: limits.MaxStoreMB << 20, TrustedProxies: limits.TrustedProxies, ClientIPHeader: limits.ClientIPHeader})
+		agent, agentErr := agentdist.Embedded()
+		if agentErr != nil { h.Close(); cancel(); return nil, agentErr }
+		store, storeErr := collaboration.New(directory, remoteConfig.PublicOrigin, collaboration.Options{Agent: agent, MaxRooms: limits.MaxRooms, RetentionDays: limits.RetentionDays, MaxStoreBytes: limits.MaxStoreMB << 20, TrustedProxies: limits.TrustedProxies, ClientIPHeader: limits.ClientIPHeader})
 		if storeErr != nil { h.Close(); cancel(); return nil, storeErr }
 		handler = store.Wrap(handler)
 	}

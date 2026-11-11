@@ -87,20 +87,30 @@ async function notices(ids) {
   if (missing.length) throw Error(`License text missing for ${missing.join(', ')}`);
   return result.join('\n');
 }
-// The official room listener (docs/LISTENER.md) is bundled into one dependency-free file that the
-// relay embeds and serves same-origin; the room guide names its SHA-256 so an agent can check the
-// download before running it. The listener protocol version comes from the document's title.
-export async function bundleListener(version, directory = join(root, 'relay/internal/agentdist')) {
+// The files agents download from the server, each bundled into one file that imports only Node
+// built-ins: the official room listener (docs/LISTENER.md) and the Pi room bridge (the cafe collab
+// extension, src/collaboration/extension.ts), which Pi loads from its extensions directory. The
+// relay embeds them with one manifest, and the room guide names each SHA-256 so an agent can check
+// a download before running or loading it. The listener protocol version comes from LISTENER.md.
+export async function bundleAgentFiles(version, directory = join(root, 'relay/internal/agentdist')) {
   const protocol = /^# .* v(\d+\.\d+)\s*$/m.exec(await readFile(join(root, 'docs/LISTENER.md'), 'utf8'))?.[1];
   if (!protocol) throw Error('docs/LISTENER.md does not name a listener protocol version');
-  const outfile = join(directory, 'space-agent.mjs');
-  await bundle({ entryPoints: [join(root, 'scripts/space-agent.mjs')], outfile, bundle: true, platform: 'node', format: 'esm', target: 'node22',
-    packages: 'external', legalComments: 'none', logLevel: 'silent', banner: { js: `// space-agent ${version}, listener protocol ${protocol}, bundled from scripts/space-agent.mjs` } });
-  const body = await readFile(outfile);
-  // Only Node built-ins may stay imports: anything else would need an installation the guide does not allow.
-  for (const [, specifier] of body.toString('utf8').matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)) if (!specifier.startsWith('node:')) throw Error(`The listener bundle imports ${specifier}`);
-  run(process.execPath, ['--check', outfile]);
-  const record = { format: 'pi-cafe-space-agent-v1', name: 'space-agent.mjs', version, protocol, bytes: body.length, sha256: sha(body) };
+  const files = [
+    { name: 'space-agent.mjs', entry: 'scripts/space-agent.mjs', protocol, banner: `// space-agent ${version}, listener protocol ${protocol}, bundled from scripts/space-agent.mjs` },
+    { name: 'cafe-room.js', entry: 'src/collaboration/extension.ts', banner: `// Café Space Pi room bridge ${version}, bundled from src/collaboration/extension.ts; it does nothing until a room is bound` },
+  ];
+  const entries = [];
+  for (const file of files) {
+    const outfile = join(directory, file.name);
+    await bundle({ entryPoints: [join(root, file.entry)], outfile, bundle: true, platform: 'node', format: 'esm', target: 'node22',
+      legalComments: 'none', logLevel: 'silent', banner: { js: file.banner } });
+    const body = await readFile(outfile);
+    // Only Node built-ins may stay imports: anything else would need an installation the guide does not allow.
+    for (const [, specifier] of body.toString('utf8').matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)) if (!specifier.startsWith('node:')) throw Error(`${file.name} imports ${specifier}`);
+    run(process.execPath, ['--check', outfile]);
+    entries.push({ name: file.name, ...(file.protocol ? { protocol: file.protocol } : {}), bytes: body.length, sha256: sha(body) });
+  }
+  const record = { format: 'pi-cafe-space-agent-v2', version, files: entries };
   await writeFile(join(directory, 'agent.json'), JSON.stringify(record));
   return record;
 }
@@ -115,7 +125,7 @@ export async function buildCandidate() {
     const ids = new Set();
     await build({ configFile: join(root, 'web/vite.config.ts'), plugins: [hashRouterOnly(), { name: 'cafe-license-inventory', generateBundle() { for (const id of this.getModuleIds()) ids.add(id); } }] });
     const assets = await stageAssets(join(output, 'web'), join(root, 'relay/internal/webui/assets'));
-    const agent = await bundleListener(manifest.version);
+    const agent = await bundleAgentFiles(manifest.version);
     const tag = platformTag(); const exe = tag.startsWith('windows') ? 'pi-cafe-relay.exe' : 'pi-cafe-relay';
     const binDir = join(output, 'bin', tag); await mkdir(binDir, { recursive: true }); await ordinaryDirectory(binDir);
     console.log(run('go', ['test', '-tags', 'webembed', './...'], { cwd: join(root, 'relay'), env: { ...process.env, CGO_ENABLED: '0' } }));
@@ -143,7 +153,7 @@ export async function buildCandidate() {
     const terminal = await bundle({ entryPoints: [join(source, 'src/extension/cafe-render.ts')], outfile: join(output, 'ts/extension/cafe-render.js'), bundle: true, external: ['@earendil-works/pi-tui'], format: 'esm', platform: 'node', target: 'node22', treeShaking: true, metafile: true, logLevel: 'warning' });
     for (const input of Object.keys(terminal.metafile.inputs)) ids.add(resolve(input));
     await writeFile(join(output, 'THIRD-PARTY-NOTICES.txt'), await notices(ids));
-    const record = { format: 'pi-cafe-build-v1', ...identity, sha256: sha(await readFile(binary)), agentSha256: agent.sha256, goVersion: run('go', ['version']).trim(), goDigest: await treeDigest(join(root, 'relay')), nodeVersion: process.version, binary: `bin/${tag}/${exe}`, tsDigest: await treeDigest(join(output, 'ts')), createdAt: new Date().toISOString() };
+    const record = { format: 'pi-cafe-build-v1', ...identity, sha256: sha(await readFile(binary)), agentSha256: agent.files[0].sha256, piBridgeSha256: agent.files[1].sha256, goVersion: run('go', ['version']).trim(), goDigest: await treeDigest(join(root, 'relay')), nodeVersion: process.version, binary: `bin/${tag}/${exe}`, tsDigest: await treeDigest(join(output, 'ts')), createdAt: new Date().toISOString() };
     await writeFile(join(binDir, 'build.json'), JSON.stringify(record, null, 2));
     await writeFile(join(output, 'build.json'), JSON.stringify(record, null, 2)); console.log(JSON.stringify(record)); return record;
   } finally { await lock.close(); await rm(lockPath, { force: true }); }

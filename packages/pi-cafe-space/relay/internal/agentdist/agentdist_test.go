@@ -4,13 +4,27 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
-func manifestFor(t *testing.T, body []byte, change func(map[string]any)) []byte {
+func digest(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
+
+func manifestFor(t *testing.T, files map[string][]byte, change func(map[string]any)) []byte {
 	t.Helper()
-	sum := sha256.Sum256(body)
-	m := map[string]any{"format": manifestFormat, "name": Name, "version": "0.1.0", "protocol": "1.1", "bytes": len(body), "sha256": hex.EncodeToString(sum[:])}
+	entries := []any{}
+	for _, name := range []string{Listener, PiBridge} {
+		body, ok := files[name]
+		if !ok {
+			continue
+		}
+		e := map[string]any{"name": name, "bytes": len(body), "sha256": digest(body)}
+		if name == Listener {
+			e["protocol"] = "1.1"
+		}
+		entries = append(entries, e)
+	}
+	m := map[string]any{"format": manifestFormat, "version": "0.1.0", "files": entries}
 	if change != nil {
 		change(m)
 	}
@@ -21,28 +35,47 @@ func manifestFor(t *testing.T, body []byte, change func(map[string]any)) []byte 
 	return data
 }
 
-func TestLoadAcceptsOnlyTheBundleItsManifestNames(t *testing.T) {
-	body := []byte("#!/usr/bin/env node\nconsole.log(1)\n")
-	got, err := Load(body, manifestFor(t, body, nil))
-	if err != nil || got.Version != "0.1.0" || got.Protocol != "1.1" || string(got.Body) != string(body) {
-		t.Fatalf("Load = %+v, %v", got, err)
+func reader(files map[string][]byte) func(string) ([]byte, error) {
+	return func(name string) ([]byte, error) {
+		if body, ok := files[name]; ok {
+			return body, nil
+		}
+		return nil, errors.New("missing")
+	}
+}
+
+func TestLoadAcceptsOnlyTheFilesItsManifestNames(t *testing.T) {
+	files := map[string][]byte{Listener: []byte("#!/usr/bin/env node\n"), PiBridge: []byte("export default function () {}\n")}
+	b, err := Load(manifestFor(t, files, nil), reader(files))
+	if err != nil || b.Version != "0.1.0" || b.Get(Listener).Protocol != "1.1" || string(b.Get(PiBridge).Body) != string(files[PiBridge]) || b.Get("other") != nil {
+		t.Fatalf("Load = %+v, %v", b, err)
+	}
+	if (*Bundle)(nil).Get(Listener) != nil {
+		t.Fatal("a missing bundle has no files")
+	}
+	entry := func(i int, key string, value any) func(map[string]any) {
+		return func(m map[string]any) { m["files"].([]any)[i].(map[string]any)[key] = value }
 	}
 	for name, change := range map[string]func(map[string]any){
-		"format":   func(m map[string]any) { m["format"] = "other" },
-		"name":     func(m map[string]any) { m["name"] = "other.mjs" },
-		"version":  func(m map[string]any) { m["version"] = "bad version" },
-		"protocol": func(m map[string]any) { m["protocol"] = "" },
-		"bytes":    func(m map[string]any) { m["bytes"] = len(body) + 1 },
-		"sha256":   func(m map[string]any) { m["sha256"] = "00" + m["sha256"].(string)[2:] },
+		"format":            func(m map[string]any) { m["format"] = "pi-cafe-space-agent-v1" },
+		"version":           func(m map[string]any) { m["version"] = "bad version" },
+		"no files":          func(m map[string]any) { m["files"] = []any{} },
+		"unknown name":      entry(0, "name", "other.mjs"),
+		"listener protocol": entry(0, "protocol", ""),
+		"bridge protocol":   entry(1, "protocol", "1.1"),
+		"bytes":             entry(1, "bytes", len(files[PiBridge])+1),
+		"sha256":            entry(0, "sha256", digest([]byte("other"))),
+		"duplicate":         func(m map[string]any) { m["files"] = append(m["files"].([]any), m["files"].([]any)[0]) },
 	} {
-		if _, err := Load(body, manifestFor(t, body, change)); err == nil {
+		if _, err := Load(manifestFor(t, files, change), reader(files)); err == nil {
 			t.Errorf("a changed %s was accepted", name)
 		}
 	}
-	if _, err := Load(append([]byte("x"), body...), manifestFor(t, body, nil)); err == nil {
-		t.Error("a changed body was accepted")
+	changed := map[string][]byte{Listener: files[Listener], PiBridge: []byte("changed")}
+	if _, err := Load(manifestFor(t, files, nil), reader(changed)); err == nil {
+		t.Error("a changed file was accepted")
 	}
-	if _, err := Load(nil, manifestFor(t, nil, nil)); err == nil {
-		t.Error("an empty bundle was accepted")
+	if _, err := Load(manifestFor(t, files, nil), reader(map[string][]byte{Listener: files[Listener]})); err == nil {
+		t.Error("a missing file was accepted")
 	}
 }

@@ -79,6 +79,10 @@ it.each(['listen', 'task'] as const)('allows running the official listener unles
   expect(allowed.includes('listen --quiet')).toBe(mode === 'listen'); expect(allowed.includes('tail --follow')).toBe(mode === 'listen');
   // Pi wakes only through its own extension, bound once by the local user.
   expect(allowed.includes('/cafe collab migrate --consumed-through')).toBe(mode === 'listen');
+  expect(allowed).toContain('把官方 Pi 收信扩展 cafe-room.js 下载并核对后放进 ~/.pi/agent/extensions/');
+  expect(allowed.includes('存为 ~/.pi/agent/extensions/cafe-room.js')).toBe(mode === 'listen');
+  expect(allowed.includes('/reload（在同一会话里重新加载扩展，对话保留，不用重开会话）')).toBe(mode === 'listen');
+  expect(plain).not.toContain('cafe-room.js');
   expect(allowed.includes('listen --quiet 只负责收信，本身不会唤醒你')).toBe(mode === 'listen');
   expect(allowed).not.toContain(window.location.origin);
 });
