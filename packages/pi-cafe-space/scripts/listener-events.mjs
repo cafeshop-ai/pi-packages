@@ -3,6 +3,8 @@
 // no clock, so space-agent, the Pi extension and the shared fixtures all agree on the output.
 // Event fields never use the names the outbox adds (id, batch, at): a task is `task`, a message time `sentAt`.
 
+/** The protocol version in docs/LISTENER.md that this implementation follows. */
+export const listenerProtocol = '1.1';
 /** More new messages than this in one page become a single backlog event instead of a flood. */
 export const maxBatchMessages = 20;
 /** Message text in an event is cut to this many characters; `show <seq>` prints it whole. */

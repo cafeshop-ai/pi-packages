@@ -1,4 +1,5 @@
 import type { Snapshot, Message } from '../src/collaboration/client.js';
+export const listenerProtocol: string;
 export const maxBatchMessages: number;
 export type ControlEvent =
   | { type: 'task'; task: number; change: 'created' | 'updated' | 'deleted'; title: string; status?: string; assignee?: string; was?: string; reassigned?: boolean; result?: number }

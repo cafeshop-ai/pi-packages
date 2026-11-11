@@ -13,7 +13,7 @@ export function releaseFiles(tags) {
   ...['index','connection-warning','file-commands','private-json','local-relay','local-relay-go','cafe','cafe-actions','cafe-client','cafe-render','cafe-approvals','cafe-owner-client','thinking-capability','execution-tracker'].map(name=>`dist/extension/${name}.js`),'dist/protocol/index.js','dist/protocol/execution.js',
   ...['client','commands','controls','extension','listener'].map(name=>`dist/collaboration/${name}.js`),
   ...tags.map(tag=>`dist/relay/bin/${tag}/pi-cafe-relay${tag.startsWith('windows')?'.exe':''}`),
-  'scripts/space-agent.mjs','scripts/collaboration-goal.mjs','scripts/listener-events.mjs',...acpRuntimeScripts.map(name=>`scripts/acp/${name}`),...runtimeScripts.map(name=>`scripts/${name}`),...remoteScripts.map(name=>`scripts/remote/${name}`),...['build.mjs','assets.mjs','hash-router-only.mjs'].map(name=>`scripts/build-tools/${name}`),'scripts/build-tools/licenses/metadata-only.json'].sort();
+  'scripts/space-agent.mjs','scripts/collaboration-goal.mjs','scripts/listener-events.mjs','scripts/collaboration-goal.d.mts','scripts/listener-events.d.mts',...acpRuntimeScripts.map(name=>`scripts/acp/${name}`),...runtimeScripts.map(name=>`scripts/${name}`),...remoteScripts.map(name=>`scripts/remote/${name}`),...['build.mjs','assets.mjs','hash-router-only.mjs'].map(name=>`scripts/build-tools/${name}`),'scripts/build-tools/licenses/metadata-only.json'].sort();
 }
 async function inventory(directory,allowed,prefix='') {
  const files=[];
@@ -68,6 +68,8 @@ export async function stageRelease(requireAll = false, selectedTags) {
  await copyFile(join(root, 'scripts/space-agent.mjs'), join(scripts, 'space-agent.mjs'));
  await copyFile(join(root, 'scripts/collaboration-goal.mjs'), join(scripts, 'collaboration-goal.mjs'));
  await copyFile(join(root, 'scripts/listener-events.mjs'), join(scripts, 'listener-events.mjs'));
+ // A source build compiles the Pi extension against these declarations (build.mjs copies them).
+ for (const file of ['collaboration-goal.d.mts', 'listener-events.d.mts']) await copyFile(join(root, 'scripts', file), join(scripts, file));
  const sourceScripts=join(root,'scripts/refactor/candidate-overrides/scripts');
  if(JSON.stringify((await readdir(sourceScripts)).sort())!==JSON.stringify(runtimeScripts))throw Error('Unexpected candidate script source');
  for (const file of runtimeScripts) await copyFile(join(sourceScripts, file), join(scripts, file));

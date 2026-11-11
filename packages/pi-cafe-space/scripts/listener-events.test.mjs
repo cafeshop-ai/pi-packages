@@ -3,9 +3,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { formatEvent, helloEvent, maxBatchMessages, pageEvents } from './listener-events.mjs';
+import { formatEvent, helloEvent, listenerProtocol, maxBatchMessages, pageEvents } from './listener-events.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../protocol/fixtures/listener/events.json', import.meta.url), 'utf8'));
+
+test('the declared protocol version is the one LISTENER.md describes', () => {
+  // The release build names this version in the room guide; source builds have no docs/ to read it from.
+  const title = readFileSync(new URL('../docs/LISTENER.md', import.meta.url), 'utf8').split('\n')[0];
+  assert.match(title, new RegExp(`v${listenerProtocol.replace('.', '\\.')}$`));
+});
 
 for (const c of fixture.cases) test(c.name, () => {
   const seen = structuredClone(c.input.seen);

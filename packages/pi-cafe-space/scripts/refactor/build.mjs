@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, readdir, copyFile, rm, rename, open, lstat } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { build } from 'vite';
@@ -91,10 +91,15 @@ async function notices(ids) {
 // built-ins: the official room listener (docs/LISTENER.md) and the Pi room bridge (the cafe collab
 // extension, src/collaboration/extension.ts), which Pi loads from its extensions directory. The
 // relay embeds them with one manifest, and the room guide names each SHA-256 so an agent can check
-// a download before running or loading it. The listener protocol version comes from LISTENER.md.
+// a download before running or loading it. The protocol version is the one the listener code
+// declares (a test keeps it equal to LISTENER.md), so source builds without docs/ work too.
+// esbuild marks each bundled module with a comment holding its path relative to the working
+// directory; dependencies installed elsewhere would change those paths and so the SHA-256. The
+// markers are dropped, so the same sources give the same file wherever they are built.
+const modulePathComment = /^\/\/ [^\s]+\.(?:[cm]?[jt]s|tsx?)\n/gm;
 export async function bundleAgentFiles(version, directory = join(root, 'relay/internal/agentdist')) {
-  const protocol = /^# .* v(\d+\.\d+)\s*$/m.exec(await readFile(join(root, 'docs/LISTENER.md'), 'utf8'))?.[1];
-  if (!protocol) throw Error('docs/LISTENER.md does not name a listener protocol version');
+  const { listenerProtocol: protocol } = await import(pathToFileURL(join(root, 'scripts/listener-events.mjs')).href);
+  if (!/^\d+\.\d+$/.test(protocol ?? '')) throw Error('scripts/listener-events.mjs does not declare a listener protocol version');
   const files = [
     { name: 'space-agent.mjs', entry: 'scripts/space-agent.mjs', protocol, banner: `// space-agent ${version}, listener protocol ${protocol}, bundled from scripts/space-agent.mjs` },
     { name: 'cafe-room.js', entry: 'src/collaboration/extension.ts', banner: `// Café Space Pi room bridge ${version}, bundled from src/collaboration/extension.ts; it does nothing until a room is bound` },
@@ -102,9 +107,11 @@ export async function bundleAgentFiles(version, directory = join(root, 'relay/in
   const entries = [];
   for (const file of files) {
     const outfile = join(directory, file.name);
-    await bundle({ entryPoints: [join(root, file.entry)], outfile, bundle: true, platform: 'node', format: 'esm', target: 'node22',
+    const result = await bundle({ entryPoints: [join(root, file.entry)], outfile, write: false, bundle: true, platform: 'node', format: 'esm', target: 'node22',
       legalComments: 'none', logLevel: 'silent', banner: { js: file.banner } });
-    const body = await readFile(outfile);
+    if (result.outputFiles.length !== 1) throw Error(`${file.name} bundled into ${result.outputFiles.length} files`);
+    const body = Buffer.from(result.outputFiles[0].text.replace(modulePathComment, ''), 'utf8');
+    await writeFile(outfile, body);
     // Only Node built-ins may stay imports: anything else would need an installation the guide does not allow.
     for (const [, specifier] of body.toString('utf8').matchAll(/^import\b[^'"]*['"]([^'"]+)['"]/gm)) if (!specifier.startsWith('node:')) throw Error(`${file.name} imports ${specifier}`);
     run(process.execPath, ['--check', outfile]);
