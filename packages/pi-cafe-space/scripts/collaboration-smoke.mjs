@@ -1,7 +1,7 @@
 // Isolated real-HTTP/browser check. Never attaches to a user's Pi, browser or room.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -43,7 +43,20 @@ try {
   let snapshot = await api({ op: 'read', roomId: owner.roomId }, colleague.token);
   assert.equal(snapshot.messages.length, 2); assert.equal(snapshot.members.length, 3); assert(!JSON.stringify(snapshot).includes(owner.token)); checks.push('three independent HTTP members, forwarded invitation, addressed reply and idempotent delivery');
   await api({ op: 'read', roomId: owner.roomId }, undefined, 401); await api({ op: 'status' }, undefined, 403, 'https://untrusted.example'); checks.push('anonymous reads and cross-origin writes denied');
-  assert.deepEqual((await api({ op: 'status' })).features, ['wait', 'ack', 'pause', 'tasks', 'preview', 'claim', 'contract', 'goal', 'history', 'state', 'rev']);
+  const features = (await api({ op: 'status' })).features;
+  assert.deepEqual(features.slice(0, 11), ['wait', 'ack', 'pause', 'tasks', 'preview', 'claim', 'contract', 'goal', 'history', 'state', 'rev']);
+  // A release binary also serves the agent files (docs/LISTENER.md, distribution); a source build does not.
+  const offered = [['listener', 'space-agent.mjs'], ['pi-bridge', 'cafe-room.js']].filter(([feature]) => features.includes(feature));
+  assert.deepEqual(features.slice(11), offered.map(([feature]) => feature));
+  if (offered.length) {
+    const guide = await (await fetch(origin + '/api/collaboration/guide')).text();
+    for (const [, name] of offered) {
+      const response = await fetch(origin + '/api/collaboration/agent/' + name), body = Buffer.from(await response.arrayBuffer());
+      const digest = createHash('sha256').update(body).digest('hex');
+      assert.equal(response.status, 200); assert.equal(response.headers.get('x-content-sha256'), digest); assert(guide.includes('SHA-256 ' + digest), `the guide names ${name}`);
+    }
+    checks.push(`agent files served and named in the guide: ${offered.map(([, name]) => name).join(', ')}`);
+  }
   const board = await api({ op: 'task', roomId: owner.roomId, action: 'create', id: 'smoke-task-0001', title: '核对接口版本', assignee: ai.memberId, from: 1 }, owner.token);
   await api({ op: 'task', roomId: owner.roomId, action: 'update', taskId: board.id, status: 'done' }, ai.token);
   assert.equal((await api({ op: 'read', roomId: owner.roomId }, colleague.token)).tasks.find(t => t.id === board.id)?.status, 'done'); checks.push('task board: create with assignee and source message, AI completes it over HTTP');
