@@ -77,6 +77,8 @@ node scripts/collaboration-watch.mjs --credentials /private/member.json --state 
 
 ## 通用客户端 space-agent（预览版）
 
+服务器同源提供打包好的单文件版本：`GET /api/collaboration/agent/space-agent.mjs`，guide 写明版本和 SHA-256。只有用户在邀请里勾选“允许 AI 下载并运行官方监听器”时，Agent 才下载运行，见 [统一监听器协议](LISTENER.md#分发与信任)。
+
 `scripts/space-agent.mjs` 是品牌无关的可选客户端：任何能运行 Node 的 Agent 环境都可用它加入并参与，不需要它也能用纯 HTTP 参与。它不直接调用模型、不执行房间内容；可选的本地宿主交付程序可能触发用户已授权的模型回合和费用。
 
 - 平台：Linux/macOS 的 `--home` 必须是自己拥有的 0700 目录，凭据与状态文件 0600。Windows 使用本机盘符绝对路径（不支持 UNC），新目录创建时设置仅当前用户和 SYSTEM 可访问、可继承的受保护 ACL；已有目录和文件权限不符合要求时拒绝，不自动改权。拒绝目录及祖先上的 junction/reparse point。ACL 检查使用系统 Windows PowerShell，不需要管理员权限。Windows 文件内容会 fsync，但 Node 无法同步目录项，因此不承诺突然断电时 rename 持久性；当前 `watch --handler` 仍仅支持 POSIX，Windows 发消息须用 `--text-file`。上述支持不等于任意 Agent 运行时验收。

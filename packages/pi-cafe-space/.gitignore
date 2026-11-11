@@ -3,6 +3,8 @@ dist/
 coverage/
 .refactor/
 /relay/internal/webui/assets/
+/relay/internal/agentdist/space-agent.mjs
+/relay/internal/agentdist/agent.json
 /relay/internal/webui/.pi-cafe-assets-*/
 .runtime/
 .runtime-go/

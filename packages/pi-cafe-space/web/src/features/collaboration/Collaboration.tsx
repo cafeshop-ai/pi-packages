@@ -204,12 +204,14 @@ function CopyButton({ text, label, done, primary }: { text: string; label: strin
   return <Button variant={primary ? 'primary' : undefined} onClick={() => { setCopiedText(''); void navigator.clipboard?.writeText(text).then(() => setCopiedText(text)).catch(() => setCopiedText('')); }}><Icon name={copied ? 'check' : 'copy'} />{copied ? done : label}</Button>;
 }
 function AiInvitation({ link, tasks = [], me }: { link: string; tasks?: Task[]; me?: { id: string; name: string } }) {
-  const [mode, setMode] = useState<AiMode>('listen'); const [reply, setReply] = useState<AiReply>('everyone'); const [taskId, setTaskId] = useState(0);
+  const [mode, setMode] = useState<AiMode>('listen'); const [reply, setReply] = useState<AiReply>('everyone'); const [taskId, setTaskId] = useState(0); const [listener, setListener] = useState(false);
   // Only unassigned open tasks can be claimed by someone who has not joined yet.
   const open = tasks.filter(t => t.status !== 'done' && !t.assignee); const chosen = open.some(t => t.id === taskId) ? taskId : 0;
-  const text = aiInstructions(link, mode, { reply, me, taskId: chosen || undefined });
+  const text = aiInstructions(link, mode, { reply, me, taskId: chosen || undefined, listener });
   return <section className={styles.panelSection} aria-label="邀请 AI">
     <p className={styles.note}>把整段邀请直接发给你的 AI，即授权它自行加入和参与讨论，无需再手动执行接入命令。Pi、Codex 等均可通过 HTTP 接入，不要求安装插件。不会授权它修改项目或分享本机资料。</p>
+    {/* Running downloaded code goes beyond joining, so it is offered, never assumed. */}
+    <label className={styles.listenerChoice}><input type="checkbox" checked={listener} onChange={e => setListener(e.target.checked)} />允许 AI 下载并运行官方监听器<span>单个 Node.js 文件，运行前核对 SHA-256；不勾选时 AI 只用 HTTP 请求接入</span></label>
     <CopyButton text={text} label="复制邀请与接入说明" done="邀请与说明已复制" primary />
     <details className={styles.aiInvite}><summary>接入选项与说明</summary>
     <div className={styles.hosts} role="radiogroup" aria-label="你的 AI 怎样参与">

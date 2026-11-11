@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/auth"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/config"
+	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/agentdist"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/collaboration"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/httpserver"
 	"github.com/cafecodework/pi-packages/packages/pi-cafe-space/relay/internal/hub"
@@ -165,7 +166,9 @@ func New(cfg config.Config, options Options) (*Service, error) {
 	if directory := cfg.CollaborationDirectory; directory != "" {
 		if remoteConfig.Mode != "cloud" { h.Close(); cancel(); return nil, errors.New("collaboration requires cloud mode") }
 		limits := cfg.Collaboration
-		store, storeErr := collaboration.New(directory, remoteConfig.PublicOrigin, collaboration.Options{MaxRooms: limits.MaxRooms, RetentionDays: limits.RetentionDays, MaxStoreBytes: limits.MaxStoreMB << 20, TrustedProxies: limits.TrustedProxies, ClientIPHeader: limits.ClientIPHeader})
+		listener, listenerErr := agentdist.Embedded()
+		if listenerErr != nil { h.Close(); cancel(); return nil, listenerErr }
+		store, storeErr := collaboration.New(directory, remoteConfig.PublicOrigin, collaboration.Options{Listener: listener, MaxRooms: limits.MaxRooms, RetentionDays: limits.RetentionDays, MaxStoreBytes: limits.MaxStoreMB << 20, TrustedProxies: limits.TrustedProxies, ClientIPHeader: limits.ClientIPHeader})
 		if storeErr != nil { h.Close(); cancel(); return nil, storeErr }
 		handler = store.Wrap(handler)
 	}

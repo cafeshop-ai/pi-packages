@@ -58,14 +58,19 @@ func TestWaitingStateNamesWhoCanUnblockAndReachesThem(t *testing.T) {
 func TestStateRejectsVagueOrForeignWaits(t *testing.T) {
 	s, id, owner, ownerID, ai := stateRoom(t)
 	aiID := call(t, s, map[string]any{"op": "read", "roomId": id}, ai, 200)["memberId"].(string)
+	// A changed first digit names nobody; picking it from the ID itself never names the owner by chance.
+	stranger := "0" + ownerID[1:]
+	if ownerID[0] == '0' {
+		stranger = "1" + ownerID[1:]
+	}
 	for _, q := range []map[string]any{
 		{"state": "busy"},
-		{"state": "waiting", "waitingFor": "member", "on": []string{ownerID}},                          // no detail
-		{"state": "waiting", "waitingFor": "member", "detail": "等人"},                                   // nobody named
-		{"state": "waiting", "waitingFor": "review", "detail": "等复核"},                                  // nobody named
-		{"state": "waiting", "waitingFor": "sleep", "detail": "x"},                                     // unknown kind
-		{"state": "waiting", "waitingFor": "member", "on": []string{aiID}, "detail": "等自己"},            // self
-		{"state": "waiting", "waitingFor": "member", "on": []string{"f" + ownerID[1:]}, "detail": "x"}, // not a member
+		{"state": "waiting", "waitingFor": "member", "on": []string{ownerID}},                 // no detail
+		{"state": "waiting", "waitingFor": "member", "detail": "等人"},                          // nobody named
+		{"state": "waiting", "waitingFor": "review", "detail": "等复核"},                         // nobody named
+		{"state": "waiting", "waitingFor": "sleep", "detail": "x"},                            // unknown kind
+		{"state": "waiting", "waitingFor": "member", "on": []string{aiID}, "detail": "等自己"},   // self
+		{"state": "waiting", "waitingFor": "member", "on": []string{stranger}, "detail": "x"}, // not a member
 		{"state": "waiting", "waitingFor": "member", "on": []string{ownerID, ownerID}, "detail": "x"},
 		{"state": "working", "waitingFor": "member"},
 		{"state": "working", "on": []string{ownerID}},

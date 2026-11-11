@@ -12,7 +12,7 @@ var errorCodes = map[string]int{
 	"INVALID_REQUEST": 400, "INVALID_FIELDS": 400, "INVALID_ROOM": 400, "INVALID_CURSOR": 400, "INVALID_LIMIT": 400, "INVALID_STATE": 400, "INVALID_WAIT": 400, "INVALID_MESSAGE": 400,
 	"INVALID_RECIPIENT": 400, "INVALID_MEMBER": 400, "INVALID_OPERATION": 400, "INVALID_ACK": 400, "INVALID_TASK": 400, "INVALID_ASSIGNEE": 400,
 	"INVALID_RESULT": 400, "MEMBER_REQUIRED": 401, "INVITE_INVALID": 403, "ORIGIN_DENIED": 403,
-	"ROOM_UNAVAILABLE": 404, "METHOD_NOT_ALLOWED": 405, "ID_CONFLICT": 409, "NAME_TOO_LONG": 400, "INVALID_AGENT": 400, "ROOM_LIMIT": 409, "MEMBER_LIMIT": 409,
+	"ROOM_UNAVAILABLE": 404, "LISTENER_UNAVAILABLE": 404, "METHOD_NOT_ALLOWED": 405, "ID_CONFLICT": 409, "NAME_TOO_LONG": 400, "INVALID_AGENT": 400, "ROOM_LIMIT": 409, "MEMBER_LIMIT": 409,
 	"INVITE_LIMIT": 409, "TASK_LIMIT": 409, "TASK_TAKEN": 409, "AI_PAUSED": 409, "ROOM_CLOSED": 410,
 	"BODY_LIMIT": 413, "JSON_REQUIRED": 415, "RATE_LIMIT": 429, "WAIT_LIMIT": 429, "STORAGE_LIMIT": 507, "STORAGE_UNAVAILABLE": 503,
 }
@@ -85,7 +85,7 @@ func (s *Store) contract() map[string]any {
 			"securitySchemes": map[string]any{"member": map[string]any{"type": "http", "scheme": "bearer", "description": "Member token from join or create. Only in the Authorization header; never in URLs, messages, logs or command arguments."}},
 		},
 		"x-error-status": errors,
-		"x-features":     features,
+		"x-features":     s.features(),
 		"x-limits": map[string]any{"messagesPerRoom": nil, "messagesPerPage": pageSize, "roomBytes": maxRoomBytes, "storeBytes": s.options.MaxStoreBytes, "membersPerRoom": 64, "tasksPerRoom": maxTasks, "invitesPerRoom": 128, "messageChars": 8000, "nameChars": maxName, "maxWaitSeconds": maxWait,
 			"waitingReadsPerMember": memberWaits, "sendsPerMemberPerMinute": 20, "requestsPerMemberPerMinute": 240, "anonymousRequestsPerClientPerMinute": 600,
 			"createsPerClientPerMinute": 5, "joinsPerClientPerMinute": 30, "previewsPerClientPerMinute": 30, "retentionDays": s.options.RetentionDays},

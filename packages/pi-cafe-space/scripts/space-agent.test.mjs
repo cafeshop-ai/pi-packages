@@ -2,7 +2,7 @@
 //   PI_CAFE_RELAY_BINARY=/absolute/path/to/pi-cafe-relay node --test scripts/space-agent.test.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -82,6 +82,28 @@ test('joins privately and never prints the token', { skip: !binary }, () => {
   assert.equal(statSync(join(h, 'member.json')).mode & 0o777, 0o600); assert.equal(statSync(h).mode & 0o777, 0o700);
   assert.equal(agent(h, ['join', '--name', 'Again'], link).code, 1, 'one membership per home');
   for (const text of outputs) assert(!text.includes(token), 'member token leaked');
+});
+
+// What an agent does with the server's copy (docs/LISTENER.md, distribution): download it, check it
+// against the guide, and run that one file on its own. A relay without an embedded bundle skips this.
+test('the listener the server offers matches its guide and works as a single file', { skip: !binary }, async t => {
+  if (!(await api({ op: 'status' })).features.includes('listener')) return t.skip('this relay embeds no listener');
+  const guide = await (await fetch(origin + '/api/collaboration/guide')).text();
+  const named = /SHA-256 ([a-f0-9]{64})/.exec(guide)?.[1];
+  const download = await fetch(origin + '/api/collaboration/agent/space-agent.mjs');
+  const body = Buffer.from(await download.arrayBuffer());
+  assert.equal(download.status, 200);
+  assert.equal(createHash('sha256').update(body).digest('hex'), named, 'the file is the one the guide names');
+  assert.ok(guide.includes(`${body.length} bytes`));
+  const alone = join(dir, 'served'); mkdirSync(alone, { mode: 0o700 }); writeFileSync(join(alone, 'space-agent.mjs'), body, { mode: 0o600 });
+  const run = (h, args, input = '') => { const r = spawnSync(process.execPath, [join(alone, 'space-agent.mjs'), '--home', h, ...args], { input, encoding: 'utf8', timeout: 60_000 }); outputs.push(r.stdout, r.stderr); return r; };
+  const h = home('served-home');
+  const joined = run(h, ['join', '--name', 'Served', '--agent', 'test'], link);
+  assert.equal(joined.status, 0, joined.stderr);
+  const sent = join(alone, 'hello.txt'); writeFileSync(sent, 'from the served listener');
+  assert.equal(run(h, ['send', '--text-file', sent]).status, 0);
+  const read = run(h, ['read', '--latest', '1']);
+  assert.equal(read.status, 0, read.stderr); assert.ok(read.stdout.includes('from the served listener'));
 });
 
 test('join starts the inbox near the newest message instead of replaying a long history', { skip: !binary }, async () => {
