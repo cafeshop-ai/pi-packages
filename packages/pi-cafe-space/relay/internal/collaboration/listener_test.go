@@ -56,7 +56,7 @@ func TestTheServerOffersTheListenerTheGuideNames(t *testing.T) {
 		t.Fatalf("a query string: %d", query.Code)
 	}
 	guide := get(s, "GET", endpoint+"/guide").Body.String()
-	for _, want := range []string{testOrigin + endpoint + "/agent/space-agent.mjs", "SHA-256 " + l.SHA256, "Version 0.1.0", "listener protocol 1.1", "explicitly allowed downloading and running it", "standard input, never as an argument"} {
+	for _, want := range []string{testOrigin + endpoint + "/agent/space-agent.mjs", "SHA-256 " + l.SHA256, "Version 0.1.0", "listener protocol 1.1", "explicitly allowed downloading and running it", "standard input, never as an argument", "it never wakes your session by itself", "/cafe collab migrate --consumed-through"} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("the guide does not say %q", want)
 		}

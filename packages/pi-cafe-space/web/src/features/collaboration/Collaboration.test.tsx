@@ -77,6 +77,9 @@ it.each(['listen', 'task'] as const)('allows running the official listener unles
   expect(allowed).toContain('https://other.example/api/collaboration/guide'); expect(allowed).toContain('Official listener');
   for (const rule of ['SHA-256', '完全一致才用已有的 Node 运行', '不一致就停下告诉我', '从标准输入交给它，不要写进命令行参数', '除此之外，授权不包括安装软件', '不能运行 Node 时再按下面的 HTTP 步骤']) expect(allowed).toContain(rule);
   expect(allowed.includes('listen --quiet')).toBe(mode === 'listen'); expect(allowed.includes('tail --follow')).toBe(mode === 'listen');
+  // Pi wakes only through its own extension, bound once by the local user.
+  expect(allowed.includes('/cafe collab migrate --consumed-through')).toBe(mode === 'listen');
+  expect(allowed.includes('listen --quiet 只负责收信，本身不会唤醒你')).toBe(mode === 'listen');
   expect(allowed).not.toContain(window.location.origin);
 });
 it.each(['ask', 'me', 'everyone'] as const)('keeps listening after topic or Goal completion with reply scope %s', reply => {
