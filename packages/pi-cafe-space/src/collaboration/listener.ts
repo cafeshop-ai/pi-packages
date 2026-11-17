@@ -33,6 +33,9 @@ export class RoomListener {
   private polling: Promise<number> | undefined;
   private awaitingReceipt = false;
   private dispatchedAt = 0;
+  // Pi stores an injected message only after its pre-prompt work (compaction, other extensions' settle
+  // handlers). That can take far longer than 20 s, so only time the host spends idle counts toward a lost receipt.
+  private receiptIdleSince = 0;
   private summaryPending = false;
   private controlPending: number | undefined;
   private readonly restoredAt = Date.now();
@@ -153,7 +156,10 @@ export class RoomListener {
   }
   private async readPending(deliver: boolean): Promise<number> {
     try {
-      if (this.awaitingReceipt && Date.now() - this.dispatchedAt >= 20000) { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); return 5000; }
+      if (this.awaitingReceipt) {
+        if (!this.host.isIdle()) this.receiptIdleSince = Date.now();
+        else if (Date.now() - this.receiptIdleSince >= 20000) { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); return 5000; }
+      }
       const snapshot = await this.client.read(this.cursor, this.abort.signal);
       if (this.abort.signal.aborted) return 5000;
       const active = new Set(snapshot.members.filter(m => !m.removed).map(m => m.id));
@@ -189,7 +195,7 @@ export class RoomListener {
       if (deliver && controls && !this.awaitingReceipt && this.host.deliverControls) {
         if (!this.host.isIdle()) { this.state = 'waiting-for-idle'; return 5000; }
         this.controlPending = controls.id; this.awaitingReceipt = true;
-        this.state = 'awaiting-host-receipt'; this.dispatchedAt = Date.now();
+        this.state = 'awaiting-host-receipt'; this.dispatchedAt = Date.now(); this.receiptIdleSince = this.dispatchedAt;
         try { this.host.deliverControls(structuredClone(controls)); }
         catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
         return 5000;
@@ -211,7 +217,7 @@ export class RoomListener {
         if (this.controls.pending.length) return 5000;
         if (!this.host.isIdle()) { this.state = 'waiting-for-idle'; return 5000; }
         this.discoveredBatch = [message]; this.awaitingReceipt = true; this.summaryPending = false;
-        this.state = 'awaiting-host-receipt'; this.dispatchedAt = Date.now();
+        this.state = 'awaiting-host-receipt'; this.dispatchedAt = Date.now(); this.receiptIdleSince = this.dispatchedAt;
         try { this.host.deliverDiscovered(this.discoveredBatch); }
         catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
         return 5000;
@@ -227,7 +233,7 @@ export class RoomListener {
         this.summaryPending = backlog;
         this.awaitingReceipt = true;
         this.state = 'awaiting-host-receipt';
-        this.dispatchedAt = Date.now();
+        this.dispatchedAt = Date.now(); this.receiptIdleSince = this.dispatchedAt;
         try { if (backlog) this.host.deliver(this.queued, true); else this.host.deliver(this.queued); }
         catch { this.error = 'HOST_DELIVERY_UNKNOWN'; this.pause(); }
       }

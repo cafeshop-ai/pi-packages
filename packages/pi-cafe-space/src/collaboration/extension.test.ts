@@ -1115,3 +1115,47 @@ it('aborting a run stops further automatic turns rather than immediately waking 
   const f = fixture(); await f.command('connect C:/private/room.json'); f.events.get('agent_settled')?.({ aborted: true }, f.ctx);
   f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000); expect(f.pi.sendMessage).not.toHaveBeenCalled();
 });
+it('waits for a busy Pi to store a delivery, and settles an unknown one without a person', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  // Pre-prompt work (compaction, settle handlers) keeps Pi busy long after the hand-off: not a lost receipt.
+  f.receipt(false); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  f.idle(false); await vi.advanceTimersByTimeAsync(90000);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'awaiting-host-receipt' });
+  // Stored late, after only idle time ran out: the listener pauses, then finds the receipt and continues on its own.
+  f.idle(true); await vi.advanceTimersByTimeAsync(25000);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'paused', error: 'HOST_DELIVERY_UNKNOWN' });
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0] as any;
+  f.entries.push({ type: 'custom_message', ...payload });
+  await vi.advanceTimersByTimeAsync(5000);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'listening', delivered: 1 });
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect(f.entries.some(e => e.data?.kind === 'resolution')).toBe(false);
+});
+it('retries an unknown delivery that never reached the session after two idle minutes', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  f.receipt(false); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(5000);
+  await vi.advanceTimersByTimeAsync(25000);
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'paused', error: 'HOST_DELIVERY_UNKNOWN' });
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  f.receipt(true); await vi.advanceTimersByTimeAsync(75000);
+  const resolution = f.entries.find(e => e.data?.kind === 'resolution');
+  expect(resolution?.data).toMatchObject({ decision: 'retry', automatic: true, seq: 1 });
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(f.pi.sendMessage).mock.calls[1]![0].content).toContain(vi.mocked(f.pi.sendMessage).mock.calls[0]![0].content.split('\n').at(-1));
+  expect((await f.tool('cafe_room_status')).details).toMatchObject({ state: 'listening', delivered: 1 });
+});
+it('leaves a delivery stored on another branch for a person to resolve', async () => {
+  const f = fixture(); await f.command('connect C:/private/room.json');
+  f.receipt(false); f.messages.push(message(1)); await vi.advanceTimersByTimeAsync(30000);
+  expect((await f.tool('cafe_room_status')).details.error).toBe('HOST_DELIVERY_UNKNOWN');
+  const payload = vi.mocked(f.pi.sendMessage).mock.calls[0]![0] as any;
+  const branch = f.ctx.sessionManager.getBranch, all = f.ctx.sessionManager.getEntries;
+  (f.ctx.sessionManager as any).getEntries = () => [...all(), { type: 'custom_message', ...payload }];
+  await vi.advanceTimersByTimeAsync(180000);
+  expect(f.entries.some(e => e.data?.kind === 'resolution')).toBe(false);
+  expect(f.pi.sendMessage).toHaveBeenCalledTimes(1);
+  expect((await f.tool('cafe_room_status')).details.state).toBe('paused');
+  expect(branch).toBeDefined();
+});

@@ -98,6 +98,29 @@ export default function collaborationExtension(pi: ExtensionAPI) {
       activeAttempt = undefined;
     } catch { stop(); }
   };
+  // An unknown delivery settles itself instead of waiting for a person: Pi may store the message late (after
+  // pre-prompt compaction or other extensions' settle handlers), and resume then finds the receipt. If it stays
+  // absent from the whole session while Pi is idle for two minutes, the model never saw it, so it is retried.
+  const settleUnknownDelivery = (ctx: ExtensionContext, owner: number, attempt: string) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    let idleSince = Date.now();
+    const receipt = (entries: ReturnType<ExtensionContext['sessionManager']['getEntries']>) => entries.some(e =>
+      e.type === 'custom_message' && e.customType === eventType && record(e.details) && e.details.scope === scope && e.details.attempt === attempt);
+    const check = () => {
+      if (generation !== owner || ctx.sessionManager.getSessionId() !== sessionId) return;
+      if (receipt(ctx.sessionManager.getBranch())) { void collab('resume', ctx); return; }
+      // Stored on another branch of this session: the outcome depends on the branch, so a person decides.
+      if (receipt(ctx.sessionManager.getEntries())) return;
+      if (!(ctx.isIdle() && !ctx.hasPendingMessages() && prompts === 0)) idleSince = Date.now();
+      if (Date.now() - idleSince < 120000) { timer = setTimeout(check, 5000); timer.unref?.(); return; }
+      const dispatch = [...ctx.sessionManager.getBranch()].reverse().find(e => e.type === 'custom' && e.customType === stateType && record(e.data) &&
+        e.data.kind === 'dispatch' && e.data.scope === scope && e.data.attempt === attempt);
+      if (dispatch?.type !== 'custom' || !record(dispatch.data) || !sequence(dispatch.data.seq)) return;
+      pi.appendEntry(stateType, { kind: 'resolution', scope, seq: dispatch.data.seq, attempt, decision: 'retry', automatic: true });
+      void collab('resume', ctx);
+    };
+    timer = setTimeout(check, 5000); timer.unref?.();
+  };
   const requireBinding = (ctx: ExtensionContext) => {
     if (!listener || listener.state === 'paused' || ctx.sessionManager.getSessionId() !== boundSession) throw new RoomError('ROOM_NOT_CONNECTED');
     return listener;
@@ -329,7 +352,11 @@ export default function collaborationExtension(pi: ExtensionAPI) {
           observeStoredReceipt(ctx);
           const delay = await next.poll();
           if (current !== generation) return;
-          if (next.state === 'paused') { notify(ctx, `Room listener paused: ${next.error ?? 'stopped'}`); return; }
+          if (next.state === 'paused') {
+            notify(ctx, `Room listener paused: ${next.error ?? 'stopped'}`);
+            if (next.error === 'HOST_DELIVERY_UNKNOWN' && activeAttempt) settleUnknownDelivery(ctx, current, activeAttempt);
+            return;
+          }
           if (next.state !== lastState && next.state === 'room-paused') notify(ctx, `Room listener: ${next.state}. Still reading; no new automatic turns.`);
           lastState = next.state;
           timer = setTimeout(() => void poll(), delay); timer.unref?.();
