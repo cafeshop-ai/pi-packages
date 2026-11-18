@@ -306,6 +306,37 @@ test('deliver: only a receipt naming the batch advances a program consumer; unkn
   assert.match(agent(h, ['tail', '--as', 'monitor']).out, /第三条/);
 });
 
+test('wake: a command-line agent takes each batch as one turn; only a clean exit confirms it', { skip: !binary }, async () => {
+  const h = home('wake'); assert.equal(agent(h, ['join', '--name', 'Wake agent', '--backlog', '0'], link).code, 0);
+  const tools = join(dir, 'wake-tools'); mkdirSync(tools, { mode: 0o700, recursive: true });
+  // A stand-in agent: records its arguments, then exits with the code in a control file (default 0).
+  const log = join(tools, 'runs.jsonl'), code = join(tools, 'exit'), path = join(tools, 'agy');
+  writeFileSync(path, `#!${process.execPath}\nconst fs = require('fs');\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nconst c = fs.existsSync(${JSON.stringify(code)}) ? fs.readFileSync(${JSON.stringify(code)}, 'utf8') : '0';\nif (c === 'sleep') setTimeout(() => {}, 60_000); else process.exit(Number(c));\n`, { mode: 0o700 });
+  const runs = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+  const state = () => JSON.parse(readFileSync(join(h, 'state.json'), 'utf8'));
+  assert.notEqual(agent(h, ['wake', '--as', 'agy', '--', path, '-p']).code, 0, 'an agent without {prompt} or {batch} never runs');
+  assert.notEqual(agent(h, ['wake', '--as', 'agy', '--', 'agy', '-p', '{prompt}']).code, 0, 'a bare command name is not a chosen local program');
+  const first = await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0001', text: '请 agy 看一下' }, owner.token);
+  await running(h, ['listen', '--quiet'], 300);
+  const woke = agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}', '--batch-file', '{batch}']);
+  assert.equal(woke.code, 0, woke.err);
+  const [args] = runs(); assert.equal(args[0], '-p');
+  assert.match(args[1], /外部资料/); assert.match(args[1], /请 agy 看一下/); assert.match(args[1], /send --text-file/); assert.match(args[1], new RegExp(`序号：${first.seq}`));
+  assert.equal(args[3], state().handoffs?.agy?.file ?? readdirSync(join(h, 'batches')).map(f => join(h, 'batches', f)).find(f => f === args[3]));
+  assert.ok(!args.join(' ').includes(JSON.parse(readFileSync(join(h, 'member.json'), 'utf8')).token), 'the member token never reaches the agent');
+  assert.ok(state().tailed.agy > 0 && !state().handoffs?.agy && state().delivered >= first.seq, 'a clean exit confirms the batch');
+  // A failed turn leaves the batch unknown: wake stops, and never hands the same batch over again by itself.
+  writeFileSync(code, '1'); await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0002', text: '第二条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const failed = agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}']); assert.equal(failed.code, 2); assert.match(failed.err, /deliver-resolve --as agy/);
+  writeFileSync(code, '0'); const count = runs().length;
+  assert.equal(agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}']).code, 2); assert.equal(runs().length, count, 'an unknown batch is not handed over again');
+  assert.equal(agent(h, ['deliver-resolve', '--as', 'agy', '--resend']).json().settled, 'resend');
+  assert.equal(agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}']).code, 0); assert.match(runs().at(-1)[1], /第二条/);
+  // A turn that outlives --timeout is stopped and stays unknown.
+  writeFileSync(code, 'sleep'); await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0003', text: '第三条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const slow = agent(h, ['wake', '--as', 'agy', '--timeout', '0.01', '--', path, '-p', '{prompt}']); assert.equal(slow.code, 2); assert.ok(state().handoffs.agy);
+});
+
 test('listen survives a lock left by a dead process: it says so and keeps running until unlocked', { skip: !binary }, async () => {
   const h = home('stale-lock'); assert.equal(agent(h, ['join', '--name', 'Stale lock', '--backlog', '0'], link).code, 0);
   const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }); const pid = Number(dead.stdout.trim());

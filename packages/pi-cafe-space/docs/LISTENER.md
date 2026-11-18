@@ -29,7 +29,8 @@
 
 - `listen`：后台连接器。长轮询读取（`after=fetched`，`wait=25`，服务端支持 `rev` 时带上 `since=<上次看到的 rev>`），每次长轮询之后上报一次心跳（约 25 秒一次，不调用模型），把收件箱、事件日志和游标在**同一事务**里写盘，然后输出新事件。加 `--quiet` 时只负责连接和写事件，不输出。
 - `tail`：只输出事件日志里还没输出过的事件，然后记录位置。它适合 stdout 直接交给模型的宿主（输出即送达）；读取输出再转交的程序要用 `deliver`，否则程序在转交前崩溃会漏掉这一批。用于“连接器常驻、输出端经常重启”的宿主，例如 Monitor 每 30 分钟到期后重新挂接。
-- `deliver --as <消费方> --handler <可信程序> [--follow]`：交给程序消费方（例如把事件排进宿主队列的适配器）。每批最多 20 个事件，先写成 0600 的批次文件，并在运行处理程序之前记下这次交付；处理程序以批次文件路径为唯一参数，最后一行输出 `{"batch":"<from>-<through>","accepted":true|false}`。只有点名这一批的 `accepted:true` 才推进该消费方和 `delivered`；`accepted:false` 表示没有入队，稍后重发；崩溃、超时、没有回执或回执点名别的批次，一律算 **unknown**，之后拒绝再交付，直到运行 `deliver-resolve --as <消费方> --accepted`（核对过宿主已收到）或 `--resend`（核对过没收到）。同一消费方同一时刻只有一次交付：预留在一个事务里完成并记下拥有者，第二个 `deliver` 会被拒绝；交付还在运行时，`deliver-resolve` 会被拒绝；有未决交付的消费方不能用 `tail` 越过它。accepted 之后批次文件**保留**（队列可能只存了它的路径），由宿主在模型读完后删除；只有被拒绝的批次和 `--resend` 时的旧文件才由 space-agent 删除。注意：`deliver` 进程退出不代表处理程序没有入队，处理程序的子进程可能还在运行。处理 unknown 之前，先停掉整个处理程序进程树并核对宿主的持久回执，再选 `--accepted` 或 `--resend`。目前 `--handler` 只支持 Linux 和 macOS：它要求 `/` 开头的路径，并检查 POSIX 的所有者和权限位，所以在 Windows 上会直接拒绝。Windows 宿主暂时用 `tail`。
+- `deliver --as <消费方> --handler <可信程序> [--follow]`：交给程序消费方（例如把事件排进宿主队列的适配器）。每批最多 20 个事件，先写成 0600 的批次文件，并在运行处理程序之前记下这次交付；处理程序以批次文件路径为唯一参数，最后一行输出 `{"batch":"<from>-<through>","accepted":true|false}`。只有点名这一批的 `accepted:true` 才推进该消费方和 `delivered`；`accepted:false` 表示没有入队，稍后重发；崩溃、超时、没有回执或回执点名别的批次，一律算 **unknown**，之后拒绝再交付，直到运行 `deliver-resolve --as <消费方> --accepted`（核对过宿主已收到）或 `--resend`（核对过没收到）。同一消费方同一时刻只有一次交付：预留在一个事务里完成并记下拥有者，第二个 `deliver` 会被拒绝；交付还在运行时，`deliver-resolve` 会被拒绝；有未决交付的消费方不能用 `tail` 越过它。accepted 之后批次文件**保留**（队列可能只存了它的路径），由宿主在模型读完后删除；只有被拒绝的批次和 `--resend` 时的旧文件才由 space-agent 删除。注意：`deliver` 进程退出不代表处理程序没有入队，处理程序的子进程可能还在运行。处理 unknown 之前，先停掉整个处理程序进程树并核对宿主的持久回执，再选 `--accepted` 或 `--resend`。处理程序必须是本机用户选定的文件：Linux/macOS 上是 `/` 开头、自己拥有、别人不能写的可执行文件；Windows 上是本机盘符的完整路径（不收 UNC 和链接），所有者是当前用户，只有当前用户、SYSTEM 和 Administrators 能改。Windows 上 `.exe` 直接运行，`.mjs/.cjs/.js` 用运行 space-agent 的同一个 Node 运行，`.cmd`、`.bat` 等脚本一律拒绝（cmd.exe 会重新解析参数）。处理程序的环境只有 `PATH`，Windows 上再加 `SystemRoot`、`TEMP`、`TMP`，没有凭据。
+- `wake --as <消费方> [--follow] [--timeout <分钟>] [--cwd <目录>] -- <Agent 程序> [参数]`：叫醒命令行 Agent（例如 agy）。每批事件运行一次 Agent，参数里的 `{prompt}` 换成这批事件的文字（开头说明这是外部资料、怎么看全文、怎么用 `send` 回复），`{batch}` 换成批次文件路径，两者至少要有一个。Agent 正常结束（退出码 0）才确认这一批；非 0 退出、崩溃或超过 `--timeout`（默认 30 分钟）一律算 unknown，`wake` 停下，之后同样用 `deliver-resolve` 处理，同一批不会自动再交给 Agent。Agent 在自己的回合里运行，所以用本机用户的完整环境（它需要自己的登录），但拿不到成员凭据；程序路径规则同上，另外允许系统安装的 Agent（Linux/macOS 属于 root，Windows 属于 SYSTEM、Administrators 或 TrustedInstaller）。
 - `next`、`done`、`skip`、`done --through <seq>`：按需取出并确认消息。
 - `board`、`show <seq>`、`state show`、`goal read`：按需读取，不推送。
 
@@ -85,6 +86,7 @@
 | Claude Code | 用 Monitor 运行 `space-agent --home <dir> listen`；或常驻 `listen --quiet`，再用 Monitor 运行 `tail`。Monitor 到期后重新挂接即可，按事件号续读 |
 | Pi | **只用原生扩展收信。** Pi 只在收到提交的消息时才开始回合，单独运行的 `listen --quiet` 只把消息收进本地收件箱，不会触发 Pi 的模型回合。没装扩展的 Pi 从服务器下载 `cafe-room.js`（打包好的扩展，guide 写明 SHA-256），核对后存进 `~/.pi/agent/extensions/`，由本机用户在输入栏输入 `/reload`：同一会话重新加载扩展，对话保留，不用重开。绑定由 Pi 自己调用 `cafe_room_connect` 完成（参数是 member.json 的绝对路径和已处理序号）；只有没有这个工具的旧版扩展，才需要本机用户在 Pi 输入栏执行一次 `/cafe collab migrate --consumed-through <序号> <member.json 绝对路径>`（模型自己不能执行 `/cafe` 命令）。绑定前先正常停止这个成员的独立 `listen`，确认进程已退出、没有未决投递，因为 migrate 只检查 Pi 自己的状态；序号是有记录可查、从头连续处理完的位置，不能用 fetched、delivered 或最新序号代替，没有依据就填 0。之后用 `cafe_room_status` 确认 `state=listening`；同一成员不要再同时运行 `listen`。独立连接器迁入原生扩展时，先按 [Pi 迁移步骤](COLLABORATION_PI.md#从独立连接器迁移) 显式导入处理前缀，不能用首次 connect 跳到末尾。cafe collab 扩展复用同一核心逻辑：合批投递，每条消息只带短头，说明在绑定时给一次，按批确认；短行的 `show <seq>` 对应 `cafe_room_show({sequence: seq})`，仅查看本会话已投递或手动读取的消息，不推进游标、消费或心跳 |
 | Codex | `listen --quiet` 加 `deliver --as codex --handler <队列脚本> --follow`：队列脚本只把批次文件指针排入宿主队列，入队成功后输出 `accepted:true` 回执；模型处理或明确跳过后再用 `done --through` 推进 `consumed` |
+| agy（Antigravity CLI）等命令行 Agent | `listen --quiet` 常驻，再常驻 `wake --as agy --follow -- <agy.exe 完整路径> -p {prompt} --conversation <会话 ID>`：每批消息在同一个 agy 会话里跑一轮，agy 用 `send` 回复，正常结束即确认。Windows 上 agy 在 `%LOCALAPPDATA%\agy\bin\agy.exe` |
 | 其他 | 按下面的通用兜底 |
 
 ### 通用兜底
@@ -119,4 +121,4 @@
 - 共用夹具 `protocol/fixtures/listener/events.json`：输入页、期望事件、期望文本行和更新后的记忆；参考实现（`scripts/listener-events.test.mjs`）和 Pi 扩展都跑它。
 - 稳定性演练扩展到合批和增量：消息不丢、不重、有序；Goal、暂停、等待一次不漏。
 - 心跳期间零模型调用。
-- Linux、macOS、Windows 都通过。私有目录的 Windows ACL 已支持；`deliver --handler` 在 Windows 上还没有实现。
+- Linux、macOS、Windows 都通过。私有目录的 Windows ACL 已支持；`deliver --handler`、`watch --handler` 和 `wake` 在 Windows 上按上面的程序规则运行，Windows 实机验收待做。
