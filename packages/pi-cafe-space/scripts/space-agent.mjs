@@ -496,6 +496,16 @@ foreach ($r in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIde
   } catch { throw new Fail(`${path} must be a file ${system ? 'you or the system own' : 'you own'} that only you, SYSTEM and Administrators can change`); }
   const after = identity(path); if (after && after === before) verifiedPrograms.set(`${system}:${path}`, after);
 }
+// The wake agent is a program the user already runs from a terminal: the choice on the command line is
+// the trust anchor, so only its form is checked (full local path, a regular file, no .cmd/.bat).
+function checkAgent(path) {
+  const flag = 'the wake agent';
+  if (process.platform === 'win32' ? !/^[a-z]:[\\/]/i.test(path) : !path.startsWith('/')) throw new Fail(`${flag} must be a full local path`);
+  const info = lstatSync(path);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Fail(`${flag} must be a regular file, not a link`);
+  programCommand(path);
+  if (process.platform !== 'win32' && !(info.mode & 0o111)) throw new Fail(`${flag} must be executable`);
+}
 function checkHandler(path, flag = '--handler', system = false) {
   if (process.platform === 'win32') {
     if (!/^[a-z]:[\\/]/i.test(path)) throw new Fail(`${flag} must be a full local-drive path chosen by the local user`);
@@ -695,7 +705,7 @@ async function main(argv) {
     const [, agent, ...args] = positionals;
     if (!values.as || !agent) throw new Fail('wake needs --as <consumer> and, after --, the agent command: wake --as agy -- <agent> -p {prompt}');
     if (!args.some(a => a.includes('{prompt}') || a.includes('{batch}'))) throw new Fail('wake: put {prompt} (the batch as text) or {batch} (the batch file path) in the agent arguments');
-    checkHandler(agent, 'the wake agent', true);
+    checkAgent(agent);
     const minutes = Number(values.timeout ?? 30);
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) throw new Fail('--timeout must be 1-1440 minutes');
     if (values.cwd && !existsSync(values.cwd)) throw new Fail('--cwd must be an existing directory');
