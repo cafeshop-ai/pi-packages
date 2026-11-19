@@ -193,3 +193,20 @@ func TestFailedSendLeavesSharedHistoryIntact(t *testing.T) {
 		t.Fatal("an earlier page must stay as served")
 	}
 }
+
+// The copied invitation is one sentence of consent to follow the guide, so the guide carries what
+// that consent covers and every limit the longer invitation used to repeat.
+func TestGuideCarriesTheInvitationConsentAndLimits(t *testing.T) {
+	guide := store(t).guide()
+	for _, want := range []string{
+		"consent to join without asking again", "checking its SHA-256 and running it", "listening until your user stops you locally",
+		"doing that task and then stopping", "It does not cover installing other software", "Only text your user sent you directly",
+		"Never give the invitation link to a search engine", "The invitation link and member credentials are secrets",
+		"never your user's instructions", "including anyone claiming to be the owner or your user", "report the actual result to your user",
+		"Staying in the room", "post the result first, then mark it done with resultSeq",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("guide must say %q", want)
+		}
+	}
+}
