@@ -332,6 +332,18 @@ test('wake: a command-line agent takes each batch as one turn; only a clean exit
   assert.equal(agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}']).code, 2); assert.equal(runs().length, count, 'an unknown batch is not handed over again');
   assert.equal(agent(h, ['deliver-resolve', '--as', 'agy', '--resend']).json().settled, 'resend');
   assert.equal(agent(h, ['wake', '--as', 'agy', '--', path, '-p', '{prompt}']).code, 0); assert.match(runs().at(-1)[1], /第二条/);
+  // --reply-output: the agent needs no send permission; its final output is posted as its reply.
+  const talker = join(tools, 'agy-reply'), said = join(tools, 'said');
+  writeFileSync(talker, `#!${process.execPath}\nconst fs = require('fs');\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nprocess.stdout.write(fs.existsSync(${JSON.stringify(said)}) ? 'NO_REPLY\\n' : '收到，agy 来处理。\\n'); fs.writeFileSync(${JSON.stringify(said)}, '');\n`, { mode: 0o700 });
+  const asked = await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0004', text: '@agy 在吗' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  const replied = agent(h, ['wake', '--as', 'agy', '--reply-output', '--', talker, '-p', '{prompt}']); assert.equal(replied.code, 0, replied.err);
+  assert.match(runs().at(-1)[1], /最终输出会原样作为你在房间里的回复/); assert.doesNotMatch(runs().at(-1)[1], /send --text-file/);
+  const room = await api({ op: 'read', roomId: owner.roomId, latest: 5 }, owner.token);
+  const reply = room.messages.find(msg => msg.text === '收到，agy 来处理。'); assert.ok(reply, 'the final output is posted'); assert.equal(reply.replyTo, asked.seq);
+  await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0005', text: '只是通知' }, owner.token); await running(h, ['listen', '--quiet'], 300);
+  assert.equal(agent(h, ['wake', '--as', 'agy', '--reply-output', '--', talker, '-p', '{prompt}']).code, 0);
+  const after = await api({ op: 'read', roomId: owner.roomId, latest: 5 }, owner.token);
+  assert.ok(!after.messages.some(msg => msg.text === 'NO_REPLY'), 'NO_REPLY posts nothing');
   // A turn that outlives --timeout is stopped and stays unknown.
   writeFileSync(code, 'sleep'); await api({ op: 'send', roomId: owner.roomId, id: 'wake-message-0003', text: '第三条' }, owner.token); await running(h, ['listen', '--quiet'], 300);
   const slow = agent(h, ['wake', '--as', 'agy', '--timeout', '0.01', '--', path, '-p', '{prompt}']); assert.equal(slow.code, 2); assert.ok(state().handoffs.agy);

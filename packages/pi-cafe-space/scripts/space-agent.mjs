@@ -21,9 +21,10 @@
 //   space-agent --home <dir> deliver --as name --handler /trusted/executable [--follow]
 //                                                      hand events to a program consumer (a queue) in batch files; only
 //                                                      its receipt advances that consumer and delivered (docs/LISTENER.md)
-//   space-agent --home <dir> wake --as name [--follow] [--timeout <minutes>] [--cwd <dir>] -- <agent> [args with {prompt} or {batch}]
+//   space-agent --home <dir> wake --as name [--follow] [--reply-output] [--timeout <minutes>] [--cwd <dir>] -- <agent> [args with {prompt} or {batch}]
 //                                                      wake a command-line agent (for example agy -p {prompt}) once per batch;
-//                                                      exit 0 confirms the batch, anything else leaves it for deliver-resolve
+//                                                      exit 0 confirms the batch, anything else leaves it for deliver-resolve;
+//                                                      --reply-output posts the agent's final output as its reply
 //   space-agent --home <dir> deliver-resolve --as name --accepted|--resend
 //                                                      after checking the host, settle a batch whose result is unknown
 //   space-agent --home <dir> board | show <seq>        the open tasks in short; one message in full
@@ -362,7 +363,7 @@ async function handOff(home, name, run) {
 // its own sign-in), never the member token. Exit 0 confirms the batch; a failure, a crash or the
 // timeout leaves it unknown for deliver-resolve, so a batch is never handed to the agent twice blindly.
 const promptLimit = 12_000;
-function wakePrompt(home, events, file) {
+function wakePrompt(home, events, file, replyTo) {
   const client = process.argv[1];
   const lines = []; let size = 0;
   for (const e of events) { if (size + e.line.length > promptLimit) { lines.push(`…（还有 ${events.length - lines.length} 条，见下面的完整批次文件）`); break; } lines.push(e.line); size += e.line.length + 1; }
@@ -374,19 +375,50 @@ function wakePrompt(home, events, file) {
     '',
     `完整批次（JSON）：${file}`,
     `看一条消息的全文：node "${client}" --home "${home}" show <序号>；看任务板：board。`,
-    `需要回复时，把回复写进一个文本文件，再运行：node "${client}" --home "${home}" send --text-file <文件> --reply <序号>${seqs.length ? `（这批的序号：${seqs.join('、')}）` : ''}`,
-    '处理完正常结束即可，这一批会自动记为已送达。',
+    ...(replyTo !== undefined ? [
+      `你的最终输出会原样作为你在房间里的回复（回复第 ${replyTo} 条），不用自己运行任何发送命令。不需要回复时只输出 NO_REPLY。回复里不要写凭据、私有路径或本机资料。`,
+    ] : [
+      `需要回复时，把回复写进一个文本文件，再运行：node "${client}" --home "${home}" send --text-file <文件> --reply <序号>${seqs.length ? `（这批的序号：${seqs.join('、')}）` : ''}`,
+      '处理完正常结束即可，这一批会自动记为已送达。',
+    ]),
   ].join('\n');
 }
-async function wake(home, name, agent, args, { follow, timeoutMs, cwd }) {
+// With --reply-output the agent needs no network or shell permission of its own: its final output is
+// posted as its reply (a headless agent often cannot ask for permission to run a send command).
+const replyLimit = 8000;
+async function postReply(home, file, batch, text, replyTo) {
+  const m = member(home);
+  const body = { op: 'send', roomId: m.roomId, text: text.length > replyLimit ? text.slice(0, replyLimit) + '\n…（回复过长，已截断）' : text, ...(replyTo ? { replyTo } : {}) };
+  body.id = 'wake-' + createHash('sha256').update(JSON.stringify([m.roomId, batch, body.text])).digest('hex').slice(0, 32);
+  try {
+    const result = await unknownKeepsId(() => retrying(m.origin, body, m.token), body.id);
+    if (result.status !== 200) throw failed(result);
+    print({ replied: result.json.seq, replyTo: replyTo ?? null });
+  } catch (error) {
+    // The agent did see the batch; its reply is kept beside the batch file for the user to post.
+    writePrivate(`${file}.reply.txt`, text);
+    process.stderr.write(clean(`reply for batch ${batch} was not posted (${error.message}); it is saved next to the batch file\n`));
+  }
+}
+async function wake(home, name, agent, args, { follow, timeoutMs, cwd, replyOutput }) {
   const { file: program, prefix } = programCommand(agent);
-  const run = ({ file, events }) => new Promise(resolve => {
-    const prompt = wakePrompt(home, events, file);
+  const me = member(home).memberId;
+  const run = ({ file, batch, events }) => new Promise(resolve => {
+    const replyTo = replyOutput ? events.filter(e => e.type === 'msg' && e.memberId !== me).at(-1)?.seq ?? 0 : undefined;
+    const prompt = wakePrompt(home, events, file, replyTo);
     const child = spawn(program, [...prefix, ...args.map(a => a.replaceAll('{prompt}', prompt).replaceAll('{batch}', file))],
-      { cwd, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+      { cwd, stdio: ['ignore', replyOutput ? 'pipe' : 'inherit', 'inherit'], windowsHide: true });
+    let output = '';
+    child.stdout?.on('data', chunk => { if (output.length < 256_000) output += chunk; });
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.once('error', () => { clearTimeout(timer); resolve('unknown'); });
-    child.once('exit', code => { clearTimeout(timer); resolve(code === 0 ? 'accepted' : 'unknown'); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) return resolve('unknown');
+      const text = output.trim();
+      if (!replyOutput || !text || text === 'NO_REPLY') return resolve('accepted');
+      postReply(home, file, batch, text, replyTo || undefined).then(() => resolve('accepted'), () => resolve('accepted'));
+    });
   });
   for (;;) {
     const result = await handOff(home, name, run);
@@ -643,7 +675,7 @@ const stdin = () => readFileSync(0, 'utf8');
 async function main(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' }, after: { type: 'string' }, wait: { type: 'string' },
-    'text-file': { type: 'string' }, timeout: { type: 'string' }, cwd: { type: 'string' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
+    'text-file': { type: 'string' }, timeout: { type: 'string' }, cwd: { type: 'string' }, 'reply-output': { type: 'boolean' }, to: { type: 'string' }, reply: { type: 'string' }, id: { type: 'string' }, title: { type: 'string' },
     'goal-id': { type: 'string' }, revision: { type: 'string' }, reviewer: { type: 'string' }, 'criteria-file': { type: 'string' },
     assignee: { type: 'string' }, agent: { type: 'string' }, from: { type: 'string' }, backlog: { type: 'string' }, latest: { type: 'string' }, for: { type: 'string' }, on: { type: 'string' }, quiet: { type: 'boolean' }, json: { type: 'boolean' }, follow: { type: 'boolean' }, accepted: { type: 'boolean' }, resend: { type: 'boolean' }, as: { type: 'string' }, through: { type: 'string' }, task: { type: 'string' }, ref: { type: 'string' }, detail: { type: 'string' }, expect: { type: 'string' }, before: { type: 'string' }, limit: { type: 'string' }, excerpt: { type: 'string' }, status: { type: 'string' }, result: { type: 'string' }, reason: { type: 'string' }, handler: { type: 'string' } } });
   const [command, sub, arg] = positionals; const home = privateHome(values.home);
@@ -709,7 +741,7 @@ async function main(argv) {
     const minutes = Number(values.timeout ?? 30);
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) throw new Fail('--timeout must be 1-1440 minutes');
     if (values.cwd && !existsSync(values.cwd)) throw new Fail('--cwd must be an existing directory');
-    return wake(home, values.as, agent, args, { follow: !!values.follow, timeoutMs: minutes * 60_000, cwd: values.cwd });
+    return wake(home, values.as, agent, args, { follow: !!values.follow, timeoutMs: minutes * 60_000, cwd: values.cwd, replyOutput: !!values['reply-output'] });
   }
   if (command === 'deliver-resolve') {
     if (!values.as || values.accepted === values.resend) throw new Fail('deliver-resolve needs --as <consumer> and exactly one of --accepted or --resend');
