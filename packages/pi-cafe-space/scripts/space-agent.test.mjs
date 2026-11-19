@@ -256,6 +256,25 @@ test('listen --quiet keeps the connection; tail prints each event once per consu
   assert.match(followed, /^\[msg #\d+ Owner\] 跟随输出的新消息$/m); assert.ok(!followed.includes('给 tail 的消息'), 'already printed events stay printed');
 });
 
+test('wait exits once there is something new for tail, reading only local files', { skip: !binary }, async () => {
+  const h = home('wait-new'); assert.equal(agent(h, ['join', '--name', 'Waiter', '--backlog', '0'], link).code, 0);
+  const background = spawn(process.execPath, [client, '--home', h, 'listen', '--quiet'], { stdio: 'ignore' });
+  try {
+    await sleep(900); agent(h, ['tail']); // reads the listener's hello, so nothing is new
+    const files = () => readdirSync(h).sort().map(f => [f, statSync(join(h, f)).mtimeMs]);
+    let exited = false; const waiting = agentAsync(h, ['wait']).then(r => { exited = true; return r; });
+    await sleep(1500); assert.equal(exited, false, 'nothing new: it keeps waiting');
+    await api({ op: 'send', roomId: owner.roomId, id: 'wait-message-0001', text: '叫醒等待的人' }, owner.token);
+    const woke = await waiting; assert.equal(woke.code, 0, woke.err); assert.equal(woke.out, '1 new; read them with: tail');
+    // It read nothing for tail: the message is still there, and a wait started before reading exits at once.
+    background.kill(); await new Promise(ok => background.once('exit', ok)); await sleep(200);
+    const before = files(); const again = agent(h, ['wait']); assert.equal(again.out, '1 new; read them with: tail');
+    assert.deepEqual(files(), before, 'wait writes nothing');
+    assert.match(agent(h, ['tail']).out, /叫醒等待的人/);
+    const quiet = agent(h, ['wait', '--timeout', '0.03']); assert.equal(quiet.code, 0); assert.equal(quiet.out, '0 new');
+    assert.equal(agent(h, ['wait', '--timeout', '-1']).code, 1);
+  } finally { if (background.exitCode === null && background.signalCode === null) { background.kill(); await new Promise(ok => background.once('exit', ok)); } }
+});
 test('deliver: only a receipt naming the batch advances a program consumer; unknown batches are never resent blindly', { skip: !binary }, async () => {
   const h = home('deliver'); assert.equal(agent(h, ['join', '--name', 'Queue agent', '--backlog', '0'], link).code, 0);
   // Trusted handlers chosen by the local user: each reads the batch file and prints one receipt line.

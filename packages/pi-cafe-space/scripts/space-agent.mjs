@@ -15,6 +15,7 @@
 //   space-agent --home <dir> listen [--quiet] [--json] [--as name]
 //                                                      the unified listener (docs/LISTENER.md): long-poll, heartbeat,
 //                                                      write events to events.jsonl and print the ones not printed yet
+//   space-agent --home <dir> wait [--as name] [--timeout <minutes>]   exit once there is something new for tail (local files only)
 //   space-agent --home <dir> tail [--json] [--as name] [--follow]
 //                                                      print events written since this consumer last printed;
 //                                                      --follow keeps printing new ones (for a monitor beside listen --quiet)
@@ -770,6 +771,26 @@ async function main(argv) {
         // Printed but not committed: wait for new events instead of printing these again every second.
         catch (error) { if (!error.staleLock) throw error; size = now; if (!warned) process.stderr.write(clean(error.message) + '\n'); warned = true; }
       }
+      await sleep(1000);
+    }
+  }
+  // For hosts that wake the model when a background command exits but not on its output: blocks,
+  // reading local files only (no network, no writes, no lock), until the consumer has events it has
+  // not read, then exits. Checked at once, so events that came in after the last tail count. Reading
+  // and confirming them stays with tail.
+  if (command === 'wait') {
+    const name = values.as ?? 'stream', minutes = values.timeout === undefined ? 0 : Number(values.timeout);
+    if (!(minutes >= 0 && minutes <= 1440)) throw new Fail('--timeout must be 0 (no limit) to 1440 minutes');
+    const until = minutes ? Date.now() + minutes * 60_000 : Infinity;
+    for (let size = -2; ;) {
+      let now = -1; try { now = lstatSync(eventsPath(home)).size; } catch {}
+      if (now !== size) {
+        size = now; const state = loadState(home);
+        if (state.handoffs?.[name]) throw new Fail(`${name} is a deliver consumer with batch ${state.handoffs[name].batch} pending; use deliver for it, not wait`, 2);
+        const fresh = outbox(home).filter(e => e.id > (state.tailed?.[name] ?? 0)).length;
+        if (fresh) return print(values.json ? { new: fresh } : `${fresh} new; read them with: tail${name === 'stream' ? '' : ` --as ${name}`}`);
+      }
+      if (Date.now() >= until) return print(values.json ? { new: 0 } : '0 new');
       await sleep(1000);
     }
   }
